@@ -1,0 +1,13 @@
+{
+  "application": "shop.example.com",
+  "sbom": "examples/shop-sbom.json",
+  "vulnerabilities": [
+    {"cve": "CVE-2026-63030", "product": "WordPress", "affected_range": ">=6.0.0,<7.0.0", "severity": 9.8, "kev": true}
+  ],
+  "signatures": [
+    {"rule_id": 998105, "cves": ["CVE-2026-63030"], "product": "WordPress", "introduced_version": 179, "inspection": "request", "performance_warning": false}
+  ],
+  "signature_states": [
+    {"rule_id": 998105, "present": true, "enabled": false, "actions": []}
+  ]
+}
