@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WAF Intelligence</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 3rem auto; padding: 0 1rem; color: #17202a; }
+    h1 { margin-bottom: .25rem; }
+    .muted { color: #5f6b76; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card { border: 1px solid #d9dee3; border-radius: 8px; padding: 1rem; background: #fff; }
+    .status { color: #087f5b; font-weight: 600; }
+    code { background: #f1f3f5; padding: .15rem .3rem; border-radius: 4px; }
+    .inventory { margin-top: 2rem; }
+    .inventory span { display: block; font-size: 1.8rem; font-weight: 700; margin-top: .4rem; }
+    .next { margin-top: 2rem; }
+    form { display: grid; gap: .7rem; max-width: 620px; }
+    input, button { font: inherit; padding: .65rem; border: 1px solid #b9c2ca; border-radius: 5px; }
+    button { background: #17202a; color: white; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { text-align: left; padding: .55rem; border-bottom: 1px solid #d9dee3; vertical-align: top; }
+    .small { font-size: .9rem; }
+    .profile { margin-top: 1rem; }
+    .high { color: #087f5b; font-weight: 600; }
+    .medium { color: #9a6700; font-weight: 600; }
+    .low { color: #b42318; font-weight: 600; }
+    .progress { color: #9a6700; font-weight: 600; }
+    .connected-message { color: #087f5b; font-weight: 700; }
+    .secondary { background: #fff; color: #17202a; }
+    label { display: flex; gap: .5rem; align-items: center; }
+    input[type="checkbox"] { width: 1.1rem; height: 1.1rem; }
+    .url-short { display: block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    details ul { margin: .5rem 0 0; padding-left: 1.2rem; }
+    details a { overflow-wrap: anywhere; }
+    details.url-list-panel { margin-top: .75rem; }
+    details.url-list-panel > summary { cursor: pointer; color: #17202a; font-weight: 600; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 360px; margin: .5rem 0 0; }
+  </style>
+</head>
+<body>
+  <h1>WAF Intelligence Platform</h1>
+  <p class="muted">Microservice foundation · read-only MVP</p>
+  <div class="grid">
+    <div class="card"><h2>Platform</h2><p id="platform" class="status">Loading...</p></div>
+    <div class="card"><h2>Connected ADC</h2><p id="connected-adc" class="status">Not connected</p></div>
+    <div class="card"><h2>Mode</h2><p class="status">Read-only / preview</p><p>Write operations are prepared as approval-gated plans; no changes are applied automatically.</p></div>
+  </div>
+  <section class="next">
+    <div id="connect-menu">
+      <h2>Connect to NetScaler ADC</h2>
+      <p>Enter an NSIP and credentials. The GUI displays only NSIP and version. Saved credentials are encrypted at rest; if saving is disabled, they are not persisted.</p>
+      <form id="adc-form">
+        <input id="nsip" required maxlength="64" placeholder="NSIP, e.g. 192.168.11.101">
+        <input id="adc-username" required maxlength="128" autocomplete="username" placeholder="Username">
+        <input id="adc-password" required type="password" maxlength="512" autocomplete="current-password" placeholder="Password">
+        <label><input id="save-credentials" type="checkbox"> Save encrypted credentials</label>
+        <button type="submit">Connect</button>
+      </form>
+    </div>
+    <p id="adc-status" class="small muted"></p>
+    <div id="saved-netscalers"></div>
+    <button id="disconnect-button" class="secondary" type="button" hidden>DISCONNECT</button>
+  </section>
+  <section class="next card" id="waf-section">
+    <h2>WAF protection</h2>
+    <p class="small muted">Read-only NetScaler AppFW inventory and prepared protection options. No WAF changes are applied from this view.</p>
+    <p id="waf-status" class="small muted">Connect to NetScaler, then load the WAF inventory.</p>
+    <button id="load-waf-inventory" class="secondary" type="button">Load WAF inventory</button>
+    <span class="small muted">Write mode: <strong class="progress">disabled</strong> · approval required for future changes</span>
+    <div id="waf-inventory" class="profile"></div>
+  </section>
+  <section class="next">
+    <h2>Passive application discovery</h2>
+    <p>Only approved same-host GET requests are used. Forms, uploads, authentication, and state-changing actions are observed but not executed.</p>
+    <form id="discovery-form">
+      <input id="seed-url" required type="url" maxlength="2048" placeholder="Seed URL, e.g. http://192.168.52.253:8081/">
+      <input id="allowed-paths" value="/" maxlength="1000" placeholder="Allowed paths, comma-separated">
+      <input id="max-pages" type="number" min="1" max="200" value="25" aria-label="Maximum pages">
+      <button type="submit">Queue passive discovery</button>
+    </form>
+    <p id="discovery-status" class="small muted"></p>
+    <div id="jobs"></div>
+    <div id="profile" class="profile"></div>
+  </section>
+  <script>
+    const api = (path, options = {}) => fetch(path, options).then(async r => { if (!r.ok) { let detail = ''; try { const body = await r.json(); detail = body.detail || body.message || ''; } catch (error) { try { detail = await r.text(); } catch (ignored) {} } throw new Error(detail || `${r.status}`); } return r.status === 204 ? null : r.json(); });
+    const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    function renderJobs(jobs) {
+      const host = document.querySelector('#jobs');
+      if (!jobs.length) { host.innerHTML = '<p class="muted">No discovery jobs yet.</p>'; return; }
+      host.innerHTML = '<table><thead><tr><th>Status</th><th>Target</th><th>Phase</th><th>Pages</th><th>Assets</th><th>Evidence</th><th>Created</th><th></th></tr></thead><tbody>' + jobs.map(job =>
+        `<tr><td>${job.status === 'queued' || job.status === 'running' ? `<span class="progress">● scanning${job.phase ? ` · ${escapeHtml(job.phase)}` : ''}</span>` : escapeHtml(job.status)}</td><td>${escapeHtml(job.scope?.seed_url || '-')}</td><td>${escapeHtml(job.phase || '-')}</td><td>${job.pages_visited || 0}</td><td>${job.assets_fetched || 0}</td><td>${job.evidence_count || 0}</td><td>${escapeHtml(job.created_at || '-')}</td><td><button class="secondary profile-button" data-job="${escapeHtml(job.id)}">View profile</button>${['queued','running'].includes(job.status) ? ` <button class="secondary cancel-button" data-job="${escapeHtml(job.id)}">Cancel</button>` : ''}${['completed','failed','interrupted','rejected','cancelled'].includes(job.status) ? ` <button class="secondary delete-button" data-job="${escapeHtml(job.id)}">Delete</button>` : ''}</td></tr>`
+      ).join('') + '</tbody></table>';
+    }
+    function renderDuplicateProfilePlan(plan) {
+      window.currentDuplicatePlan = plan;
+      const checks = (plan.checks || []).map(item => `<tr><td>${escapeHtml(item.name || '-')}</td><td class="${item.status === 'passed' ? 'high' : 'progress'}">${escapeHtml(item.status || '-')}</td><td>${escapeHtml(item.detail || '-')}</td></tr>`).join('');
+      const source = plan.source_snapshot || {};
+      const approval = plan.approval || {};
+      const preflight = plan.preflight || {};
+      const preflightChecks = (preflight.checks || []).map(item => `<tr><td>${escapeHtml(item.name || '-')}</td><td class="${item.status === 'passed' ? 'high' : 'low'}">${escapeHtml(item.status || '-')}</td><td>${escapeHtml(item.detail || '-')}</td></tr>`).join('');
+      const approvalUi = approval.status === 'approved'
+        ? `<p class="connected-message"><strong>Approved for review:</strong> ${escapeHtml(approval.approval_id || '-')} · expires ${escapeHtml(approval.expires_at || '-')}</p>${preflight.preview_id ? `<h5>Pre-write validation</h5><p><strong>Status:</strong> <span class="${preflight.status === 'ready-for-apply' ? 'high' : preflight.status === 'blocked-write-disabled' ? 'progress' : 'low'}">${escapeHtml(preflight.status || '-')}</span> · changes applied: ${preflight.changes_applied ? 'yes' : 'no'}</p>${preflightChecks ? `<table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${preflightChecks}</tbody></table>` : ''}<p class="small"><strong>Rollback snapshot:</strong> ${escapeHtml(preflight.rollback_snapshot?.status || '-')} · destination deletion is reference-checked.</p><label class="small">Type <code>ENABLE WRITE</code><input id="duplicate-write-confirmation" maxlength="64" placeholder="ENABLE WRITE"></label><button class="secondary duplicate-apply-button"${preflight.status !== 'ready-for-apply' ? ' disabled' : ''}>${preflight.write_enabled ? 'Apply duplicate profile' : 'Test guarded apply (write disabled)'}</button><button class="secondary duplicate-rollback-button"${preflight.status !== 'ready-for-apply' ? ' disabled' : ''}>${preflight.write_enabled ? 'Rollback duplicate profile' : 'Test guarded rollback (write disabled)'}</button><p id="duplicate-write-status" class="small muted">${preflight.write_enabled ? 'Apply is guarded by preflight and exact confirmation.' : 'Write mode is disabled; clicking the test will show the server-side block reason without contacting the ADC.'}</p>` : `<button class="secondary duplicate-preflight-button">Run duplicate-profile preflight</button><p id="duplicate-preflight-status" class="small muted"></p>`}`
+        : `<p class="small muted">Approval authorizes this exact duplicate plan for a future write attempt; it does not change the ADC.</p><label class="small">Type <code>APPROVE PLAN</code><input id="duplicate-approval-phrase" maxlength="64" placeholder="APPROVE PLAN"></label><button class="secondary duplicate-approve-button">Approve exact duplicate plan</button><p id="duplicate-approval-status" class="small muted"></p>`;
+      const command = plan.command_preview || {};
+      const commandBlock = command.create ? `<details class="command-preview"><summary>View exact NetScaler commands before write</summary><p class="small muted">The request below is the exact write shape; credentials and session headers are omitted.</p><h5>Create profile · NITRO</h5><pre>${escapeHtml(JSON.stringify(command.create.nitro, null, 2))}</pre><p><strong>CLI equivalent:</strong> <code>${escapeHtml(command.create.cli_equivalent || '-')}</code></p><p class="small muted">${escapeHtml(command.create.note || '')}</p><h5>Rollback · NITRO</h5><pre>${escapeHtml(JSON.stringify(command.rollback?.nitro || null, null, 2))}</pre><p><strong>CLI equivalent:</strong> <code>${escapeHtml(command.rollback?.cli_equivalent || '-')}</code></p><p class="small muted">${escapeHtml(command.rollback?.note || '')}</p></details>` : '';
+      return `<div class="card"><h4>Duplicate AppFW profile plan</h4><p><strong>Source:</strong> ${escapeHtml(plan.source_profile || '-')} · <strong>Destination:</strong> ${escapeHtml(plan.proposed_profile_name || plan.destination_profile || '-')}</p><p class="small muted">${escapeHtml(plan.note || '')}</p><p><strong>Status:</strong> <span class="progress">${escapeHtml(plan.plan_status || 'prepared-disabled')}</span> · <strong>Changes applied:</strong> ${plan.changes_applied ? 'yes' : 'no'}</p><p class="small"><strong>Source snapshot:</strong> type ${escapeHtml(Array.isArray(source.type) ? source.type.join(', ') : source.type || '-')} · state ${escapeHtml(source.state || '-')} · signatures ${escapeHtml(source.signatures || 'none')}</p>${checks ? `<table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checks}</tbody></table>` : ''}${commandBlock}${approvalUi}<p class="small muted">The source profile is unchanged and no destination profile was created. Plan fingerprint: <code>${escapeHtml(plan.plan_fingerprint || '-')}</code></p></div>`;
+    }
+    function renderOperationCommands(commands) { const list = Array.isArray(commands) ? commands : [commands]; const usable = list.filter(Boolean); if (!usable.length) return '<p class="small muted">No executable command preview is available for this operation.</p>'; return usable.map((item, index) => `<details class="command-preview"><summary>View exact NetScaler command${usable.length > 1 ? ` ${index + 1}` : ''}</summary><p class="small muted">Credentials and session headers are omitted.</p><h5>NITRO request</h5><pre>${escapeHtml(item.nitro ? JSON.stringify(item.nitro, null, 2) : 'No executable NITRO request prepared.')}</pre><p><strong>CLI equivalent:</strong> <code>${escapeHtml(item.cli_equivalent || 'No CLI equivalent prepared.')}</code></p><p class="small muted">${escapeHtml(item.note || '')}</p></details>`).join(''); }
+    function enableDuplicateWriteTests() { if (window.currentDuplicatePlan?.preflight?.status === 'blocked-write-disabled') document.querySelectorAll('.duplicate-apply-button, .duplicate-rollback-button').forEach(button => { button.disabled = false; }); }
+    function renderWafInventory(inventory) {
+      const host = document.querySelector('#waf-inventory');
+      const asRows = value => Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : [];
+      const profiles = asRows(inventory.profiles?.appfwprofile);
+      const policies = asRows(inventory.policies?.appfwpolicy);
+      const signatureCatalog = inventory.signatureCatalog || {};
+      const signatures = signatureCatalog.entries || [];
+      window.selectedSignatureCatalogUrls = window.selectedSignatureCatalogUrls || [];
+      const profileRows = profiles.map(item => `<tr><td>${escapeHtml(item.name || '-')}</td><td>${escapeHtml(item.state || '-')}</td><td>${escapeHtml(Array.isArray(item.type) ? item.type.join(', ') : item.type || '-')}</td><td>${item.builtin ? 'built-in' : 'custom'}</td><td>${String(item.signatures || '').trim() ? 'configured' : 'not enumerated'}</td><td><input class="duplicate-profile-name" maxlength="128" placeholder="new name"><button class="secondary duplicate-profile-button" data-profile-name="${escapeHtml(item.name || '')}">Prepare duplicate plan</button></td></tr>`).join('');
+      const policyRows = policies.map(item => `<tr><td>${escapeHtml(item.policyname || item.name || '-')}</td><td>${escapeHtml(item.action || item.state || '-')}</td><td>${escapeHtml(item.rule || '-')}</td></tr>`).join('');
+      const namedSignatures = signatures.filter(item => item && (item.name || item.signaturename || item.id || item.signatureid));
+      const signatureStatus = signatureCatalog.status === 'enumerated' && namedSignatures.length ? 'enumerated' : 'not available';
+      const sourceOptions = profiles.map(item => `<option value="${escapeHtml(item.name || '')}">${escapeHtml(item.name || '-')}</option>`).join('');
+      const signatureRows = signatures.map(item => { const key = item.url || item.name || ''; const checked = window.selectedSignatureCatalogUrls.includes(key) ? ' checked' : ''; return `<tr><td><label><input type="checkbox" class="signature-select" data-signature-url="${escapeHtml(key)}"${checked}> ${escapeHtml(item.name || '-')}</label></td><td>${escapeHtml(item.url || '-')}</td><td>${escapeHtml(item.base_version || '-')}</td><td>${escapeHtml(item.encrypted_version || '-')}</td><td>${escapeHtml(item.creation_date || '-')}</td></tr>`; }).join('');
+      host.innerHTML = `<h3>NetScaler WAF inventory</h3><p class="small">AppFW profiles: <strong>${profiles.length}</strong> · policies: <strong>${policies.length}</strong> · signature catalogs: <strong>${signatures.length}</strong> · status: <strong>${escapeHtml(signatureStatus)}</strong></p><h4>Available signature catalogs</h4><p class="small muted">Select catalogs for the proposal only. No NetScaler changes are made by selecting them. After selecting catalogs, run a discovery analysis and choose Generate ADC change plan.</p><p id="waf-selection-status" class="small">Selected for proposal: <strong>${window.selectedSignatureCatalogUrls.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Select / name</th><th>File</th><th>Base version</th><th>Encrypted version</th><th>Creation date</th></tr></thead><tbody>${signatureRows}</tbody></table>` : '<p class="small muted">No enumerable signature catalogs returned.</p>'}<div class="card"><h4>Create new custom WAF profile</h4><p class="small muted">Choose an existing profile as the baseline and provide a new custom name. This only prepares a plan; no profile is created automatically.</p><label class="small">Base profile <select class="create-profile-source">${sourceOptions}</select></label><label class="small">Custom profile name <input class="create-profile-name" maxlength="128" placeholder="waf-web-custom"></label><button class="secondary create-profile-plan-button">Prepare profile creation plan</button></div><h4>AppFW profiles</h4>${profileRows ? `<table><thead><tr><th>Name</th><th>State</th><th>Types</th><th>Origin</th><th>Signatures</th><th>Duplicate</th></tr></thead><tbody>${profileRows}</tbody></table>` : '<p class="small muted">No AppFW profiles returned.</p>'}<div id="profile-duplicate-plan"></div><h4>AppFW policies</h4>${policyRows ? `<table><thead><tr><th>Name</th><th>Action / state</th><th>Rule</th></tr></thead><tbody>${policyRows}</tbody></table>` : '<p class="small muted">No AppFW policies returned or policy inventory is unavailable.</p>'}<p class="small muted">The selected catalogs and profile plans are review-only. Write mode remains disabled.</p>`;
+    }
+    function renderEvidenceRows(items, filter = 'all') {
+      return items.filter(item => filter === 'all' || item.evidence_type === filter).map(item => {
+        const source = item.source_url || '';
+        const metadata = escapeHtml(JSON.stringify(item.metadata || {}, null, 2));
+        return `<tr><td>${escapeHtml(item.evidence_type)}</td><td>${source ? `<details><summary><span class="url-short" title="${escapeHtml(source)}">${escapeHtml(source)}</span></summary><div class="small"><a href="${escapeHtml(source)}" target="_blank" rel="noopener noreferrer">Open URL</a></div></details>` : '-'}</td><td>${escapeHtml(item.status_code ?? '-')}</td><td>${escapeHtml(item.technology || '-')}</td><td>${escapeHtml(item.signal || '-')}</td><td class="${escapeHtml(item.confidence || '')}">${escapeHtml(item.confidence || '-')} ${item.confidence_score != null ? `(${Number(item.confidence_score).toFixed(2)})` : ''}</td><td><details><summary>details</summary><pre>${metadata}</pre></details></td></tr>`;
+      }).join('');
+    }
+    function uniqueUrls(items) { return [...new Set(items.map(item => item.source_url).filter(Boolean))]; }
+    function urlDetails(url, detailHtml = '') { const safe = escapeHtml(url); return `<details><summary><span class="url-short" title="${safe}">${safe}</span></summary><div class="small"><a href="${safe}" target="_blank" rel="noopener noreferrer">Open URL</a>${detailHtml ? `<br>${detailHtml}` : ''}</div></details>`; }
+    function urlSummary(label, total, scanned, notScanned) { return `<p class="small muted">${escapeHtml(label)}: <strong>${total}</strong> URLs · scanned: <strong class="high">${scanned}</strong> · not scanned: <strong class="progress">${notScanned}</strong></p>`; }
+    function collapsibleTable(label, count, tableHtml) { return `<details class="url-list-panel"><summary>${escapeHtml(label)} (${count})</summary>${tableHtml}</details>`; }
+    function renderCspReports(payload) { const reports = payload?.reports || []; if (!reports.length) return '<p class="small muted">No CSP reports have been received.</p>'; const rows = reports.map(item => `<tr><td>${escapeHtml(item.received_at || '-')}</td><td>${escapeHtml(item.document_uri || '-')}</td><td>${escapeHtml(item.violated_directive || item.effective_directive || '-')}</td><td>${escapeHtml(item.blocked_uri || '-')}</td><td>${escapeHtml(item.disposition || '-')}</td></tr>`).join(''); return `<table><thead><tr><th>Received</th><th>Document</th><th>Directive</th><th>Blocked URI</th><th>Disposition</th></tr></thead><tbody>${rows}</tbody></table><p class="small muted">${payload.count || reports.length} sanitized report(s); raw payloads are not retained.</p>`; }
+    function renderProfile(profile) {
+      const host = document.querySelector('#profile');
+      window.currentEvidence = profile.evidence || [];
+      const counts = profile.confidence_counts || {};
+      const technologyUrls = [...new Set((profile.technologies || []).flatMap(item => item.source_urls || []))];
+      const rows = (profile.technologies || []).map(item => { const urls = item.source_urls || []; const signalText = (item.signals || []).map(escapeHtml).join('<br>') || '-'; const urlList = urls.map(url => `<li>${urlDetails(url)}</li>`).join('') || '<li>-</li>'; return `<tr><td><details><summary>${escapeHtml(item.technology)}</summary><div class="small"><strong>Signals</strong><p>${signalText}</p><strong>Source URLs (${urls.length})</strong><ul>${urlList}</ul></div></details></td><td class="${escapeHtml(item.confidence)}">${escapeHtml(item.confidence)}</td><td>${Number(item.confidence_score || 0).toFixed(2)}</td><td>${item.evidence_count || 0}</td><td><span class="small muted">Open technology details</span></td></tr>`; }).join('');
+      const candidateItems = profile.route_candidates || [];
+      const candidates = candidateItems.map(item => `<tr><td>${urlDetails(item.source_url, `Source asset: ${escapeHtml(item.metadata?.source_asset || '-')}<br>Not fetched automatically: ${item.metadata?.not_fetched ? 'yes' : 'no'}`)}</td><td>${escapeHtml(item.metadata?.source_asset || '-')}</td><td>${escapeHtml(item.confidence || 'medium')}</td></tr>`).join('');
+      const fetchedRoutes = new Set((profile.route_inventory || []).filter(item => item.evidence_type === 'route').map(item => item.source_url));
+      const discoveredItems = (profile.route_inventory || []).filter(item => item.evidence_type === 'route_discovered');
+      const discoveredScanned = discoveredItems.filter(item => fetchedRoutes.has(item.source_url)).length;
+      const discoveredNotScanned = discoveredItems.length - discoveredScanned;
+      const discoveredRoutes = discoveredItems.map(item => `<tr><td>${urlDetails(item.source_url, `Source: ${escapeHtml(item.metadata?.discovery_source || '-')}<br>Confidence: ${escapeHtml(item.confidence || '-')} (${Number(item.confidence_score || 0).toFixed(2)})<br>Signal: ${escapeHtml(item.signal || '-')}`)}</td><td>${fetchedRoutes.has(item.source_url) ? '<span class="high">fetched</span>' : '<span class="progress">not fetched</span>'}</td></tr>`).join('');
+      const searchItems = profile.search_surfaces || [];
+      const searchUrls = uniqueUrls(searchItems);
+      const searchSurfaces = searchItems.map(item => `<tr><td>${urlDetails(item.source_url, `Detected surfaces: ${item.surfaces.length}`)}</td><td>${item.surfaces.map(surface => `${escapeHtml(surface.tag)} · ${escapeHtml(surface.type || 'text')} · ${escapeHtml(surface.id || surface.name || surface.aria_label || '-')} `).join('<br>')}</td><td>observed only</td></tr>`).join('');
+      const fieldGroups = Object.values((profile.field_formats || []).reduce((groups, item) => { const key = item.source_url || ''; (groups[key] ||= []).push(item); return groups; }, {}));
+      const fieldFormats = fieldGroups.map(group => { const sourceUrl = group[0]?.source_url || ''; const requiredCount = group.filter(item => item.required).length; const detail = group.map(item => { const field = item.name || item.id || '-'; const format = Object.entries(item.format || {}).filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`).join(' · ') || 'not specified'; return `<div>${escapeHtml(item.tag)} · <strong>${escapeHtml(field)}</strong> · ${escapeHtml(format)} · ${item.required ? '<span class="high">required</span>' : 'optional'}</div>`; }).join(''); return `<tr><td>${urlDetails(sourceUrl, `${group.length} field(s)<br>${detail}`)}</td><td>${group.length} field(s)</td><td><span class="small muted">Open details</span></td><td>${requiredCount ? `<span class="high">${requiredCount} required</span>` : 'none required'}</td></tr>`; }).join('');
+      const evidenceTypes = [...new Set(window.currentEvidence.map(item => item.evidence_type))].sort();
+      const evidenceUrls = uniqueUrls(window.currentEvidence);
+      const technologySection = rows ? `<h4>Technologies</h4>${urlSummary('Technology source URLs', technologyUrls.length, technologyUrls.length, 0)}${collapsibleTable('Show technology findings', (profile.technologies || []).length, `<table><thead><tr><th>Technology</th><th>Confidence</th><th>Score</th><th>Evidence</th><th>Details</th></tr></thead><tbody>${rows}</tbody></table>`)}` : '<p class="muted">No technology signals were observed.</p>';
+      const discoveredSection = discoveredItems.length ? `<h4>Discovered subpages</h4>${urlSummary('Discovered URLs', discoveredItems.length, discoveredScanned, discoveredNotScanned)}<p class="small muted">Found in HTML links or JavaScript and crawled only when inside the selected scope.</p>${collapsibleTable('Show all discovered URLs', discoveredItems.length, `<table><thead><tr><th>URL</th><th>State</th></tr></thead><tbody>${discoveredRoutes}</tbody></table>`)}` : '';
+      const candidateSection = candidateItems.length ? `<h4>Static route candidates (not fetched)</h4>${urlSummary('Candidate URLs', candidateItems.length, 0, candidateItems.length)}${collapsibleTable('Show all candidate URLs', candidateItems.length, `<table><thead><tr><th>Candidate URL</th><th>Source asset</th><th>Confidence</th></tr></thead><tbody>${candidates}</tbody></table>`)}` : '';
+      const searchSection = searchItems.length ? `<h4>Search surfaces</h4>${urlSummary('Search source URLs', searchUrls.length, searchUrls.length, 0)}<p class="small muted">Detected from markup; no search values were entered or submitted.</p>${collapsibleTable('Show all search surfaces', searchItems.length, `<table><thead><tr><th>Source page</th><th>Component / field</th><th>State</th></tr></thead><tbody>${searchSurfaces}</tbody></table>`)}` : '';
+      const fieldSection = fieldGroups.length ? `<h4>Form fields and formats</h4>${urlSummary('Form source URLs', fieldGroups.length, fieldGroups.length, 0)}<p class="small muted">Formats are taken from field attributes; field values are never stored.</p>${collapsibleTable('Show all form URLs and fields', fieldGroups.length, `<table><thead><tr><th>Found on URL</th><th>Fields</th><th>Details</th><th>Required</th></tr></thead><tbody>${fieldFormats}</tbody></table>`)}` : '';
+      const evidenceSection = window.currentEvidence.length ? `<h4>All evidence (${window.currentEvidence.length})</h4>${urlSummary('Evidence source URLs', evidenceUrls.length, evidenceUrls.length, 0)}<label class="small">Filter type <select id="evidence-filter"><option value="all">All</option>${evidenceTypes.map(type => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('')}</select></label>${collapsibleTable('Show all evidence rows', window.currentEvidence.length, `<table><thead><tr><th>Type</th><th>Source URL</th><th>Status</th><th>Technology</th><th>Signal</th><th>Confidence</th><th>Metadata</th></tr></thead><tbody id="all-evidence-body">${renderEvidenceRows(window.currentEvidence)}</tbody></table>`)}` : '';
+      host.innerHTML = `<h3>Technology profile <span class="small muted">${escapeHtml(profile.run_id)}</span></h3><p class="small">${profile.technology_count || 0} technologies · ${profile.evidence_count || 0} total evidence rows · <span class="high">${counts.high || 0} high</span> · <span class="medium">${counts.medium || 0} medium</span> · <span class="low">${counts.low || 0} low</span></p><button class="secondary analysis-button" data-job="${escapeHtml(profile.run_id)}">Generate analysis</button> <button class="secondary runtime-button" data-job="${escapeHtml(profile.run_id)}">Inspect runtime forms</button>` + technologySection + discoveredSection + candidateSection + searchSection + fieldSection + evidenceSection + '<div id="analysis"></div>';
+    }
+    function renderAnalysis(analysis) {
+      const host = document.querySelector('#analysis');
+      const architecture = (analysis.likely_architecture || []).map(escapeHtml).join(', ') || 'Not determined';
+      const protections = (analysis.candidate_protection_areas || []).map(item => `<li><span class="${item.priority === 'high' ? 'high' : 'medium'}">${escapeHtml(item.priority)}</span> · ${escapeHtml(item.area)} — ${escapeHtml(item.reason)}</li>`).join('');
+      const gaps = (analysis.evidence_gaps || []).map(escapeHtml).map(item => `<li>${item}</li>`).join('');
+      const headers = (analysis.security_headers || []).map(item => `<tr><td>${escapeHtml(item.header)}</td><td class="${item.observed ? 'high' : 'low'}">${item.observed ? 'observed' : 'missing'}</td><td>${escapeHtml(item.deployment_mode)}</td><td><code>${escapeHtml(item.observed_values?.join(' | ') || item.suggested_value)}</code></td><td>${escapeHtml(item.reason)}</td></tr>`).join('');
+      const protectionPlan = analysis.protection_plan || {};
+      const application = protectionPlan.application || {};
+      const profileRecommendation = protectionPlan.profile_recommendation || {};
+      const signatureRows = (protectionPlan.signature_recommendations || []).map(item => `<tr><td><details><summary>${escapeHtml(item.name || item.catalog_key)}</summary><div class="small"><strong>Catalog key:</strong> ${escapeHtml(item.catalog_key)}<br><strong>Category:</strong> ${escapeHtml(item.category)}<br><strong>Reason:</strong> ${escapeHtml(item.reason)}<br><strong>Source:</strong> ${escapeHtml(item.source)}<br><strong>ADC catalog match:</strong> ${item.requires_adc_catalog_match ? 'required' : 'not required'}</div></details></td><td>${escapeHtml(item.priority)}</td><td>${escapeHtml(item.deployment_mode)}</td><td>${escapeHtml(item.status)}</td></tr>`).join('');
+      const customRows = (protectionPlan.custom_signature_proposals || []).map(item => `<tr><td><details><summary>${escapeHtml(item.name || item.proposal_id)}</summary><div class="small"><strong>Type:</strong> ${escapeHtml(item.kind)}<br><strong>Match location:</strong> ${escapeHtml(item.match_location)}<br><strong>Observed values:</strong> ${escapeHtml((item.observed_values || []).join(', '))}<br><strong>Suggested action:</strong> ${escapeHtml(item.suggested_action)}<br><strong>Reason:</strong> ${escapeHtml(item.reason)}</div></details></td><td>${escapeHtml(item.deployment_mode)}</td><td>${escapeHtml(item.status)}</td></tr>`).join('');
+      const planSection = `<h4>WAF protection and signature plan</h4><p class="small muted">Proposal only · selected from technology and application evidence; no NetScaler changes applied.</p><p><strong>Primary technology:</strong> ${escapeHtml(application.primary_technology?.technology || 'Undetermined')} (${escapeHtml(application.primary_technology?.confidence || 'low')}) · <strong>Profile candidate:</strong> ${escapeHtml(profileRecommendation.candidate || 'not determined')}</p><table><thead><tr><th>Recommended signature group</th><th>Priority</th><th>Mode</th><th>Status</th></tr></thead><tbody>${signatureRows || '<tr><td colspan="4">No signature groups selected.</td></tr>'}</tbody></table><h5>Application-specific custom signature proposals</h5><p class="small muted">These are scoped context proposals from observed routes and field names, not generated attack payloads.</p><table><thead><tr><th>Proposal</th><th>Mode</th><th>Status</th></tr></thead><tbody>${customRows || '<tr><td colspan="3">No application-specific proposals generated.</td></tr>'}</tbody></table>`;
+      host.innerHTML = `<div class="card"><h3>Evidence analysis</h3><p class="small muted">${escapeHtml(analysis.analysis_mode)} · ${analysis.observation_count || 0} sanitized observations</p><p><strong>Likely architecture:</strong> ${architecture}</p><p><strong>Candidate protection areas:</strong></p><ul>${protections || '<li>None identified</li>'}</ul>${planSection}<h4>Technology-based signature set</h4><p class="small muted">Build an editable signature-catalog proposal from this discovery and the currently connected ADC. Nothing is written automatically.</p><label class="small">New profile name <input id="signature-set-destination" maxlength="128" placeholder="waf-web-signatures"></label><button class="secondary signature-set-prepare-button" data-job="${escapeHtml(analysis.run_id)}">Prepare signature set</button><div id="signature-set"></div><h4>Security headers and LB response proposal</h4><p class="small muted">Proposal only · no NetScaler changes applied. CSP is intentionally Report-Only until application resources are confirmed. CSP reports can be collected at <code>${escapeHtml(analysis.csp_report_uri || '/api/csp/report')}</code>; raw report payloads are not retained.</p><table><thead><tr><th>Header</th><th>State</th><th>Mode</th><th>Observed / suggested value</th><th>Reason</th></tr></thead><tbody>${headers}</tbody></table><button class="secondary csp-reports-button">Show recent CSP reports</button><div id="csp-reports"></div><p><strong>Evidence gaps:</strong></p><ul>${gaps || '<li>None identified</li>'}</ul><button class="secondary plan-button" data-job="${escapeHtml(analysis.run_id)}">Generate ADC change plan</button><div id="adc-plan"></div><p class="small muted">${escapeHtml(analysis.change_recommendation)}</p></div>`;
+    }
+    function renderSignatureSet(set) {
+      window.currentSignatureSet = set;
+      const rows = (set.available_signatures || []).map(item => `<tr><td><label><input type="checkbox" class="signature-set-select" data-url="${escapeHtml(item.url || '')}"${item.selected ? ' checked' : ''}> ${escapeHtml(item.name || item.url || '-')}</label></td><td>${escapeHtml(item.url || '-')}</td><td>${item.recommended ? '<span class="high">recommended</span>' : 'available'}</td><td>${item.baseline ? '<span class="high">baseline</span>' : '-'}</td><td>${escapeHtml((item.matching_catalog_keys || []).join(', ') || '-')}</td><td>${escapeHtml(item.reason || '-')}</td></tr>`).join('');
+      const selected = set.selected_signature_urls || [];
+      const commands = set.commands || {};
+      const commandBlock = `<details class="command-preview"><summary>View exact NetScaler commands before write</summary><p class="small muted">The NITRO request is the exact sanitized write shape. Credentials and session headers are omitted.</p><h5>Create and bind</h5><pre>${escapeHtml(JSON.stringify(commands.create?.nitro || null, null, 2))}</pre><p><strong>CLI equivalent:</strong> <code>${escapeHtml(commands.create?.cli_equivalent || 'Not executable until exactly one catalog is selected.')}</code></p><h5>Enable</h5><pre>${escapeHtml(JSON.stringify(commands.enable?.nitro || null, null, 2))}</pre><p><strong>CLI equivalent:</strong> <code>${escapeHtml(commands.enable?.cli_equivalent || 'Not available')}</code></p><h5>Rollback</h5><pre>${escapeHtml(JSON.stringify(commands.rollback?.nitro || null, null, 2))}</pre><p><strong>CLI equivalent:</strong> <code>${escapeHtml(commands.rollback?.cli_equivalent || '-')}</code></p></details>`;
+      const preflight = set.preflight || {};
+      const controls = set.status === 'approved' ? (preflight.preview_id ? `<p><strong>Preflight:</strong> <span class="${preflight.status === 'ready-for-apply' ? 'high' : 'progress'}">${escapeHtml(preflight.status || '-')}</span></p><p class="small muted">${preflight.write_enabled ? 'Write mode is enabled.' : 'Write mode is disabled. Test apply will return a guarded HTTP 403 without contacting the ADC.'}</p><label class="small">Type <code>ENABLE WRITE</code><input id="signature-set-write-phrase" maxlength="64" placeholder="ENABLE WRITE"></label><button class="secondary signature-set-apply-button">${preflight.write_enabled ? 'Apply and enable new signatures' : 'Test guarded apply (write disabled)'}</button><button class="secondary signature-set-rollback-button">Rollback signature set</button><p id="signature-set-write-status" class="small muted"></p>` : `<button class="secondary signature-set-preflight-button">Run signature-set preflight</button><p id="signature-set-preflight-status" class="small muted"></p>`) : `<label class="small">Approval phrase <input id="signature-set-approval-phrase" maxlength="64" placeholder="APPROVE SIGNATURE SET"></label><button class="secondary signature-set-approve-button">Approve signature set</button><p id="signature-set-approval-status" class="small muted"></p>`;
+      return `<div class="card"><h4>Editable signature-set proposal</h4><p><strong>Technology:</strong> ${escapeHtml(set.technology_context?.primary_technology?.technology || 'Undetermined')} · <strong>Source:</strong> ${escapeHtml(set.source_profile || '-')} · <strong>Destination:</strong> ${escapeHtml(set.destination_profile || '-')}</p><p class="small muted">${escapeHtml(set.note || '')}</p><p><strong>Status:</strong> ${escapeHtml(set.status || 'draft')} · <strong>Selected:</strong> ${selected.length} · <strong>Added:</strong> ${(set.added_signature_urls || []).length} · <strong>Removed:</strong> ${(set.removed_signature_urls || []).length}</p><table><thead><tr><th>Use</th><th>ADC catalog</th><th>Discovery filter</th><th>Baseline</th><th>Matched technology groups</th><th>Reason</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No signature catalogs were returned by the ADC.</td></tr>'}</tbody></table>${set.status !== 'approved' && set.status !== 'applied' ? `<button class="secondary signature-set-save-button">Save Add/Remove changes</button>` : ''}${commandBlock}${controls}<p class="small muted">Signature set fingerprint: <code>${escapeHtml(set.plan_fingerprint || '-')}</code></p></div>`;
+    }
+    function renderCustomSignatureReview(customList) {
+      const sources = customList.source_catalogs || [];
+      const scope = customList.application_scope || {};
+      const reviewItems = customList.review_items || [];
+      const sourceRows = sources.map(item => `<tr><td>${escapeHtml(item.name || '-')}</td><td>${escapeHtml(item.url || '-')}</td><td>${escapeHtml(item.base_version || '-')}</td><td>${escapeHtml(item.encrypted_version || '-')}</td></tr>`).join('');
+      const reviewRows = reviewItems.map(item => `<tr><td>${escapeHtml(item.check || '-')}</td><td class="${item.status === 'ready' || item.status === 'Log' ? 'high' : item.status === 'blocked' ? 'low' : 'progress'}">${escapeHtml(item.status || '-')}</td><td>${escapeHtml(item.detail || '-')}</td></tr>`).join('');
+      const routes = (scope.routes || []).map(escapeHtml).join(', ') || 'none observed';
+      const fields = (scope.field_names || []).map(escapeHtml).join(', ') || 'none observed';
+      return `<h4>Custom signature list proposal</h4><p><strong>Name:</strong> ${escapeHtml(customList.name || '-')} · <strong>Status:</strong> ${escapeHtml(customList.status || 'not prepared')} · <strong>Mode:</strong> ${escapeHtml(customList.deployment_mode || 'Log')} · <strong>Catalogs:</strong> ${customList.catalog_count || 0}</p><p class="small muted">${escapeHtml(customList.note || 'No custom signature list proposal generated.')}</p>${sourceRows ? `<details class="url-list-panel"><summary>Show selected ADC catalogs (${sources.length})</summary><table><thead><tr><th>Name</th><th>ADC resource</th><th>Base version</th><th>Encrypted version</th></tr></thead><tbody>${sourceRows}</tbody></table></details>` : '<p class="small muted">No ADC catalogs selected. Select one or more catalogs in the WAF inventory before regenerating this plan.</p>'}<p class="small"><strong>Application scope:</strong> ${scope.route_count || 0} route(s), ${scope.field_count || 0} field name(s)<br><strong>Routes:</strong> ${routes}<br><strong>Field names:</strong> ${fields}</p>${reviewRows ? `<details class="url-list-panel"><summary>Show review checklist (${reviewItems.length})</summary><table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${reviewRows}</tbody></table></details>` : ''}`;
+    }
+    function renderApplyGuard(plan, preview) {
+      const selected = plan.adc_catalog_match?.selected_signature_catalogs || [];
+      const singleCatalog = selected.length === 1;
+      const canAttempt = ['ready-for-apply', 'blocked-write-disabled'].includes(preview.status) && singleCatalog;
+      const reason = preview.status !== 'ready-for-apply' ? 'Preflight is not ready for apply.' : !preview.write_enabled ? 'Write mode is disabled; the server will reject the request before contacting the ADC.' : !singleCatalog ? 'Multi-catalog apply remains review-only until the ADC binding model is confirmed.' : 'Type ENABLE WRITE to authorize the guarded write.';
+      const selectedProfile = plan.adc_catalog_match?.selected_profile || {};
+      const selectedCatalog = selected[0] || {};
+      const command = selectedProfile.name && selectedCatalog.name ? {nitro: {method: 'PUT', path: '/nitro/v1/config/appfwprofile', body: {appfwprofile: {name: selectedProfile.name, signatures: selectedCatalog.name}}}, cli_equivalent: `set appfw profile ${selectedProfile.name} -signatures ${selectedCatalog.name}`} : null;
+      return `<h5>Apply guard</h5><p class="small muted">${escapeHtml(reason)} No automatic ADC changes are made.</p><details class="command-preview"><summary>View exact NetScaler command before write</summary><p class="small muted">Credentials and session headers are omitted.</p><pre>${escapeHtml(command ? JSON.stringify(command.nitro, null, 2) : 'No executable command is available until one profile and one catalog are selected.')}</pre><p><strong>CLI equivalent:</strong> <code>${escapeHtml(command?.cli_equivalent || 'Not available')}</code></p></details><label class="small">Type <code>ENABLE WRITE</code><input id="write-confirmation-phrase" maxlength="64" placeholder="ENABLE WRITE"></label><button class="secondary apply-write-button" data-job="${escapeHtml(plan.job_id || '')}"${canAttempt ? '' : ' disabled'}>${preview.write_enabled ? 'Apply guarded change' : 'Test guarded apply (write disabled)'}</button><p id="apply-write-status" class="small muted"></p>`;
+    }
+    function renderPreflightPreview(preview, plan) {
+      const checks = (preview.checks || []).map(item => `<tr><td>${escapeHtml(item.name || '-')}</td><td class="${item.status === 'passed' ? 'high' : 'low'}">${escapeHtml(item.status || '-')}</td><td>${escapeHtml(item.detail || '-')}</td></tr>`).join('');
+      const rollback = preview.rollback_snapshot || {};
+      const restore = (rollback.restore_operations || []).map(item => `${escapeHtml(item.profile_name || '-')} · previous binding: ${escapeHtml(item.previous_signature_binding || 'none')}`).join(', ') || 'none';
+      return `<h5>Pre-write validation preview</h5><p><strong>Status:</strong> <span class="${preview.status === 'blocked-write-disabled' ? 'progress' : preview.status === 'ready-for-apply' ? 'high' : 'low'}">${escapeHtml(preview.status || '-')}</span> · <strong>Changes applied:</strong> ${preview.changes_applied ? 'yes' : 'no'}</p><p class="small">Configuration fingerprint: <code>${escapeHtml(preview.current_configuration_fingerprint || '-')}</code></p>${checks ? `<table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checks}</tbody></table>` : ''}<p class="small"><strong>Rollback snapshot:</strong> ${escapeHtml(rollback.status || '-')} · ${restore}</p>${renderApplyGuard(plan, preview)}`;
+    }
+    function renderPlanApprovalControls(plan) {
+      const approval = plan.approval || {};
+      const selectedCount = plan.custom_signature_list?.catalog_count || 0;
+      const blockers = plan.blocking_conditions || [];
+      if (approval.status === 'approved') return `<h4>Plan approval</h4><p class="connected-message"><strong>Approved for review:</strong> ${escapeHtml(approval.approval_id || 'recorded')} · expires ${escapeHtml(approval.expires_at || '-')}</p><p class="small muted">This approval is bound to fingerprint <code>${escapeHtml(approval.plan_fingerprint || plan.plan_fingerprint || '-')}</code>. No ADC change was applied.</p>${plan.preflight ? renderPreflightPreview(plan.preflight, plan) : `<button class="secondary preflight-button" data-job="${escapeHtml(plan.job_id || '')}">Run pre-write validation preview</button><p id="preflight-status" class="small muted"></p>`}`;
+      const disabled = !selectedCount || blockers.length ? ' disabled' : '';
+      const reason = !selectedCount ? 'Select at least one current ADC catalog.' : blockers.length ? 'Resolve the blocking conditions before approval.' : 'Approval only authorizes this exact plan for a future write attempt.';
+      return `<h4>Plan approval</h4><p class="small muted">${escapeHtml(reason)} Fingerprint: <code>${escapeHtml(plan.plan_fingerprint || '-')}</code></p><label class="small">Type <code>APPROVE PLAN</code><input id="plan-approval-phrase" maxlength="64" placeholder="APPROVE PLAN"></label><button class="secondary approve-plan-button" data-job="${escapeHtml(plan.job_id || plan.target?.job_id || '')}"${disabled}>Approve exact plan</button><p id="plan-approval-status" class="small muted"></p>`;
+    }
+    function renderAdcPlan(plan) {
+      const host = document.querySelector('#adc-plan');
+      window.currentAdcPlan = plan;
+      const target = plan.target || {};
+      const headers = (plan.header_plan || []).map(item => `<tr><td>${escapeHtml(item.header)}</td><td class="${item.observed ? 'high' : 'low'}">${item.observed ? 'retain and validate' : 'add to plan'}</td><td>${escapeHtml(item.note)}</td></tr>`).join('');
+      const outline = (plan.implementation_outline || []).map(escapeHtml).map(item => `<li>${item}</li>`).join('');
+      const rollback = (plan.rollback_outline || []).map(escapeHtml).map(item => `<li>${item}</li>`).join('');
+      const blocking = (plan.blocking_conditions || []).map(escapeHtml).map(item => `<li>${item}</li>`).join('');
+      const catalog = plan.adc_catalog_match || {};
+      const selectedProfile = catalog.selected_profile || {};
+      const catalogRows = (catalog.signature_recommendations || []).map(item => `<tr><td>${escapeHtml(item.catalog_key)}</td><td>${escapeHtml(item.adc_profile_match || '-')}</td><td>${escapeHtml(item.adc_signature_match_status || '-')}</td><td>${item.deployment_ready ? '<span class="high">ready</span>' : '<span class="progress">review required</span>'}</td></tr>`).join('');
+      const selectedCatalogs = catalog.selected_signature_catalogs || [];
+      const availableCatalogRows = (catalog.signature_catalog || catalog.signature_inventory?.entries || []).map(item => `<tr><td>${escapeHtml(item.name || '-')}</td><td>${escapeHtml(item.url || '-')}</td><td>${selectedCatalogs.some(selected => selected.url === item.url) ? '<span class="high">selected</span>' : 'not selected'}</td></tr>`).join('');
+      const customList = plan.custom_signature_list || {};
+      const customRoutes = customList.application_scope?.routes || [];
+      const customFields = customList.application_scope?.field_names || [];
+      const operations = (plan.write_plan?.operations || []).map(item => `<tr><td><details><summary>${escapeHtml(item.operation_id)}</summary><div class="small"><strong>Resource:</strong> ${escapeHtml(item.resource)}<br><strong>Action:</strong> ${escapeHtml(item.action)}<br><strong>Mode:</strong> ${escapeHtml(item.mode)}<br><strong>Status:</strong> ${escapeHtml(item.status)}<br><strong>Drift check:</strong> ${item.requires_drift_check ? 'required' : 'not required'}</div>${item.commands ? renderOperationCommands(item.commands) : ''}</details></td><td>${escapeHtml(item.mode)}</td><td>${escapeHtml(item.status)}</td></tr>`).join('');
+      const writePlan = plan.write_plan || {};
+      host.innerHTML = `<h4>ADC change plan</h4><p class="small muted">${escapeHtml(plan.plan_status)} · approval required · changes applied: ${plan.changes_applied}</p><p><strong>Target:</strong> ${escapeHtml(target.vip || '-')} · ${escapeHtml(target.lb_vserver || 'No matching LB vServer')} · port ${escapeHtml(target.port || '-')} · ${escapeHtml(target.state || '-')}</p><p><strong>CSP mode:</strong> ${escapeHtml(plan.csp_mode || 'Report-Only')}</p><h4>ADC catalog match</h4><p class="small muted">Status: ${escapeHtml(catalog.status || 'unavailable')} · ADC version: ${escapeHtml(catalog.adc_version || 'unknown')} · profiles: ${catalog.profile_count || 0}</p><p><strong>Selected AppFW profile:</strong> ${escapeHtml(selectedProfile.name || 'None')} · <strong>Signature inventory:</strong> ${escapeHtml(catalog.signature_inventory?.status || 'unavailable')} · <strong>Selected catalogs:</strong> ${selectedCatalogs.length}</p>${availableCatalogRows ? `<table><thead><tr><th>Available catalog</th><th>File</th><th>Selection</th></tr></thead><tbody>${availableCatalogRows}</tbody></table>` : ''}${catalogRows ? `<table><thead><tr><th>Recommended group</th><th>Matched profile</th><th>Signature status</th><th>Deployment</th></tr></thead><tbody>${catalogRows}</tbody></table>` : '<p class="small muted">No recommended signature groups available.</p>'}${renderCustomSignatureReview(customList)}${renderPlanApprovalControls(plan)}<h4>Prepared write operations</h4><p class="small muted">Write mode is disabled. No ADC write request was sent. Exact confirmation required: <code>${escapeHtml(writePlan.confirmation_phrase || 'ENABLE WRITE')}</code></p>${operations ? `<table><thead><tr><th>Operation</th><th>Mode</th><th>Status</th></tr></thead><tbody>${operations}</tbody></table>` : '<p class="small muted">No write operations prepared.</p>'}<table><thead><tr><th>Header</th><th>Action</th><th>Note</th></tr></thead><tbody>${headers}</tbody></table><p><strong>Implementation outline:</strong></p><ol>${outline}</ol><p><strong>Rollback outline:</strong></p><ol>${rollback}</ol>${blocking ? `<p><strong>Blocking conditions:</strong></p><ul>${blocking}</ul>` : ''}`;
+    }
+    let jobsTimer;
+    async function loadJobs() {
+      try { const jobs = await api('/api/discovery/jobs'); renderJobs(jobs); const active = jobs.some(job => job.status === 'queued' || job.status === 'running'); if (active && !jobsTimer) jobsTimer = setInterval(loadJobs, 2000); if (!active && jobsTimer) { clearInterval(jobsTimer); jobsTimer = null; } } catch (error) { document.querySelector('#jobs').textContent = 'Discovery service unavailable'; }
+    }
+    async function loadSavedNetScalers() {
+      const host = document.querySelector('#saved-netscalers');
+      try { const items = await api('/api/netscalers'); host.innerHTML = items.length ? '<h3>Saved connections</h3><table><thead><tr><th>NSIP</th><th>Version</th><th></th></tr></thead><tbody>' + items.map(item => `<tr><td>${escapeHtml(item.nsip)}</td><td>${escapeHtml(item.version)}</td><td><button class="secondary reconnect-button" data-connection="${escapeHtml(item.id)}">Connect</button></td></tr>`).join('') + '</tbody></table>' : '<p class="small muted">No saved connections.</p>'; } catch (error) { host.textContent = 'Saved connections unavailable.'; }
+    }
+    async function loadWafInventory() {
+      const status = document.querySelector('#waf-status');
+      const button = document.querySelector('#load-waf-inventory');
+      button.disabled = true;
+      button.textContent = 'Loading WAF inventory...';
+      status.textContent = 'Reading AppFW profiles, policies, and signature inventory...';
+      try {
+        const [profiles, policies, signatureCatalog] = await Promise.all([api('/api/adc/appfw/profiles'), api('/api/adc/appfw/policies'), api('/api/adc/signatures/catalog')]);
+        renderWafInventory({profiles, policies, signatureCatalog});
+        status.textContent = 'WAF inventory loaded in read-only mode.';
+      } catch (error) {
+        status.textContent = 'Unable to load WAF inventory. Connect to a reachable NetScaler first.';
+        document.querySelector('#waf-inventory').textContent = '';
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Reload WAF inventory';
+      }
+    }
+    async function load() {
+      const platform = await api('/api/platform');
+      document.querySelector('#platform').textContent = `${platform.status} (${platform.mode})`;
+      await loadSavedNetScalers();
+      await loadJobs();
+    }
+    load().catch(error => console.error('GUI load failed', error));
+    document.querySelector('#discovery-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const paths = document.querySelector('#allowed-paths').value.split(',').map(value => value.trim()).filter(Boolean);
+      const payload = { seed_url: document.querySelector('#seed-url').value.trim(), allowed_paths: paths, max_pages: Number(document.querySelector('#max-pages').value), rate_limit_per_second: 1 };
+      const status = document.querySelector('#discovery-status');
+      status.textContent = 'Queueing passive discovery...';
+      try { await fetch('/api/discovery/jobs', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); }); status.textContent = 'Discovery job queued.'; await loadJobs(); }
+      catch (error) { status.textContent = 'Unable to queue discovery job.'; }
+    });
+    document.querySelector('#adc-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const status = document.querySelector('#adc-status');
+      status.textContent = 'Connecting to NetScaler...';
+      const payload = { nsip: document.querySelector('#nsip').value.trim(), username: document.querySelector('#adc-username').value.trim(), password: document.querySelector('#adc-password').value, save_credentials: document.querySelector('#save-credentials').checked };
+      try { const result = await fetch('/api/netscalers/connect', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(async response => { if (!response.ok) throw new Error(await response.text()); return response.json(); }); setConnected(result, result.credentials_saved ? 'Connected. Encrypted credentials saved.' : 'Connected. Credentials were not persisted.'); document.querySelector('#adc-password').value = ''; await loadSavedNetScalers(); }
+      catch (error) { status.textContent = 'Unable to connect to NetScaler. Check NSIP and credentials.'; }
+    });
+    document.querySelector('#saved-netscalers').addEventListener('click', async event => {
+      const button = event.target.closest('.reconnect-button');
+      if (!button) return;
+      const status = document.querySelector('#adc-status');
+      status.textContent = 'Connecting to saved NetScaler...';
+      try { const result = await api(`/api/netscalers/${encodeURIComponent(button.dataset.connection)}/connect`, {method: 'POST'}); setConnected(result, 'Connected using encrypted saved credentials.'); await loadSavedNetScalers(); }
+      catch (error) { status.textContent = 'Unable to reconnect to saved NetScaler.'; }
+    });
+    function setConnected(result, message) { window.currentConnectionId = result.connection_id; document.querySelector('#connected-adc').textContent = `${result.nsip} · ${result.version}`; const status = document.querySelector('#adc-status'); status.textContent = message; status.classList.add('connected-message'); document.querySelector('#connect-menu').hidden = true; document.querySelector('#saved-netscalers').hidden = true; document.querySelector('#disconnect-button').hidden = false; loadWafInventory(); }
+    document.querySelector('#disconnect-button').addEventListener('click', async () => { const status = document.querySelector('#adc-status'); status.classList.remove('connected-message'); status.textContent = 'Disconnecting...'; try { if (window.currentConnectionId) await api(`/api/netscalers/${encodeURIComponent(window.currentConnectionId)}/disconnect`, {method: 'POST'}); } catch (error) {} window.currentConnectionId = null; document.querySelector('#connected-adc').textContent = 'Not connected'; status.textContent = 'Disconnected.'; document.querySelector('#connect-menu').hidden = false; document.querySelector('#saved-netscalers').hidden = false; document.querySelector('#disconnect-button').hidden = true; });
+    document.querySelector('#load-waf-inventory').addEventListener('click', loadWafInventory);
+    document.querySelector('#waf-inventory').addEventListener('change', event => {
+      const checkbox = event.target.closest('.signature-select');
+      if (!checkbox) return;
+      const selected = new Set(window.selectedSignatureCatalogUrls || []);
+      if (checkbox.checked) selected.add(checkbox.dataset.signatureUrl); else selected.delete(checkbox.dataset.signatureUrl);
+      window.selectedSignatureCatalogUrls = [...selected];
+      const status = document.querySelector('#waf-selection-status');
+      if (status) status.innerHTML = `Selected for proposal: <strong>${selected.size}</strong>`;
+    });
+    document.querySelector('#waf-inventory').addEventListener('click', async event => {
+      const button = event.target.closest('.duplicate-profile-button');
+      const createButton = event.target.closest('.create-profile-plan-button');
+      const approveButton = event.target.closest('.duplicate-approve-button');
+      const preflightButton = event.target.closest('.duplicate-preflight-button');
+      const applyButton = event.target.closest('.duplicate-apply-button');
+      const rollbackButton = event.target.closest('.duplicate-rollback-button');
+      const duplicatePlan = window.currentDuplicatePlan || {};
+      if (approveButton) {
+        const phrase = document.querySelector('#duplicate-approval-phrase')?.value || '';
+        const status = document.querySelector('#duplicate-approval-status');
+        if (phrase !== 'APPROVE PLAN') { if (status) status.textContent = 'Type APPROVE PLAN exactly to continue.'; return; }
+        approveButton.disabled = true;
+        approveButton.textContent = 'Recording approval...';
+        try {
+          const result = await api('/api/adc/appfw/profiles/duplicate-plan/approve', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({source_profile: duplicatePlan.source_profile, destination_profile: duplicatePlan.proposed_profile_name, plan_fingerprint: duplicatePlan.plan_fingerprint, approval_phrase: phrase})});
+          duplicatePlan.approval = result;
+          const panel = document.querySelector('#profile-duplicate-plan');
+          if (panel) panel.innerHTML = renderDuplicateProfilePlan(duplicatePlan);
+          enableDuplicateWriteTests();
+        } catch (error) { approveButton.disabled = false; approveButton.textContent = 'Approve exact duplicate plan'; if (status) status.textContent = 'Approval failed. Regenerate the duplicate plan and try again.'; }
+        return;
+      }
+      if (preflightButton) {
+        preflightButton.disabled = true;
+        preflightButton.textContent = 'Validating current ADC state...';
+        try {
+          duplicatePlan.preflight = await api('/api/adc/appfw/profiles/duplicate-plan/preflight', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({source_profile: duplicatePlan.source_profile, destination_profile: duplicatePlan.proposed_profile_name, approval_id: duplicatePlan.approval?.approval_id, plan_fingerprint: duplicatePlan.plan_fingerprint})});
+          const panel = document.querySelector('#profile-duplicate-plan');
+          if (panel) panel.innerHTML = renderDuplicateProfilePlan(duplicatePlan);
+          enableDuplicateWriteTests();
+        } catch (error) { preflightButton.disabled = false; preflightButton.textContent = 'Run duplicate-profile preflight'; const status = document.querySelector('#duplicate-preflight-status'); if (status) status.textContent = 'Preflight failed. Regenerate and re-approve the duplicate plan.'; }
+        return;
+      }
+      if (applyButton || rollbackButton) {
+        const phrase = document.querySelector('#duplicate-write-confirmation')?.value || '';
+        const status = document.querySelector('#duplicate-write-status');
+        if (phrase !== 'ENABLE WRITE') { if (status) status.textContent = 'Type ENABLE WRITE exactly to continue.'; return; }
+        const isRollback = Boolean(rollbackButton);
+        const activeButton = applyButton || rollbackButton;
+        activeButton.disabled = true;
+        activeButton.textContent = isRollback ? 'Rolling back...' : 'Applying guarded change...';
+        try {
+          const endpoint = isRollback ? '/api/adc/writes/appfw-profile-duplicate/rollback' : '/api/adc/writes/appfw-profile-duplicate';
+          const result = await api(endpoint, {method: isRollback ? 'POST' : 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({source_profile: duplicatePlan.source_profile, destination_profile: duplicatePlan.proposed_profile_name, approval_id: duplicatePlan.approval?.approval_id, plan_fingerprint: duplicatePlan.plan_fingerprint, preview_id: duplicatePlan.preflight?.preview_id, confirmation_phrase: phrase})});
+          duplicatePlan.changes_applied = Boolean(result.changes_applied && !isRollback);
+          if (status) status.textContent = isRollback ? 'Duplicate profile rollback completed and audited.' : 'Duplicate profile created and audited.';
+          const panel = document.querySelector('#profile-duplicate-plan');
+          if (panel) panel.innerHTML = renderDuplicateProfilePlan(duplicatePlan);
+        } catch (error) { activeButton.disabled = false; activeButton.textContent = isRollback ? 'Rollback duplicate profile' : 'Apply duplicate profile'; if (status) status.textContent = `Guarded duplicate-profile write failed or was blocked: ${error.message}`; }
+        return;
+      }
+      if (createButton) {
+        const panel = document.querySelector('#profile-duplicate-plan');
+        const sourceProfile = document.querySelector('.create-profile-source')?.value || '';
+        const duplicateName = document.querySelector('.create-profile-name')?.value.trim() || null;
+        if (!sourceProfile) { if (panel) panel.textContent = 'Select a base profile first.'; return; }
+        createButton.disabled = true;
+        createButton.textContent = 'Preparing creation plan...';
+        if (panel) panel.textContent = 'Reading the selected base profile...';
+        try { const plan = await api('/api/adc/appfw/profiles/duplicate-plan', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({profile_name: sourceProfile, duplicate_name: duplicateName})}); if (panel) panel.innerHTML = renderDuplicateProfilePlan(plan); }
+        catch (error) { if (panel) panel.textContent = `Unable to prepare the profile creation plan: ${error.message}`; }
+        createButton.disabled = false;
+        createButton.textContent = 'Prepare profile creation plan';
+        return;
+      }
+      if (!button) return;
+      const panel = document.querySelector('#profile-duplicate-plan');
+      const duplicateName = button.closest('tr')?.querySelector('.duplicate-profile-name')?.value.trim() || null;
+      button.disabled = true;
+      button.textContent = 'Preparing plan...';
+      if (panel) panel.textContent = 'Reading the current AppFW profile...';
+      try { const plan = await api('/api/adc/appfw/profiles/duplicate-plan', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({profile_name: button.dataset.profileName, duplicate_name: duplicateName})}); if (panel) panel.innerHTML = renderDuplicateProfilePlan(plan); }
+      catch (error) { if (panel) panel.textContent = `Unable to prepare the duplicate profile plan: ${error.message}`; }
+      button.disabled = false;
+      button.textContent = 'Prepare duplicate plan';
+    });
+    document.querySelector('#jobs').addEventListener('click', async event => {
+      const button = event.target.closest('.profile-button');
+      const cancelButton = event.target.closest('.cancel-button');
+      const deleteButton = event.target.closest('.delete-button');
+      if (cancelButton) { if (!window.confirm('Cancel this active discovery scan?')) return; cancelButton.disabled = true; cancelButton.textContent = 'Cancelling...'; try { await api(`/api/discovery/jobs/${encodeURIComponent(cancelButton.dataset.job)}/cancel`, {method: 'POST'}); document.querySelector('#discovery-status').textContent = 'Discovery scan cancelled.'; await loadJobs(); } catch (error) { cancelButton.disabled = false; cancelButton.textContent = 'Cancel'; document.querySelector('#discovery-status').textContent = 'Unable to cancel discovery scan.'; } return; }
+      if (deleteButton) { if (!window.confirm('Delete this past analysis and all stored evidence?')) return; try { await api(`/api/discovery/jobs/${encodeURIComponent(deleteButton.dataset.job)}`, {method: 'DELETE'}); document.querySelector('#discovery-status').textContent = 'Past analysis deleted.'; document.querySelector('#profile').textContent = ''; await loadJobs(); } catch (error) { document.querySelector('#discovery-status').textContent = 'Unable to delete past analysis.'; } return; }
+      if (!button) return;
+      document.querySelector('#profile').textContent = 'Loading technology profile...';
+      try { renderProfile(await api(`/api/discovery/jobs/${encodeURIComponent(button.dataset.job)}/profile`)); }
+      catch (error) { document.querySelector('#profile').textContent = 'Unable to load technology profile.'; }
+    });
+    document.querySelector('#profile').addEventListener('click', async event => {
+      const button = event.target.closest('.analysis-button');
+      const planButton = event.target.closest('.plan-button');
+      const runtimeButton = event.target.closest('.runtime-button');
+      const cspReportsButton = event.target.closest('.csp-reports-button');
+      const approveButton = event.target.closest('.approve-plan-button');
+      const preflightButton = event.target.closest('.preflight-button');
+      const applyButton = event.target.closest('.apply-write-button');
+      const signaturePrepareButton = event.target.closest('.signature-set-prepare-button');
+      const signatureSaveButton = event.target.closest('.signature-set-save-button');
+      const signatureApproveButton = event.target.closest('.signature-set-approve-button');
+      const signaturePreflightButton = event.target.closest('.signature-set-preflight-button');
+      const signatureApplyButton = event.target.closest('.signature-set-apply-button');
+      const signatureRollbackButton = event.target.closest('.signature-set-rollback-button');
+      const signatureSet = window.currentSignatureSet || {};
+      if (button) { document.querySelector('#analysis').textContent = 'Generating evidence analysis...'; try { renderAnalysis(await api(`/api/discovery/jobs/${encodeURIComponent(button.dataset.job)}/analysis`)); } catch (error) { document.querySelector('#analysis').textContent = 'Unable to generate evidence analysis.'; } return; }
+      if (runtimeButton) { runtimeButton.disabled = true; runtimeButton.textContent = 'Inspecting runtime forms...'; try { const result = await api(`/api/discovery/jobs/${encodeURIComponent(runtimeButton.dataset.job)}/runtime-inspection`, {method: 'POST'}); renderProfile(await api(`/api/discovery/jobs/${encodeURIComponent(runtimeButton.dataset.job)}/profile`)); document.querySelector('#discovery-status').textContent = `Runtime inspection complete: ${result.controls_observed || 0} controls on ${result.pages_inspected || 0} pages.`; } catch (error) { runtimeButton.disabled = false; runtimeButton.textContent = 'Inspect runtime forms'; document.querySelector('#discovery-status').textContent = 'Runtime inspection unavailable.'; } return; }
+      if (cspReportsButton) { const host = document.querySelector('#csp-reports'); cspReportsButton.disabled = true; cspReportsButton.textContent = 'Loading CSP reports...'; try { if (host) host.innerHTML = renderCspReports(await api('/api/csp/reports?limit=100')); } catch (error) { if (host) host.textContent = 'CSP report collector unavailable.'; } finally { cspReportsButton.disabled = false; cspReportsButton.textContent = 'Refresh CSP reports'; } return; }
+      if (signaturePrepareButton) { const host = document.querySelector('#signature-set'); const destination = document.querySelector('#signature-set-destination')?.value.trim() || null; signaturePrepareButton.disabled = true; signaturePrepareButton.textContent = 'Building technology-based proposal...'; try { const result = await api('/api/signature-sets/prepare', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({job_id: signaturePrepareButton.dataset.job, destination_profile: destination})}); if (host) host.innerHTML = renderSignatureSet(result); } catch (error) { if (host) host.textContent = `Unable to prepare signature set: ${error.message}`; } finally { signaturePrepareButton.disabled = false; signaturePrepareButton.textContent = 'Prepare signature set'; } return; }
+      if (signatureSaveButton) { const host = document.querySelector('#signature-set'); const selected = [...document.querySelectorAll('.signature-set-select:checked')].map(item => item.dataset.url).filter(Boolean); signatureSaveButton.disabled = true; try { const result = await api(`/api/signature-sets/${encodeURIComponent(signatureSet.signature_set_id)}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({selected_signature_urls: selected, destination_profile: signatureSet.destination_profile})}); if (host) host.innerHTML = renderSignatureSet(result); } catch (error) { const status = document.querySelector('#signature-set-approval-status'); if (status) status.textContent = `Unable to save signature-set changes: ${error.message}`; signatureSaveButton.disabled = false; } return; }
+      if (signatureApproveButton) { const phrase = document.querySelector('#signature-set-approval-phrase')?.value || ''; const status = document.querySelector('#signature-set-approval-status'); if (phrase !== 'APPROVE SIGNATURE SET') { if (status) status.textContent = 'Type APPROVE SIGNATURE SET exactly to continue.'; return; } signatureApproveButton.disabled = true; try { const result = await api(`/api/signature-sets/${encodeURIComponent(signatureSet.signature_set_id)}/approve`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({plan_fingerprint: signatureSet.plan_fingerprint, approval_phrase: phrase})}); signatureSet.status = result.status; signatureSet.approval_id = result.approval_id; signatureSet.expires_at = result.expires_at; const host = document.querySelector('#signature-set'); if (host) host.innerHTML = renderSignatureSet(signatureSet); } catch (error) { signatureApproveButton.disabled = false; if (status) status.textContent = `Approval failed: ${error.message}`; } return; }
+      if (signaturePreflightButton) { signaturePreflightButton.disabled = true; signaturePreflightButton.textContent = 'Validating ADC and signature state...'; try { signatureSet.preflight = await api(`/api/signature-sets/${encodeURIComponent(signatureSet.signature_set_id)}/preflight`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({approval_id: signatureSet.approval_id, plan_fingerprint: signatureSet.plan_fingerprint})}); const host = document.querySelector('#signature-set'); if (host) host.innerHTML = renderSignatureSet(signatureSet); } catch (error) { signaturePreflightButton.disabled = false; signaturePreflightButton.textContent = 'Run signature-set preflight'; const status = document.querySelector('#signature-set-preflight-status'); if (status) status.textContent = `Preflight failed: ${error.message}`; } return; }
+      if (signatureApplyButton || signatureRollbackButton) { const phrase = document.querySelector('#signature-set-write-phrase')?.value || ''; const status = document.querySelector('#signature-set-write-status'); if (phrase !== 'ENABLE WRITE') { if (status) status.textContent = 'Type ENABLE WRITE exactly to continue.'; return; } const rollback = Boolean(signatureRollbackButton); const active = signatureApplyButton || signatureRollbackButton; active.disabled = true; try { const endpoint = rollback ? `/api/signature-sets/${encodeURIComponent(signatureSet.signature_set_id)}/rollback` : `/api/signature-sets/${encodeURIComponent(signatureSet.signature_set_id)}/apply`; const result = await api(endpoint, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({approval_id: signatureSet.approval_id, plan_fingerprint: signatureSet.plan_fingerprint, preview_id: signatureSet.preflight?.preview_id, confirmation_phrase: phrase})}); if (status) status.textContent = rollback ? 'Signature set rolled back and audited.' : `New signature profile ${result.destination_profile} was created and enabled.`; signatureSet.status = rollback ? 'rolled-back' : 'applied'; signatureSet.changes_applied = Boolean(result.changes_applied); const host = document.querySelector('#signature-set'); if (host) host.innerHTML = renderSignatureSet(signatureSet); } catch (error) { active.disabled = false; if (status) status.textContent = `Signature-set write was blocked or failed: ${error.message}`; } return; }
+      if (approveButton) { const plan = window.currentAdcPlan || {}; const phrase = document.querySelector('#plan-approval-phrase')?.value || ''; const status = document.querySelector('#plan-approval-status'); if (phrase !== 'APPROVE PLAN') { if (status) status.textContent = 'Type APPROVE PLAN exactly to continue.'; return; } approveButton.disabled = true; approveButton.textContent = 'Recording approval...'; try { const selected = plan.adc_catalog_match?.selected_signature_catalogs || []; const result = await api(`/api/discovery/jobs/${encodeURIComponent(approveButton.dataset.job)}/adc-plan/approve`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({plan_fingerprint: plan.plan_fingerprint, selected_catalog_urls: selected.map(item => item.url).filter(Boolean), approval_phrase: phrase})}); plan.approval = result; renderAdcPlan(plan); } catch (error) { approveButton.disabled = false; approveButton.textContent = 'Approve exact plan'; if (status) status.textContent = 'Approval failed. Regenerate the plan and verify the selected catalogs.'; } return; }
+      if (preflightButton) { const plan = window.currentAdcPlan || {}; const status = document.querySelector('#preflight-status'); preflightButton.disabled = true; preflightButton.textContent = 'Validating current ADC state...'; try { plan.preflight = await api(`/api/discovery/jobs/${encodeURIComponent(preflightButton.dataset.job)}/adc-plan/preflight`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({approval_id: plan.approval?.approval_id, plan_fingerprint: plan.plan_fingerprint})}); renderAdcPlan(plan); } catch (error) { preflightButton.disabled = false; preflightButton.textContent = 'Run pre-write validation preview'; if (status) status.textContent = 'Pre-write validation failed. Regenerate and re-approve the plan.'; } return; }
+      if (applyButton) { const plan = window.currentAdcPlan || {}; const phrase = document.querySelector('#write-confirmation-phrase')?.value || ''; const status = document.querySelector('#apply-write-status'); if (phrase !== 'ENABLE WRITE') { if (status) status.textContent = 'Type ENABLE WRITE exactly to continue.'; return; } const selected = plan.adc_catalog_match?.selected_signature_catalogs || []; if (selected.length !== 1) { if (status) status.textContent = 'Apply is limited to one selected catalog until multi-catalog ADC binding is confirmed.'; return; } applyButton.disabled = true; applyButton.textContent = 'Sending guarded request...'; try { const profile = plan.adc_catalog_match?.selected_profile || {}; const result = await api('/api/adc/writes/appfw-profile-signature', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({job_id: plan.job_id, approval_id: plan.approval?.approval_id, plan_fingerprint: plan.plan_fingerprint, preview_id: plan.preflight?.preview_id, profile_name: profile.name, signature_catalog_url: selected[0].url, expected_signature_binding: profile.signature_binding, confirmation_phrase: phrase})}); if (status) status.textContent = result.changes_applied ? 'ADC change applied and audited.' : 'No ADC change applied.'; } catch (error) { applyButton.disabled = false; applyButton.textContent = 'Test guarded apply (write disabled)'; if (status) status.textContent = `Guarded ADC write failed or was blocked: ${error.message}`; } return; }
+      if (planButton) { document.querySelector('#adc-plan').textContent = 'Building ADC change plan...'; try { const query = new URLSearchParams(); (window.selectedSignatureCatalogUrls || []).forEach(url => query.append('selected_catalog_url', url)); const suffix = query.toString() ? `?${query.toString()}` : ''; renderAdcPlan(await api(`/api/discovery/jobs/${encodeURIComponent(planButton.dataset.job)}/adc-plan${suffix}`)); } catch (error) { document.querySelector('#adc-plan').textContent = 'Unable to build ADC change plan.'; } }
+    });
+    document.querySelector('#profile').addEventListener('change', event => { const filter = event.target.closest('#evidence-filter'); if (!filter) return; const body = document.querySelector('#all-evidence-body'); if (body) body.innerHTML = renderEvidenceRows(window.currentEvidence || [], filter.value); });
+  </script>
+</body>
+</html>

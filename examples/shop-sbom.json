@@ -1,7 +1,0 @@
-{
-  "bomFormat": "CycloneDX",
-  "specVersion": "1.5",
-  "components": [
-    {"type": "library", "name": "WordPress", "version": "6.9.4", "purl": "pkg:generic/wordpress@6.9.4"}
-  ]
-}
