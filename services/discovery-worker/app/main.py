@@ -14,6 +14,7 @@ import psycopg
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
+from app.technology_detection import DETECTOR_VERSION, detect_technology_signals
 
 app = FastAPI(title="WAF Discovery Worker", version="0.4.0")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -200,34 +201,12 @@ def asset_type(url: str) -> str | None:
 
 
 def asset_fingerprint(url: str, content_type: str, content: bytes) -> list[dict[str, Any]]:
-    text = content.decode("utf-8", errors="ignore")[:2_000_000].lower()
-    kind = asset_type(url)
-    signals: list[dict[str, Any]] = []
-
-    def add(technology: str, signal: str, score: float) -> None:
-        signals.append({"technology": technology, "signal": signal, "source": "asset.content_marker", "score": score, "value": url})
-
-    if kind == "javascript":
-        if "@angular/core" in text or "ngdevmode" in text or "zone.js" in text:
-            add("Angular", "Angular bundle marker", 0.96)
-        if "reactdom" in text or "react/jsx-runtime" in text or "__reactfiber" in text or "react.production" in text or "createroot" in text:
-            add("React", "React bundle marker", 0.93)
-        if "__nuxt__" in text or "nuxtapp" in text:
-            add("Nuxt", "Nuxt bundle marker", 0.95)
-        if "__next_f.push" in text or "next/router" in text:
-            add("Next.js", "Next.js bundle marker", 0.95)
-        if "jquery" in text and ("jquery.fn" in text or "jquery v" in text):
-            add("jQuery", "jQuery bundle marker", 0.94)
-        if "webpackruntime" in text or "__webpack_require__" in text:
-            add("Webpack", "Webpack runtime marker", 0.84)
-        if "vite" in text and "import.meta" in text:
-            add("Vite", "Vite bundle marker", 0.88)
-    elif kind == "css":
-        if "bootstrap" in text and (".container" in text or ".row" in text):
-            add("Bootstrap", "Bootstrap CSS marker", 0.90)
-        if "tailwind" in text or "--tw-" in text:
-            add("Tailwind CSS", "Tailwind CSS marker", 0.90)
-    return signals
+    return detect_technology_signals(
+        url=url,
+        headers={"content-type": content_type},
+        body=content.decode("utf-8", errors="ignore")[:2_000_000],
+        assets=[url],
+    )
 
 
 def static_route_candidates(asset_url: str, content: bytes, seed: str, prefixes: list[str]) -> list[str]:
@@ -325,6 +304,17 @@ async def fetch_asset(client: httpx.AsyncClient, url: str, user_agent: str) -> t
 
 
 def fingerprint(response: httpx.Response, parser: SurfaceParser | None) -> list[dict[str, Any]]:
+    return detect_technology_signals(
+        url=str(response.url),
+        headers=dict(response.headers.items()),
+        cookies=cookie_names(response),
+        body=response.text[:2_000_000] if parser is not None else "",
+        assets=parser.assets if parser else [],
+        meta=parser.metas if parser else [],
+        title=" ".join(parser.title_parts) if parser else "",
+        forms=parser.forms if parser else [],
+    )
+
     signals: list[dict[str, Any]] = []
     headers = {key.lower(): value.lower() for key, value in response.headers.items()}
     content_type = headers.get("content-type", "")
@@ -389,6 +379,12 @@ def fingerprint(response: httpx.Response, parser: SurfaceParser | None) -> list[
 
 def evidence_row(run_id: str, evidence_type: str, source_url: str, method: str, status: int | None, signal: str, metadata: dict[str, Any], technology: str | None = None, score: float | None = None) -> dict[str, Any]:
     return {"run_id": run_id, "evidence_type": evidence_type, "source_url": redact_url(source_url), "request_method": method, "status_code": status, "technology": technology, "signal": signal, "confidence": confidence_label(score) if score is not None else None, "confidence_score": score, "observed_at": now(), "metadata": metadata}
+
+
+def signal_metadata(signal: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    metadata = {key: value for key, value in signal.items() if key not in {"technology", "signal", "source", "score"} and value is not None}
+    metadata.update(extra)
+    return metadata
 
 
 def db_connect() -> psycopg.Connection[Any]:
@@ -528,31 +524,50 @@ def profile_sync(job_id: str) -> dict[str, Any]:
     grouped: dict[str, dict[str, Any]] = {}
     for row in technology_rows:
         technology = row["technology"]
+        metadata = row.get("metadata") or {}
         item = grouped.setdefault(technology, {
             "technology": technology,
+            "technology_key": metadata.get("technology_key") or re.sub(r"[^a-z0-9]+", "-", technology.casefold()).strip("-"),
+            "category": metadata.get("category", "application-platform"),
             "confidence": row["confidence"],
-            "confidence_score": float(row["confidence_score"] or 0),
+            "confidence_score": 0.0,
             "evidence_count": 0,
             "signals": [],
+            "signal_families": [],
+            "versions": [],
             "source_urls": [],
+            "_scores": [],
+            "_families": set(),
+            "_versions": set(),
         })
         item["evidence_count"] += 1
-        item["confidence_score"] = max(item["confidence_score"], float(row["confidence_score"] or 0))
-        if item["confidence_score"] >= 0.85:
-            item["confidence"] = "high"
-        elif item["confidence_score"] >= 0.60:
-            item["confidence"] = "medium"
-        else:
-            item["confidence"] = "low"
+        item["_scores"].append(float(row["confidence_score"] or 0))
+        family = str(metadata.get("signal_family") or metadata.get("source") or "unknown")
+        item["_families"].add(family)
+        version = str(metadata.get("version") or "").strip()
+        if version:
+            item["_versions"].add(version)
         signal = row["signal"]
         if signal not in item["signals"]:
             item["signals"].append(signal)
         if row["source_url"] not in item["source_urls"]:
             item["source_urls"].append(row["source_url"])
-    technologies = sorted(grouped.values(), key=lambda item: (-item["confidence_score"], item["technology"]))
+    category_rank = {"application-platform": 0, "cms": 0, "framework": 1, "server-runtime": 2, "web-server": 3, "protocol": 4, "library": 5, "delivery": 6, "application-surface": 7}
+    for item in grouped.values():
+        base_score = max(item.pop("_scores") or [0.0])
+        families = sorted(item.pop("_families"))
+        family_bonus = min(0.16, max(0, len(families) - 1) * 0.05)
+        item["confidence_score"] = round(min(0.99, base_score + family_bonus), 2)
+        item["confidence"] = "high" if item["confidence_score"] >= 0.85 else "medium" if item["confidence_score"] >= 0.60 else "low"
+        versions = sorted(item.pop("_versions"))
+        item["versions"] = versions
+        item["version"] = versions[0] if len(versions) == 1 else None
+        item["signal_families"] = families
+    technologies = sorted(grouped.values(), key=lambda item: (category_rank.get(item.get("category", ""), 8), -item["confidence_score"], item["technology"]))
     confidence_counts = {label: sum(1 for item in technologies if item["confidence"] == label) for label in ("high", "medium", "low")}
     return {
         "run_id": job_id,
+        "technology_detector_version": DETECTOR_VERSION,
         "technology_count": len(technologies),
         "evidence_count": len(evidence),
         "confidence_counts": confidence_counts,
@@ -634,7 +649,7 @@ async def run_discovery(job: DiscoveryJob) -> None:
                                     rows.append(evidence_row(job.id, "asset", candidate, "GET", asset_response.status_code, "Asset fetched for passive fingerprinting", {"source_page": url, "asset_type": kind, "content_type": asset_content_type, "bytes_inspected": len(asset_content), "truncated": truncated}))
                                     observations.append({"run_id": job.id, "observed_at": now(), "source_url": candidate, "status_code": asset_response.status_code, "duration_ms": duration_ms, "observation": {"request": {"method": "GET", "url": redact_url(candidate), "headers": {"user-agent": user_agent}}, "response": {"status": asset_response.status_code, "headers": safe_headers(asset_response), "cookies": cookie_observations(asset_response)}, "asset": {"type": kind, "content_type": asset_content_type, "bytes_inspected": len(asset_content), "truncated": truncated}, "body_retained": False}})
                                     for signal in asset_fingerprint(candidate, asset_content_type, asset_content):
-                                        rows.append(evidence_row(job.id, "technology", candidate, "GET", asset_response.status_code, signal["signal"], {"source": signal["source"], "value": signal["value"], "asset_type": kind}, signal["technology"], signal["score"]))
+                                        rows.append(evidence_row(job.id, "technology", candidate, "GET", asset_response.status_code, signal["signal"], signal_metadata(signal, asset_type=kind), signal["technology"], signal["score"]))
                                     search_markers = static_search_markers(asset_content)
                                     if search_markers:
                                         rows.append(evidence_row(job.id, "interaction", candidate, "GET", asset_response.status_code, "Search surface marker observed in JavaScript bundle", {"source_asset": redact_url(candidate), "search_surface_count": len(search_markers), "search_surfaces": [{"tag": "javascript", "type": "search-component", "name": "", "id": "", "aria_label": marker} for marker in search_markers], "values_submitted": False}))
@@ -652,7 +667,7 @@ async def run_discovery(job: DiscoveryJob) -> None:
                     rows.append(evidence_row(job.id, "interaction", url, "GET", response.status_code, "Interaction surface observed", {"form_count": len(parser.forms), "forms": parser.forms[:50], "control_count": len(parser.controls), "controls": parser.controls[:100], "search_surface_count": len(parser.search_surfaces), "search_surfaces": parser.search_surfaces[:25], "title": " ".join(parser.title_parts)[:500], "meta_names": [item["name"] for item in parser.metas[:50]]}))
                 observations.append({"run_id": job.id, "observed_at": now(), "source_url": url, "status_code": response.status_code, "duration_ms": round((time.perf_counter() - started) * 1000, 2), "observation": {"request": {"method": "GET", "url": redact_url(url), "headers": {"user-agent": user_agent}}, "response": {"status": response.status_code, "headers": safe_headers(response), "cookies": cookie_observations(response), "redirect": redact_url(response.headers.get("location", "")) if response.headers.get("location") else None}, "document": {"content_type": content_type, "response_size": len(response.content), "title": " ".join(parser.title_parts)[:500] if parser else None, "link_count": len(parser.links) if parser else 0, "asset_count": len(parser.assets) if parser else 0, "form_count": len(parser.forms) if parser else 0, "search_surface_count": len(parser.search_surfaces) if parser else 0, "meta_names": [item["name"] for item in parser.metas[:50]] if parser else []}, "body_retained": False}})
                 for signal in fingerprint(response, parser):
-                    rows.append(evidence_row(job.id, "technology", url, "GET", response.status_code, signal["signal"], {"source": signal["source"], "value": signal["value"]}, signal["technology"], signal["score"]))
+                    rows.append(evidence_row(job.id, "technology", url, "GET", response.status_code, signal["signal"], signal_metadata(signal), signal["technology"], signal["score"]))
                 if response.is_redirect:
                     location = response.headers.get("location", "")
                     target = normalize_url(location, url, seed, scope.allowed_paths)

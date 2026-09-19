@@ -75,6 +75,36 @@ SIGNATURE_CATALOG: dict[str, dict[str, Any]] = {
         "priority": "medium",
         "reason": "A CMS or generated content platform was identified.",
     },
+    "exchange-owa": {
+        "name": "Microsoft Exchange Outlook Web App surface",
+        "category": "application-platform",
+        "priority": "high",
+        "reason": "Exchange OWA/ECP paths, cookies, headers, or document markers were identified.",
+    },
+    "wordpress": {
+        "name": "WordPress application surface",
+        "category": "application-platform",
+        "priority": "high",
+        "reason": "WordPress generator, canonical assets, routes, or cookies were identified.",
+    },
+    "drupal": {
+        "name": "Drupal application surface",
+        "category": "application-platform",
+        "priority": "high",
+        "reason": "Drupal generator, settings, assets, routes, or cookies were identified.",
+    },
+    "joomla": {
+        "name": "Joomla application surface",
+        "category": "application-platform",
+        "priority": "high",
+        "reason": "Joomla generator, administrator route, or asset markers were identified.",
+    },
+    "magento": {
+        "name": "Magento application surface",
+        "category": "application-platform",
+        "priority": "high",
+        "reason": "Magento client, static assets, generator, or cache/session markers were identified.",
+    },
     "authentication": {
         "name": "Authentication and account surface",
         "category": "application-surface",
@@ -111,12 +141,15 @@ def _primary_technology(profile: dict[str, Any]) -> dict[str, Any]:
     technologies = [item for item in profile.get("technologies", []) if item.get("technology")]
     if not technologies:
         return {"technology": "Undetermined", "confidence": "low", "confidence_score": 0.0, "basis": "No technology evidence was observed"}
-    item = max(technologies, key=_profile_score)
+    category_rank = {"application-platform": 0, "cms": 0, "framework": 1, "server-runtime": 2, "web-server": 3, "protocol": 4, "library": 5, "delivery": 6, "application-surface": 7}
+    item = min(technologies, key=lambda candidate: (category_rank.get(str(candidate.get("category", "")), 8), -_profile_score(candidate)))
     return {
         "technology": item.get("technology", "Undetermined"),
         "confidence": item.get("confidence", "low"),
         "confidence_score": _profile_score(item),
-        "basis": f"Highest-confidence technology signal from {item.get('evidence_count', 0)} evidence row(s)",
+        "version": item.get("version"),
+        "category": item.get("category"),
+        "basis": f"Highest-priority application technology from {item.get('evidence_count', 0)} corroborated evidence row(s)",
     }
 
 
@@ -156,6 +189,16 @@ def build_protection_plan(profile: dict[str, Any]) -> dict[str, Any]:
         selected.append("server-node")
     if _has_any(technology_names, {"wordpress", "drupal", "cms", "generated platform"}):
         selected.append("cms")
+    if _has_any(technology_names, {"microsoft exchange owa", "exchange owa", "outlook web app"}):
+        selected.append("exchange-owa")
+    if _has_any(technology_names, {"wordpress"}):
+        selected.append("wordpress")
+    if _has_any(technology_names, {"drupal"}):
+        selected.append("drupal")
+    if _has_any(technology_names, {"joomla"}):
+        selected.append("joomla")
+    if _has_any(technology_names, {"magento"}):
+        selected.append("magento")
 
     form_items = [
         item for item in evidence
@@ -262,8 +305,10 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
     gaps: list[str] = []
     observed_header_values: dict[str, list[str]] = {}
 
-    if technology_names & {"wordpress", "drupal", "generated platform"}:
+    if technology_names & {"wordpress", "drupal", "joomla", "magento", "generated platform"}:
         architecture.append("CMS or generated web platform")
+    if technology_names & {"microsoft exchange owa", "exchange owa", "outlook web app"}:
+        architecture.append("Microsoft Exchange Outlook Web App")
     if technology_names & {"next.js", "nuxt", "react", "vue.js", "angular"}:
         architecture.append("JavaScript client or server-rendered frontend")
     if technology_names & {"rest or json api", "graphql", "xml or soap"}:
@@ -348,6 +393,10 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
         "analysis_mode": "deterministic-synthesis",
         "ai_handoff_ready": True,
         "technology_profile": request.profile.get("technologies", []),
+        "detected_application_platforms": [
+            item for item in request.profile.get("technologies", [])
+            if item.get("category") in {"application-platform", "cms"}
+        ],
         "protection_plan": build_protection_plan(request.profile),
         "likely_architecture": sorted(set(architecture)),
         "candidate_protection_areas": protections,
