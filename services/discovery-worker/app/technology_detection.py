@@ -205,8 +205,12 @@ def detect_technology_signals(
         add("Java", "Java session cookie", "response.headers.set-cookie.name", 0.90, "JSESSIONID", category="server-runtime", family="cookie")
     if asp_cookie:
         add("ASP.NET", "ASP.NET session or authentication cookie", "response.headers.set-cookie.name", 0.93, "ASP.NET session/auth cookie", category="server-runtime", family="cookie")
-    if "laravel_session" in cookie_set or "laravel" in body_lower or any("laravel" in asset for asset in lowered_assets):
-        add("Laravel", "Laravel session or asset marker", "cookie_or_asset_marker", 0.91, "Laravel marker", category="framework", family="cookie" if "laravel_session" in cookie_set else "asset")
+    laravel_cookie = "laravel_session" in cookie_set
+    laravel_body = any(marker in body_lower for marker in ("laravel mix", "laravel-vite-plugin", "laravel framework"))
+    laravel_asset = any(re.search(r"/(?:vendor/)?laravel(?:[./_-]|/)", asset) for asset in lowered_assets)
+    if laravel_cookie or laravel_body or laravel_asset:
+        family = "cookie" if laravel_cookie else ("body" if laravel_body else "asset")
+        add("Laravel", "Laravel session or explicit framework marker", "cookie_or_explicit_marker", 0.91, "Laravel marker", category="framework", family=family)
     if "asp.netmvc" in lowered_headers.get("x-powered-by", "") or "asp.net mvc" in body_lower:
         add("ASP.NET MVC", "ASP.NET MVC marker", "header_or_body_marker", 0.90, "ASP.NET MVC", category="framework", family="body")
 

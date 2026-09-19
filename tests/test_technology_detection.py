@@ -80,6 +80,23 @@ class TechnologyDetectionTests(unittest.TestCase):
         self.assertEqual(iis["category"], "web-server")
         self.assertEqual(iis["version"], "10.0")
 
+    def test_generic_css_icon_name_is_not_laravel_evidence(self):
+        signals = detect_technology_signals(
+            url="https://shop.example.test/styles.css",
+            headers={"content-type": "text/css"},
+            body='.icon-laravel:before{content:"\\f147"}',
+        )
+        self.assertNotIn("Laravel", {item["technology"] for item in signals})
+
+    def test_laravel_session_cookie_is_positive_evidence(self):
+        signals = detect_technology_signals(
+            url="https://shop.example.test/",
+            cookies=["laravel_session"],
+        )
+        laravel = [item for item in signals if item["technology"] == "Laravel"]
+        self.assertEqual(len(laravel), 1)
+        self.assertEqual(laravel[0]["signal_family"], "cookie")
+
 
 if __name__ == "__main__":
     unittest.main()
