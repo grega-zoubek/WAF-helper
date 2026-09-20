@@ -42,6 +42,18 @@ Generic policy layer verification:
 - Automation state: proposal-only; predefined rules enabled; AI advisory disabled;
   automatic apply disabled
 
+Provider catalog resolver verification:
+
+- Commit: `e226e45`
+- Read-only adapter endpoint: `/api/adc/signatures/rules`
+- Input contract: administrator-mounted JSON or XML rule-level export at
+  `/run/catalogs/netscaler_rule_catalog.json`
+- Current live status: `configured-file-missing`, 0 normalized rules
+- Juice Shop proposal: `71893d1c-83b2-4b62-a445-ae3ae6e10d35`
+- Proposal status: `blocked-missing-rule-level-catalog`, 0 selected catalogs,
+  no ADC changes
+- Raw catalog payloads are not retained by the adapter or database
+
 ## Workflow
 
 ### 1. Discover the web application
@@ -208,5 +220,9 @@ If connectivity is lost or a machine reboots:
 - Last action: passive Juice Shop discovery plus read-only ADC path resolution
 - State: complete; no ADC mutation
 - Result: Juice Shop maps directly to `lb_vs_juice_shop` -> `web-mcp:3000`, but no active AppFW policy or signature binding exists
-- Next action: design the provider rule-catalog resolver and guarded automation modes; use Juice Shop to validate catalog selection without applying changes
+- Next action: provide an administrator-approved rule-level export, validate it
+  against Juice Shop intents, and then implement guarded automation-mode checks
+- Resume instruction: verify server/API health, query `/api/adc/signatures/rules`,
+  confirm proposal `71893d1c-83b2-4b62-a445-ae3ae6e10d35`, and do not enable ADC
+  writes while the catalog status is not `enumerated`.
 - Resume instruction: verify server/API health, confirm job `6a06abe1-2986-4e87-9d6d-7cffc6cd699d` and inventory fingerprint `e81cc2c1abd26079bea33e6bd5af1ba2f7ac14a2dc512bf7c2e02c02de2c51fd`; do not enable the disabled profile or create an AppFW binding.
