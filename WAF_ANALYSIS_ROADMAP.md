@@ -264,3 +264,14 @@ If connectivity is lost or a machine reboots:
 - Compatibility result: existing profile and signature-catalog routes now preserve `unsupported-by-oas` instead of implying an empty inventory.
 - Next action: obtain an administrator-approved AppFW/signature inventory source compatible with the Next-Gen integration, or extend the supplied OAS through an approved provider contract. Do not treat the current zero application count or unsupported WAF status as proof that the ADC has no classic WAF configuration.
 - Recovery after connectivity loss or reboot: verify local/server `git rev-parse --short HEAD`, SSH to `grega@192.168.11.90`, run `docker compose -p waf-intelligence ps`, query `http://192.168.11.90:8110/healthz`, then query `http://192.168.11.90:8110/api/adc/inventory`. Do not re-run discovery or enable writes; resume from the inventory verification step.
+
+### Read-only ADC CLI WAF inventory checkpoint
+
+- Timestamp: 2026-09-20 20:30:37 UTC
+- Action: authenticated to `mcp_user@192.168.11.101` through the Ubuntu jump host and executed only verified read-only `show` commands over SSH. No configuration command was sent.
+- Commands: `show ns feature`, `show appfw profile`, `show appfw policy`, `show appfw signatures`, `show appfw settings`, and `show appfw policylabel`.
+- Result: `Application Firewall AppFw OFF`; policy and policy-label queries reported `Feature(s) not enabled [AppFw]`; ten built-in/default profiles were listed; two built-in signature objects were listed (`*Default Signatures` and `*Xpath Injection Patterns`). No custom WAF profile, active policy, or enabled AppFW enforcement was evidenced by this read-only pass.
+- Settings evidence: default profile `APPFW_BYPASS`; `UndefAction=APPFW_BLOCK`; signature auto-update `OFF`; malformed-request actions `block log stats`; learning `ON`. These settings do not imply active enforcement while the AppFW feature is OFF.
+- State: complete; read-only; no ADC mutation.
+- Next action: add an SSH CLI inventory source to the scanner with explicit states such as `feature-disabled`, `built-in-only`, and `not-enumerated`, then correlate CLI WAF objects with the Next-Gen application inventory. Do not propose or apply WAF changes while AppFW is disabled and no target policy binding is confirmed.
+- Recovery after connectivity loss or reboot: verify SSH to `grega@192.168.11.90`, verify ADC TCP/22, retry one read-only CLI inventory pass only after confirming the account still reaches the CLI prompt, and check this checkpoint before creating any scanner job or change plan.
