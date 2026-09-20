@@ -155,7 +155,16 @@ def _parameter_map(text: str) -> dict[str, str]:
         key = re.sub(r"\s+", " ", match.group("key")).strip()
         value = match.group("value").strip().strip('"')
         normalized = key.lower()
-        if not key or not value or re.match(r"^\d+\)", key) or any(term in normalized for term in SENSITIVE_PARAMETER_TERMS):
+        if (
+            not key
+            or not value
+            or re.match(r"^\d+\)", key)
+            or "(" in key
+            or ")" in key
+            or " - " in key
+            or "was at" in normalized
+            or any(term in normalized for term in SENSITIVE_PARAMETER_TERMS)
+        ):
             continue
         parameters[key[:96]] = value[:300]
     return parameters

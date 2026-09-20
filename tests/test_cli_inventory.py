@@ -85,6 +85,7 @@ class CliInventoryTests(unittest.TestCase):
         )
         self.assertEqual(records[0]["vserver_type"], "cs")
         self.assertEqual(records[0]["parameters"]["Default"], "vpn_vs_remote")
+        self.assertNotIn("external_cs_vs (192.168.11.40", records[0]["parameters"])
 
     def test_classic_inventory_groups_lb_cs_and_gateway(self):
         outputs = {
