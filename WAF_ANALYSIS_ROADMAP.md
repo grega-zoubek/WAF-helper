@@ -226,3 +226,18 @@ If connectivity is lost or a machine reboots:
   confirm proposal `71893d1c-83b2-4b62-a445-ae3ae6e10d35`, and do not enable ADC
   writes while the catalog status is not `enumerated`.
 - Resume instruction: verify server/API health, confirm job `6a06abe1-2986-4e87-9d6d-7cffc6cd699d` and inventory fingerprint `e81cc2c1abd26079bea33e6bd5af1ba2f7ac14a2dc512bf7c2e02c02de2c51fd`; do not enable the disabled profile or create an AppFW binding.
+
+## Next-Gen API integration checkpoint
+
+- Timestamp: 2026-09-20 UTC
+- Action: replaced the ADC adapter's management calls with the supplied NetScaler Next-Gen API contract; added cookie-login client, application topology normalization, explicit unsupported-capability responses, contract documentation, and tests.
+- OAS source: `C:\Users\G.Zoubek\Downloads\Nextgen-API-Spec.yaml`
+- OAS SHA-256: `88006C4D59EB0C0E4344458CAA5CEB130EEFF41AF325087221536260319FDD8F`
+- OAS contract: `NetScaler Next-Gen API` version `0.1.10`, base path `/mgmt/api/nextgen/v1`, login `POST /login`, cookie `sessionid`.
+- Local/server revision: `ea306bb` / `ea306bb`.
+- Validation: 16 repository tests passed; changed adapter and control images built; adapter, control API, and frontend are running in Compose project `waf-intelligence`.
+- Live ADC result: adapter health reached `192.168.11.101` but Next-Gen login returned HTTP 403 from Apache. Application discovery is therefore blocked with no fallback and no ADC mutation.
+- AppFW result: the supplied OAS has no AppFW profile, policy, or signature operation; those endpoints return `unsupported-by-oas`, and old AppFW write routes return HTTP 501.
+- State: implementation deployed; read-only ADC discovery blocked by external API exposure/access policy; write mode remains disabled.
+- Next action: enable/expose the Next-Gen API on the ADC or correct its access policy, then rerun only the read-only login and `/applications` checks. After successful application discovery, connect detected web applications to the provider-neutral protection plan; keep signature catalog import administrator-supplied until the OAS exposes a signature operation.
+- Recovery after connectivity loss or reboot: read this checkpoint, verify `git rev-parse --short HEAD` in `C:\Users\G.Zoubek\Projects\waf-intelligence` and `/home/grega/waf-intelligence-repo`, verify `docker compose -p waf-intelligence ps` on `192.168.11.90`, query `http://192.168.11.90:8110/healthz`, query the adapter health through `waf-intelligence-netscaler-adapter-1`, then retry `POST https://192.168.11.101/mgmt/api/nextgen/v1/login` only after confirming the 403 condition changed. Do not enable writes or create duplicate jobs.
