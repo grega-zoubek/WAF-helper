@@ -21,6 +21,8 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
 
+from app.rule_catalog import resolve_rule_catalog
+
 app = FastAPI(title="WAF Intelligence Control API", version="0.1.0")
 jobs: dict[str, dict[str, Any]] = {}
 ADAPTER_URL = "http://netscaler-adapter:8092"
@@ -1516,6 +1518,8 @@ async def build_signature_set_plan(job_id: str, source_profile_name: str | None 
     catalog = parse_signature_catalog(signatures_payload)
     recommendations = analysis.get("protection_plan", {}).get("signature_recommendations", [])
     recommendation_keys = [str(item.get("catalog_key", "")) for item in recommendations]
+    generic_intents = analysis.get("generic_protection_intents", [])
+    rule_catalog_resolution = resolve_rule_catalog(generic_intents, [])
     technology_names = [str(item.get("technology", "")) for item in (profile.get("technologies", []) or []) if item.get("technology")]
     current_binding = str(source.get("signatures", "")).strip().lower()
     available: list[dict[str, Any]] = []
@@ -1532,15 +1536,16 @@ async def build_signature_set_plan(job_id: str, source_profile_name: str | None 
         recommended = bool(matching_keys or baseline)
         available.append({"name": entry_name, "url": entry_url, "base_version": entry.get("base_version"), "encrypted_version": entry.get("encrypted_version"), "creation_date": entry.get("creation_date"), "selected": recommended, "baseline": baseline, "recommended": recommended, "matching_catalog_keys": matching_keys, "matching_technologies": technology_names[:20], "reason": "Existing source binding or technology/application recommendation." if recommended else "Available on the ADC but not selected by the current discovery evidence."})
     selected_urls = [item["url"] for item in available if item.get("selected") and item.get("url")]
-    if not selected_urls and available:
-        available[0]["selected"] = True
-        available[0]["recommended"] = True
-        available[0]["reason"] = "Fallback baseline because no current binding or technology match was found."
-        selected_urls = [available[0]["url"]]
+    if rule_catalog_resolution["status"] == "blocked-missing-rule-level-catalog":
+        for item in available:
+            item["selected"] = False
+            item["recommended"] = False
+            item["reason"] = "Catalog file is available, but rule-level metadata is required before generic applicability can be resolved."
+        selected_urls = []
     baseline_urls = [item["url"] for item in available if item.get("baseline") and item.get("url")]
     selected_entries = [item for item in available if item.get("url") in selected_urls]
-    technology_context = {"primary_technology": (analysis.get("application") or {}).get("primary_technology"), "technologies": technology_names[:50], "recommendation_keys": recommendation_keys, "route_count": len(profile.get("route_inventory", [])), "field_count": len(profile.get("field_formats", [])), "evidence_count": len(profile.get("evidence", []))}
-    plan = {"job_id": job_id, "nsip": str(target_payload.get("host", "unknown"))[:64] if isinstance(target_payload, dict) else "unknown", "source_profile": source_name, "destination_profile": destination, "source_snapshot": source_snapshot, "technology_context": technology_context, "available_signatures": available, "selected_signature_urls": selected_urls, "added_signature_urls": sorted(set(selected_urls) - set(baseline_urls)), "removed_signature_urls": sorted(set(baseline_urls) - set(selected_urls)), "commands": signature_set_commands(source_snapshot, destination, selected_entries), "status": "draft", "approval_required": True, "changes_applied": False, "write_enabled": os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() == "true", "note": "Signature entries represent ADC signature catalogs/files returned by the current ADC API. The apply guard requires exactly one selected catalog because the current profile binding model exposes one signature binding."}
+    technology_context = {"primary_technology": (analysis.get("application") or {}).get("primary_technology"), "technologies": technology_names[:50], "recommendation_keys": recommendation_keys, "generic_protection_intents": generic_intents, "rule_catalog_resolution": rule_catalog_resolution, "route_count": len(profile.get("route_inventory", [])), "field_count": len(profile.get("field_formats", [])), "evidence_count": len(profile.get("evidence", []))}
+    plan = {"job_id": job_id, "nsip": str(target_payload.get("host", "unknown"))[:64] if isinstance(target_payload, dict) else "unknown", "source_profile": source_name, "destination_profile": destination, "source_snapshot": source_snapshot, "technology_context": technology_context, "rule_catalog_resolution": rule_catalog_resolution, "available_signatures": available, "selected_signature_urls": selected_urls, "added_signature_urls": sorted(set(selected_urls) - set(baseline_urls)), "removed_signature_urls": sorted(set(baseline_urls) - set(selected_urls)), "commands": signature_set_commands(source_snapshot, destination, selected_entries), "status": "blocked-missing-rule-level-catalog" if rule_catalog_resolution["status"] == "blocked-missing-rule-level-catalog" else "draft", "approval_required": True, "changes_applied": False, "write_enabled": os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() == "true", "note": "Generic intents are resolved against normalized provider rule metadata. Catalog-file metadata alone is never treated as an applicable rule selection."}
     plan["plan_fingerprint"] = signature_set_fingerprint(plan, selected_urls, destination)
     return plan
 
