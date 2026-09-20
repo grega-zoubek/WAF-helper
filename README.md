@@ -18,6 +18,14 @@ includes Microsoft Exchange OWA, WordPress, Drupal, Joomla, Magento, IIS, nginx,
 PHP, Java, ASP.NET, Laravel, Angular, React, Next.js, Nuxt, jQuery, Bootstrap, and API
 protocol markers.
 
+Protection planning is provider-neutral. The analysis service derives generic protection
+intents from observed application surfaces—baseline attack signatures, input/injection,
+XSS, sessions/authentication, uploads, XML services, and optional runtime/product
+enrichment. A provider adapter must resolve those intents against the installed NetScaler
+catalog before selecting rule IDs. Predefined policy rules are authoritative; an optional
+AI advisor may explain or rank evidence but cannot invent unavailable rules or apply ADC
+changes. The default automation mode is proposal-only.
+
 The first release is read-only and preview-oriented. It does not expose arbitrary
 CLI or NITRO operations and does not apply WAF changes automatically.
 

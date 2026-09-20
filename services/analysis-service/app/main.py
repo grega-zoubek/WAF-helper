@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from app.generic_protection import automation_policy, build_generic_protection_intents
+
 app = FastAPI(title="WAF Intelligence Analysis Service", version="0.1.0")
 
 
@@ -392,6 +394,8 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
         "run_id": request.run_id,
         "analysis_mode": "deterministic-synthesis",
         "ai_handoff_ready": True,
+        "generic_protection_intents": build_generic_protection_intents(request.profile),
+        "automation_policy": automation_policy(),
         "technology_profile": request.profile.get("technologies", []),
         "detected_application_platforms": [
             item for item in request.profile.get("technologies", [])
