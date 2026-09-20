@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "services" / "netscaler-adapter"))
 
-from app.cli_inventory import build_classic_inventory, build_waf_inventory, parse_lb_vserver_detail, parse_profiles, parse_signatures
+from app.cli_inventory import build_classic_inventory, build_waf_inventory, parse_lb_vserver_detail, parse_profiles, parse_signatures, parse_virtual_servers
 
 
 class CliInventoryTests(unittest.TestCase):
@@ -76,6 +76,29 @@ class CliInventoryTests(unittest.TestCase):
         )
         self.assertEqual(result["vserver"]["name"], "lb_vs_juice_shop")
         self.assertEqual(result["bound_services"][0]["port"], 3000)
+
+    def test_typed_vserver_parser_preserves_searchable_parameters(self):
+        records = parse_virtual_servers(
+            "1) external_cs_vs (192.168.11.40:443) - SSL Type: CONTENT\n"
+            "\tState: UP\n\tDefault: vpn_vs_remote\n\tAuthentication: OFF\n",
+            "cs",
+        )
+        self.assertEqual(records[0]["vserver_type"], "cs")
+        self.assertEqual(records[0]["parameters"]["Default"], "vpn_vs_remote")
+
+    def test_classic_inventory_groups_lb_cs_and_gateway(self):
+        outputs = {
+            "show lb vserver": "1) lb (192.168.11.91:80) - HTTP\n\tState: UP\n",
+            "show cs vserver": "1) cs (192.168.11.40:443) - SSL\n\tState: UP\n\tDefault: vpn\n",
+            "show vpn vserver": "1) vpn (0.0.0.0:0) - SSL\n\tState: UP\n",
+            "show service": "Done\n",
+            "show servicegroup": "Done\n",
+        }
+        result = build_classic_inventory(outputs)
+        self.assertEqual(result["vservers_by_type"]["lb"]["record_count"], 1)
+        self.assertEqual(result["vservers_by_type"]["cs"]["record_count"], 1)
+        self.assertEqual(result["vservers_by_type"]["gw"]["record_count"], 1)
+        self.assertEqual(result["vservers_by_type"]["global"]["record_count"], 3)
 
 
 if __name__ == "__main__":

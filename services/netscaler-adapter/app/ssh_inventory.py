@@ -11,11 +11,13 @@ from typing import Any
 
 import paramiko
 
-from app.cli_inventory import build_waf_inventory, parse_lb_vservers, parse_servicegroups
+from app.cli_inventory import build_waf_inventory, parse_servicegroups, parse_virtual_servers
 
 
 CLI_COMMANDS = (
     "show lb vserver",
+    "show cs vserver",
+    "show vpn vserver",
     "show service",
     "show servicegroup",
     "show ns feature",
@@ -78,12 +80,17 @@ def collect_waf_inventory() -> dict[str, Any]:
         # Detail queries are read-only and are derived only from sanitized
         # object names returned by the ADC summary command. They provide the
         # vserver-to-service binding chain needed for generic target matching.
-        for vserver in parse_lb_vservers(outputs.get("show lb vserver", "")):
-            name = str(vserver.get("name", ""))
-            if re.fullmatch(r"[A-Za-z0-9_.-]+", name):
-                command = f"show lb vserver {name}"
-                channel.send(command + "\n")
-                outputs[command] = _read_until_prompt(channel, timeout)
+        for vserver_type, summary_command, detail_prefix in (
+            ("lb", "show lb vserver", "show lb vserver"),
+            ("cs", "show cs vserver", "show cs vserver"),
+            ("gw", "show vpn vserver", "show vpn vserver"),
+        ):
+            for vserver in parse_virtual_servers(outputs.get(summary_command, ""), vserver_type):
+                name = str(vserver.get("name", ""))
+                if re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                    command = f"{detail_prefix} {name}"
+                    channel.send(command + "\n")
+                    outputs[command] = _read_until_prompt(channel, timeout)
         for servicegroup in parse_servicegroups(outputs.get("show servicegroup", "")):
             name = str(servicegroup.get("name", ""))
             if re.fullmatch(r"[A-Za-z0-9_.-]+", name):

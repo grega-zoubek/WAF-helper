@@ -31,6 +31,9 @@
     label { display: flex; gap: .5rem; align-items: center; }
     input[type="checkbox"] { width: 1.1rem; height: 1.1rem; }
     .url-short { display: block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vserver-controls { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(90px, .6fr) minmax(260px, 2fr); gap: .75rem; align-items: end; margin: 1rem 0 .5rem; }
+    .vserver-controls label { display: grid; gap: .3rem; align-items: stretch; }
+    @media (max-width: 720px) { .vserver-controls { grid-template-columns: 1fr; } }
     details ul { margin: .5rem 0 0; padding-left: 1.2rem; }
     details a { overflow-wrap: anywhere; }
     details.url-list-panel { margin-top: .75rem; }
@@ -134,13 +137,31 @@
       const vservers = asRows(classic.vservers?.records);
       const classicBindings = asRows(classic.bindings?.records);
       const profileBindings = vservers.filter(item => String(item.appfw_profile || '').trim());
-      const classicRows = vservers.map(item => {
-        const bound = asRows(item.bound_services).map(service => `${escapeHtml(service.name || '-')} (${escapeHtml(service.host || '-')}:${escapeHtml(service.port || '-')})`).join('<br>') || '-';
-        return `<tr><td>${escapeHtml(item.name || '-')}</td><td>${escapeHtml(item.host || '-')}:${escapeHtml(item.port || '-')}</td><td>${escapeHtml(item.state || '-')}</td><td>${bound}</td><td>${escapeHtml(item.appfw_profile || 'none evidenced')}</td></tr>`;
-      }).join('');
-      const classicSection = `<h4>Classic ADC application topology</h4><p class="small">Status: <strong>${escapeHtml(classic.status || 'unavailable')}</strong> · vservers: <strong>${vservers.length}</strong> · services: <strong>${classic.services?.record_count || 0}</strong> · service groups: <strong>${classic.servicegroups?.record_count || 0}</strong> · bindings: <strong>${classicBindings.length}</strong></p><p class="small">AppFW feature: <strong>${escapeHtml(waf.feature?.status || 'unknown')}</strong> · vserver AppFW profile bindings: <strong>${profileBindings.length}</strong> · active policies: <strong>${policies.length}</strong></p>${classicRows ? `<table><thead><tr><th>LB vserver</th><th>VIP</th><th>State</th><th>Bound services</th><th>AppFW profile</th></tr></thead><tbody>${classicRows}</tbody></table>` : '<p class="small muted">No classic ADC topology was enumerated.</p>'}`;
+      const grouped = classic.vservers_by_type || {};
+      window.classicVserverGroups = {
+        lb: asRows(grouped.lb?.records || vservers.filter(item => item.vserver_type === 'lb')),
+        cs: asRows(grouped.cs?.records || vservers.filter(item => item.vserver_type === 'cs')),
+        gw: asRows(grouped.gw?.records || vservers.filter(item => item.vserver_type === 'gw')),
+        global: asRows(grouped.global?.records || vservers),
+      };
+      const classicSection = `<h4>Classic ADC application topology</h4><p class="small">Status: <strong>${escapeHtml(classic.status || 'unavailable')}</strong> · total vservers: <strong>${vservers.length}</strong> · services: <strong>${classic.services?.record_count || 0}</strong> · service groups: <strong>${classic.servicegroups?.record_count || 0}</strong> · bindings: <strong>${classicBindings.length}</strong></p><p class="small">AppFW feature: <strong>${escapeHtml(waf.feature?.status || 'unknown')}</strong> · vserver AppFW profile bindings: <strong>${profileBindings.length}</strong> · active policies: <strong>${policies.length}</strong></p><div class="vserver-controls"><label class="small">Vserver type <select id="vserver-type-filter"><option value="lb">LB</option><option value="cs">CS</option><option value="gw">GW</option><option value="global">Global</option></select></label><label class="small">Rows <select id="vserver-page-size"><option value="10">10</option><option value="50">50</option><option value="100">100</option></select></label><label class="small">Search any vserver parameter <input id="vserver-search" type="search" placeholder="name, VIP, state, policy, parameter..."></label></div><p id="classic-vserver-summary" class="small muted"></p><table><thead><tr><th>Vserver</th><th>Type</th><th>VIP</th><th>Protocol</th><th>State</th><th>Bound services</th><th>AppFW profile</th></tr></thead><tbody id="classic-vserver-body"></tbody></table>`;
       host.innerHTML = `<h3>NetScaler WAF inventory</h3><p class="small">AppFW profiles: <strong>${profiles.length}</strong> · policies: <strong>${policies.length}</strong> · signature catalogs: <strong>${signatures.length}</strong> · status: <strong>${escapeHtml(unsupported ? 'unsupported by supplied OAS' : signatureStatus)}</strong></p>${capabilityMessage}<h4>Available signature catalogs</h4><p class="small muted">Select catalogs for the proposal only. No NetScaler changes are made by selecting them. After selecting catalogs, run a discovery analysis and choose Generate ADC change plan.</p><p id="waf-selection-status" class="small">Selected for proposal: <strong>${window.selectedSignatureCatalogUrls.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Select / name</th><th>File</th><th>Base version</th><th>Encrypted version</th><th>Creation date</th></tr></thead><tbody>${signatureRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'Signature catalogs are not available through the supplied Next-Gen OAS.' : 'No enumerable signature catalogs returned.'}</p>`}<div class="card"><h4>Create new custom WAF profile</h4><p class="small muted">Choose an existing profile as the baseline and provide a new custom name. This only prepares a plan; no profile is created automatically.</p><label class="small">Base profile <select class="create-profile-source">${sourceOptions}</select></label><label class="small">Custom profile name <input class="create-profile-name" maxlength="128" placeholder="waf-web-custom"></label><button class="secondary create-profile-plan-button">Prepare profile creation plan</button></div><h4>AppFW profiles</h4>${profileRows ? `<table><thead><tr><th>Name</th><th>State</th><th>Types</th><th>Origin</th><th>Signatures</th><th>Duplicate</th></tr></thead><tbody>${profileRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'AppFW profiles are not exposed by the supplied Next-Gen OAS.' : 'No AppFW profiles returned.'}</p>`}<div id="profile-duplicate-plan"></div><h4>AppFW policies</h4>${policyRows ? `<table><thead><tr><th>Name</th><th>Action / state</th><th>Rule</th></tr></thead><tbody>${policyRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'AppFW policies are not exposed by the supplied Next-Gen OAS.' : 'No AppFW policies returned or policy inventory is unavailable.'}</p>`}<p class="small muted">The selected catalogs and profile plans are review-only. Write mode remains disabled.</p>`;
       host.insertAdjacentHTML('beforeend', classicSection);
+      renderClassicVserverTable();
+    }
+    function renderClassicVserverTable() {
+      const body = document.querySelector('#classic-vserver-body');
+      const type = document.querySelector('#vserver-type-filter')?.value || 'lb';
+      const pageSize = Number(document.querySelector('#vserver-page-size')?.value || 10);
+      const query = (document.querySelector('#vserver-search')?.value || '').trim().toLowerCase();
+      const records = (window.classicVserverGroups?.[type] || []).filter(item => !query || JSON.stringify(item).toLowerCase().includes(query));
+      const visible = records.slice(0, pageSize);
+      if (body) body.innerHTML = visible.map(item => {
+        const bound = (item.bound_services || []).map(service => `${escapeHtml(service.name || '-')} (${escapeHtml(service.host || '-')}:${escapeHtml(service.port || '-')})`).join('<br>') || '-';
+        return `<tr><td>${escapeHtml(item.name || '-')}</td><td>${escapeHtml(item.vserver_type || type)}</td><td>${escapeHtml(item.host || '-')}:${escapeHtml(item.port || '-')}</td><td>${escapeHtml(item.protocol || '-')}</td><td>${escapeHtml(item.state || '-')}</td><td>${bound}</td><td>${escapeHtml(item.appfw_profile || 'none evidenced')}</td></tr>`;
+      }).join('') || '<tr><td colspan="7">No vservers match the selected type/search.</td></tr>';
+      const summary = document.querySelector('#classic-vserver-summary');
+      if (summary) summary.textContent = `Showing ${visible.length} of ${records.length} matching vservers · page size ${pageSize}. Search covers all enumerated vserver parameters.`;
     }
     function renderClassicCorrelation(payload) {
       const host = document.querySelector('#adc-correlation');
@@ -335,6 +356,7 @@
     document.querySelector('#disconnect-button').addEventListener('click', async () => { const status = document.querySelector('#adc-status'); status.classList.remove('connected-message'); status.textContent = 'Disconnecting...'; try { if (window.currentConnectionId) await api(`/api/netscalers/${encodeURIComponent(window.currentConnectionId)}/disconnect`, {method: 'POST'}); } catch (error) {} window.currentConnectionId = null; document.querySelector('#connected-adc').textContent = 'Not connected'; status.textContent = 'Disconnected.'; document.querySelector('#connect-menu').hidden = false; document.querySelector('#saved-netscalers').hidden = false; document.querySelector('#disconnect-button').hidden = true; });
     document.querySelector('#load-waf-inventory').addEventListener('click', loadWafInventory);
     document.querySelector('#waf-inventory').addEventListener('change', event => {
+      if (event.target.closest('#vserver-type-filter') || event.target.closest('#vserver-page-size')) { renderClassicVserverTable(); return; }
       const checkbox = event.target.closest('.signature-select');
       if (!checkbox) return;
       const selected = new Set(window.selectedSignatureCatalogUrls || []);
@@ -343,6 +365,7 @@
       const status = document.querySelector('#waf-selection-status');
       if (status) status.innerHTML = `Selected for proposal: <strong>${selected.size}</strong>`;
     });
+    document.querySelector('#waf-inventory').addEventListener('input', event => { if (event.target.closest('#vserver-search')) renderClassicVserverTable(); });
     document.querySelector('#waf-inventory').addEventListener('click', async event => {
       const button = event.target.closest('.duplicate-profile-button');
       const createButton = event.target.closest('.create-profile-plan-button');

@@ -143,34 +143,49 @@ def _endpoint_record(match: re.Match[str]) -> dict[str, Any]:
     }
 
 
-def parse_lb_vservers(text: str) -> list[dict[str, Any]]:
-    """Parse the summary form of ``show lb vserver`` without retaining raw CLI text."""
-    records: list[dict[str, Any]] = []
+SENSITIVE_PARAMETER_TERMS = ("password", "secret", "token", "private key", "certificate key")
+
+
+def _parameter_map(text: str) -> dict[str, str]:
+    parameters: dict[str, str] = {}
     for line in text.splitlines():
-        match = ENDPOINT_HEADER.match(line)
-        if not match or match.group("index") is None:
+        match = re.match(r"^\s*(?P<key>[^:\r\n]{1,96}):\s*(?P<value>.*?)\s*$", line)
+        if not match:
             continue
-        record = _endpoint_record(match)
-        records.append({
-            **record,
-            "state": _value(line, r"State:\s*(.+)$"),
-            "effective_state": None,
-            "bound_service_count": None,
-        })
-    # The list output has one state/count line per vserver. Associate those
-    # values with the preceding endpoint until the next numbered endpoint.
+        key = re.sub(r"\s+", " ", match.group("key")).strip()
+        value = match.group("value").strip().strip('"')
+        normalized = key.lower()
+        if not key or not value or re.match(r"^\d+\)", key) or any(term in normalized for term in SENSITIVE_PARAMETER_TERMS):
+            continue
+        parameters[key[:96]] = value[:300]
+    return parameters
+
+
+def parse_virtual_servers(text: str, vserver_type: str = "lb") -> list[dict[str, Any]]:
+    """Parse a typed ``show * vserver`` summary into searchable metadata."""
+    records: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     for line in text.splitlines():
         match = ENDPOINT_HEADER.match(line)
         if match and match.group("index") is not None:
-            current = next((item for item in reversed(records) if item["name"] == match.group("name")), None)
+            record = _endpoint_record(match)
+            current = {
+                **record,
+                "vserver_type": vserver_type,
+                "state": None,
+                "effective_state": None,
+                "bound_service_count": None,
+                "parameters": {},
+            }
+            records.append(current)
             continue
         if current is None:
             continue
-        state = re.search(r"^\s*State:\s*(.+?)\s*$", line, re.IGNORECASE)
+        current["parameters"].update(_parameter_map(line))
+        state = re.search(r"^\s*State:\s*(\S+)", line, re.IGNORECASE)
         if state:
             current["state"] = state.group(1).strip()
-        effective = re.search(r"^\s*Effective State:\s*(.+?)\s*$", line, re.IGNORECASE)
+        effective = re.search(r"^\s*Effective State:\s*(\S+)", line, re.IGNORECASE)
         if effective:
             current["effective_state"] = effective.group(1).strip()
         bound = re.search(r"No\. of Bound Services:\s*(\d+)\s*\(Total\).*?(\d+)\s*\(Active\)", line, re.IGNORECASE)
@@ -179,21 +194,29 @@ def parse_lb_vservers(text: str) -> list[dict[str, Any]]:
     return records
 
 
-def parse_lb_vserver_detail(text: str) -> dict[str, Any] | None:
-    """Parse one vserver detail response, including directly bound services."""
+def parse_lb_vservers(text: str) -> list[dict[str, Any]]:
+    return parse_virtual_servers(text, "lb")
+
+
+def parse_virtual_server_detail(text: str, vserver_type: str = "lb") -> dict[str, Any] | None:
+    """Parse one vserver detail response without retaining raw CLI text."""
     matches = [match for match in (ENDPOINT_HEADER.match(line) for line in text.splitlines()) if match]
     if not matches:
         return None
-    vserver = _endpoint_record(matches[0])
+    vserver = {**_endpoint_record(matches[0]), "vserver_type": vserver_type, "parameters": _parameter_map(text)}
     bindings = [_endpoint_record(match) for match in matches[1:]]
     appfw_profile = _value(text, r"^\s*(?:AppFW|AppFw|AppFW Profile|AppFw Profile)\s*(?:Profile)?\s*:\s*(.+)$")
-    state = _value(text, r"^\s*State:\s*(.+)$")
-    effective_state = _value(text, r"^\s*Effective State:\s*(.+)$")
+    state = _value(text, r"^\s*State:\s*(\S+)")
+    effective_state = _value(text, r"^\s*Effective State:\s*(\S+)")
     return {
         "vserver": {**vserver, "state": state, "effective_state": effective_state},
         "bound_services": bindings,
         "appfw_profile": appfw_profile,
     }
+
+
+def parse_lb_vserver_detail(text: str) -> dict[str, Any] | None:
+    return parse_virtual_server_detail(text, "lb")
 
 
 def parse_services(text: str) -> list[dict[str, Any]]:
@@ -254,32 +277,44 @@ def parse_servicegroups(text: str) -> list[dict[str, Any]]:
 
 
 def build_classic_inventory(outputs: dict[str, str]) -> dict[str, Any]:
-    vservers = parse_lb_vservers(outputs.get("show lb vserver", ""))
+    source_specs = {
+        "lb": ("show lb vserver", "show lb vserver"),
+        "cs": ("show cs vserver", "show cs vserver"),
+        "gw": ("show vpn vserver", "show vpn vserver"),
+    }
+    typed_vservers: dict[str, list[dict[str, Any]]] = {key: parse_virtual_servers(outputs.get(summary, ""), key) for key, (summary, _) in source_specs.items()}
     details: dict[str, Any] = {}
     for key, text in outputs.items():
-        if key.startswith("show lb vserver "):
-            parsed = parse_lb_vserver_detail(text)
-            if parsed:
-                details[parsed["vserver"]["name"]] = parsed
-    for vserver in vservers:
-        detail = details.get(vserver["name"])
-        if detail:
-            vserver["bound_services"] = detail["bound_services"]
-            vserver["appfw_profile"] = detail["appfw_profile"]
-            vserver["state"] = detail["vserver"].get("state") or vserver.get("state")
-            vserver["effective_state"] = detail["vserver"].get("effective_state") or vserver.get("effective_state")
-        else:
-            vserver["bound_services"] = []
-            vserver["appfw_profile"] = None
+        for vserver_type, (_, prefix) in source_specs.items():
+            if key.startswith(prefix + " "):
+                parsed = parse_virtual_server_detail(text, vserver_type)
+                if parsed:
+                    details[f"{vserver_type}:{parsed['vserver']['name']}"] = parsed
+    for vserver_type, records in typed_vservers.items():
+        for vserver in records:
+            detail = details.get(f"{vserver_type}:{vserver['name']}")
+            if detail:
+                vserver["bound_services"] = detail["bound_services"]
+                vserver["appfw_profile"] = detail["appfw_profile"]
+                vserver["state"] = detail["vserver"].get("state") or vserver.get("state")
+                vserver["effective_state"] = detail["vserver"].get("effective_state") or vserver.get("effective_state")
+                vserver["parameters"].update(detail["vserver"].get("parameters", {}))
+            else:
+                vserver["bound_services"] = []
+                vserver["appfw_profile"] = None
+    vservers = [item for group in typed_vservers.values() for item in group]
+    services = parse_services(outputs.get("show service", ""))
     servicegroups = parse_servicegroups(outputs.get("show servicegroup", ""))
-    status = "enumerated" if vservers or parse_services(outputs.get("show service", "")) or servicegroups else "empty"
+    status = "enumerated" if vservers or services or servicegroups else "empty"
+    bindings = [{"vserver": item["name"], "vserver_type": item.get("vserver_type", "lb"), "service": service["name"], "service_host": service["host"], "service_port": service["port"], "service_protocol": service["protocol"], "appfw_profile": item.get("appfw_profile")} for item in vservers for service in item.get("bound_services", [])]
     return {
         "provider": "netscaler-cli-over-ssh",
         "status": status,
         "vservers": {"status": status, "record_count": len(vservers), "records": vservers},
-        "services": {"status": status, "record_count": len(parse_services(outputs.get("show service", ""))), "records": parse_services(outputs.get("show service", ""))},
+        "vservers_by_type": {key: {"status": status, "record_count": len(records), "records": records} for key, records in typed_vservers.items()} | {"global": {"status": status, "record_count": len(vservers), "records": vservers}},
+        "services": {"status": status, "record_count": len(services), "records": services},
         "servicegroups": {"status": status, "record_count": len(servicegroups), "records": servicegroups},
-        "bindings": {"status": status, "record_count": sum(len(item.get("bound_services", [])) for item in vservers), "records": [{"vserver": item["name"], "service": service["name"], "service_host": service["host"], "service_port": service["port"], "service_protocol": service["protocol"], "appfw_profile": item.get("appfw_profile")} for item in vservers for service in item.get("bound_services", [])]},
+        "bindings": {"status": status, "record_count": len(bindings), "records": bindings},
         "automatic_apply_allowed": False,
     }
 
