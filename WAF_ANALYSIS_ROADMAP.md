@@ -256,8 +256,11 @@ If connectivity is lost or a machine reboots:
 
 - Timestamp: 2026-09-20 UTC
 - Action: corrected WAF inventory reporting so unsupported AppFW/profile/signature operations are not presented as an empty WAF inventory; added capability-aware adapter/control inventory route and explicit UI status.
-- State: implementation complete locally; validation and deployment pending.
+- State: deployed and verified.
 - Read-only scope: the change only reads `/applications` through the supplied Next-Gen OAS. It does not call legacy APIs, mutate the ADC, enable writes, or retain credentials/raw provider payloads.
 - Expected live result: applications are enumerated independently; WAF resources report `unsupported-by-oas` with `automatic_apply_allowed=false`; this is not equivalent to an empty catalog.
-- Next action: run the repository tests in Docker, deploy the changed adapter/control/frontend services, and verify `GET /api/adc/inventory` plus the UI-facing control route.
+- Validation/deployment: revision `b3f4f58`; 18 tests passed in the control image; adapter and control API were rebuilt and restarted; frontend serves the updated inventory route.
+- Live result: adapter and control `GET /api/adc/inventory` returned HTTP 200 with `applications.status=enumerated`, `applications.record_count=0`, `waf.status=unsupported-by-oas`, `waf.automatic_apply_allowed=false`, `capabilities.appfw_profiles=false`, `capabilities.appfw_policies=false`, `capabilities.signature_catalog=false`, `rule_catalog.status=configured-file-missing`, and `write_enabled=false`.
+- Compatibility result: existing profile and signature-catalog routes now preserve `unsupported-by-oas` instead of implying an empty inventory.
+- Next action: obtain an administrator-approved AppFW/signature inventory source compatible with the Next-Gen integration, or extend the supplied OAS through an approved provider contract. Do not treat the current zero application count or unsupported WAF status as proof that the ADC has no classic WAF configuration.
 - Recovery after connectivity loss or reboot: verify local/server `git rev-parse --short HEAD`, SSH to `grega@192.168.11.90`, run `docker compose -p waf-intelligence ps`, query `http://192.168.11.90:8110/healthz`, then query `http://192.168.11.90:8110/api/adc/inventory`. Do not re-run discovery or enable writes; resume from the inventory verification step.
