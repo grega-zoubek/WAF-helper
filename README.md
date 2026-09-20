@@ -26,8 +26,11 @@ catalog before selecting rule IDs. Predefined policy rules are authoritative; an
 AI advisor may explain or rank evidence but cannot invent unavailable rules or apply ADC
 changes. The default automation mode is proposal-only.
 
-The first release is read-only and preview-oriented. It does not expose arbitrary
-CLI or NITRO operations and does not apply WAF changes automatically.
+The first release is read-only and preview-oriented. NetScaler topology discovery
+uses the supplied NetScaler Next-Gen API contract (`/mgmt/api/nextgen/v1`) with
+cookie-based login. The supplied contract does not expose AppFW profiles or
+signature catalogs, so those resources remain explicitly unavailable and the
+adapter never falls back to an older API. WAF changes are not applied automatically.
 
 ## Deployment
 

@@ -124,7 +124,7 @@ class SignatureSetWriteRequest(SignatureSetPreflightRequest):
     confirmation_phrase: str = Field(min_length=1, max_length=64)
 
 
-def nitro_records(payload: Any, key: str) -> list[dict[str, Any]]:
+def provider_records(payload: Any, key: str) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
     value = payload.get(key, [])
@@ -151,25 +151,25 @@ def _signature_entry_from_record(item: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def parse_signature_catalog(payload: Any) -> dict[str, Any]:
-    """Normalize structured or text-form Nitro signature inventory without retaining raw text."""
+    """Normalize a provider signature inventory without retaining raw text."""
     resource = payload.get("appfwsignatures") if isinstance(payload, dict) else None
     entries: list[dict[str, Any]] = []
     source = "none"
     if isinstance(resource, list):
-        source = "nitro-json"
+        source = "provider-json"
         for item in resource:
             if isinstance(item, dict):
                 entry = _signature_entry_from_record(item)
                 if entry:
                     entries.append(entry)
     elif isinstance(resource, dict):
-        source = "nitro-json"
+        source = "provider-json"
         direct_entry = _signature_entry_from_record(resource)
         if direct_entry:
             entries.append(direct_entry)
         response_text = resource.get("response")
         if isinstance(response_text, str):
-            source = "nitro-response-text"
+            source = "provider-response-text"
             pattern = re.compile(r"(?ms)^\s*(?P<index>\d+)\)\s+Url:\s*(?P<url>\S+)\s+Name:\s*\"(?P<name>[^\"]+)\"(?P<body>.*?)(?=^\s*\d+\)\s+Url:|\Z)")
             for match in pattern.finditer(response_text):
                 body = match.group("body")
@@ -220,14 +220,15 @@ def signature_inventory_summary(payload: Any, selected_catalog_urls: list[str] |
 
 
 def adc_version_value(payload: Any) -> str:
-    records = nitro_records(payload, "nsversion")
+    records = provider_records(payload, "nsversion")
     if records:
         return str(records[0].get("version") or records[0].get("versionnumber") or records[0].get("build") or "unknown")[:200]
     return "unknown"
 
 
 def match_protection_plan_to_adc(protection_plan: dict[str, Any], profiles_payload: Any, signatures_payload: Any, version_payload: Any, selected_catalog_urls: list[str] | None = None) -> dict[str, Any]:
-    profiles = nitro_records(profiles_payload, "appfwprofile")
+    profiles = provider_records(profiles_payload, "appfwprofile")
+    appfw_capability_status = str(profiles_payload.get("status", "available")) if isinstance(profiles_payload, dict) else "available"
     profile_view = []
     for item in profiles:
         name = str(item.get("name", ""))
@@ -259,8 +260,9 @@ def match_protection_plan_to_adc(protection_plan: dict[str, Any], profiles_paylo
         entry["adc_signature_match_status"] = "catalog-available" if signature_inventory["status"] == "enumerated" else "not-available"
         entry["deployment_ready"] = False
         matched_recommendations.append(entry)
+    capability_block = ["AppFW profiles and signature operations are not exposed by the supplied Next-Gen OAS"] if appfw_capability_status == "unsupported-by-oas" else []
     return {
-        "status": "matched-profile-signature-catalog-available" if selected_profile and signature_inventory["status"] == "enumerated" else ("matched-profile-signature-resolution-pending" if selected_profile else "profile-not-found"),
+        "status": "blocked-appfw-unavailable" if capability_block else ("matched-profile-signature-catalog-available" if selected_profile and signature_inventory["status"] == "enumerated" else ("matched-profile-signature-resolution-pending" if selected_profile else "profile-not-found")),
         "adc_version": version,
         "profile_count": len(profile_view),
         "selected_profile": selected_profile,
@@ -270,7 +272,7 @@ def match_protection_plan_to_adc(protection_plan: dict[str, Any], profiles_paylo
         "selected_signature_catalogs": signature_inventory.get("selected_entries", []),
         "signature_recommendations": matched_recommendations,
         "deployment_ready": False,
-        "blocking_conditions": (["No suitable web AppFW profile was found"] if not selected_profile else []) + (["No signature catalog was returned by the ADC"] if signature_inventory["status"] != "enumerated" else []),
+        "blocking_conditions": capability_block + (["No suitable web AppFW profile was found"] if not selected_profile else []) + (["No signature catalog was returned by the ADC"] if signature_inventory["status"] != "enumerated" else []),
     }
 
 
@@ -350,7 +352,7 @@ def build_write_plan(job: dict[str, Any], protection_plan: dict[str, Any], adc_m
         profile_name = str(selected_profile.get("name") or "")[:128]
         if signature_name and profile_name:
             signature_commands.append({
-                "nitro": {"method": "PUT", "path": "/nitro/v1/config/appfwprofile", "body": {"appfwprofile": {"name": profile_name, "signatures": signature_name}}},
+                "nextgen": None,
                 "cli_equivalent": f"set appfw profile {profile_name} -signatures {signature_name}",
                 "note": "Credentials and session headers are intentionally omitted from the preview.",
             })
@@ -393,7 +395,7 @@ def build_write_plan(job: dict[str, Any], protection_plan: dict[str, Any], adc_m
             "resource": "rewrite-policy",
             "action": "prepare-response-header-policy",
             "headers": header_plan,
-            "commands": {"status": "preview-only", "nitro": None, "cli_equivalent": None, "note": "Response-rewrite write commands are not enabled until the rewrite-policy adapter and binding model are explicitly approved."},
+            "commands": {"status": "preview-only", "nextgen": None, "cli_equivalent": None, "note": "Response-rewrite write commands are not enabled until the rewrite-policy adapter and binding model are explicitly approved."},
             "mode": "CSP-Report-Only",
             "status": "blocked-until-approved",
             "requires_drift_check": True,
@@ -1215,6 +1217,11 @@ async def adc_version() -> Any:
     return await adapter_read("/api/adc/version")
 
 
+@app.get("/api/adc/applications")
+async def adc_applications() -> Any:
+    return await adapter_read("/api/adc/applications")
+
+
 @app.get("/api/adc/appfw/profiles")
 async def adc_appfw_profiles() -> Any:
     return await adapter_read("/api/adc/appfw/profiles")
@@ -1223,7 +1230,7 @@ async def adc_appfw_profiles() -> Any:
 @app.post("/api/adc/appfw/profiles/duplicate-plan")
 async def duplicate_appfw_profile_plan(request: ProfileDuplicateRequest) -> dict[str, Any]:
     profiles_payload = await adapter_read("/api/adc/appfw/profiles")
-    profiles = nitro_records(profiles_payload, "appfwprofile")
+    profiles = provider_records(profiles_payload, "appfwprofile")
     source = next((item for item in profiles if str(item.get("name", "")) == request.profile_name), None)
     if not source:
         raise HTTPException(status_code=404, detail="Source AppFW profile was not found")
@@ -1278,12 +1285,12 @@ async def duplicate_appfw_profile_plan(request: ProfileDuplicateRequest) -> dict
         },
         "command_preview": {
             "create": {
-                "nitro": {"method": "POST", "path": "/nitro/v1/config/appfwprofile", "body": {"appfwprofile": profile_body}},
+                "nextgen": None,
                 "cli_equivalent": cli_create,
                 "note": "Credentials and session headers are intentionally omitted from the preview.",
             },
             "rollback": {
-                "nitro": {"method": "DELETE", "path": f"/nitro/v1/config/appfwprofile/{requested_name}"},
+                "nextgen": None,
                 "cli_equivalent": f"rm appfw profile {requested_name}",
                 "note": "Rollback is allowed only after the destination profile is confirmed unreferenced.",
             },
@@ -1469,15 +1476,15 @@ def signature_set_commands(source_snapshot: dict[str, Any], destination_profile:
         profile_body["signatures"] = selected_entries[0].get("name")
         return {
             "binding_supported": True,
-            "create": {"nitro": {"method": "POST", "path": "/nitro/v1/config/appfwprofile", "body": {"appfwprofile": profile_body}}, "cli_equivalent": f"add appfw profile {destination_profile} && set appfw profile {destination_profile} -signatures {selected_entries[0].get('name')}", "note": "This is the exact sanitized request shape; credentials and session headers are omitted."},
-            "enable": {"nitro": {"method": "PUT", "path": "/nitro/v1/config/appfwprofile", "body": {"appfwprofile": {"name": destination_profile, "state": "ENABLED"}}}, "cli_equivalent": f"enable appfw profile {destination_profile}"},
-            "rollback": {"nitro": {"method": "DELETE", "path": f"/nitro/v1/config/appfwprofile/{destination_profile}"}, "cli_equivalent": f"rm appfw profile {destination_profile}"},
+            "create": {"nextgen": None, "cli_equivalent": None, "note": "The supplied Next-Gen OAS has no AppFW profile or signature operation; no executable request is available."},
+            "enable": None,
+            "rollback": {"nextgen": None, "cli_equivalent": None, "note": "The supplied Next-Gen OAS has no AppFW profile or signature operation."},
         }
     return {
         "binding_supported": False,
-        "create": {"nitro": None, "cli_equivalent": None, "note": "The current ADC adapter exposes one AppFW profile signature binding. Reduce the selected set to exactly one catalog before apply."},
+        "create": {"nextgen": None, "cli_equivalent": None, "note": "The supplied Next-Gen OAS has no AppFW profile or signature operation."},
         "enable": None,
-        "rollback": {"nitro": {"method": "DELETE", "path": f"/nitro/v1/config/appfwprofile/{destination_profile}"}, "cli_equivalent": f"rm appfw profile {destination_profile}"},
+        "rollback": {"nextgen": None, "cli_equivalent": None, "note": "The supplied Next-Gen OAS has no AppFW profile or signature operation."},
     }
 
 
@@ -1500,7 +1507,7 @@ async def build_signature_set_plan(job_id: str, source_profile_name: str | None 
     profiles_payload = await adapter_read("/api/adc/appfw/profiles")
     signatures_payload = await adapter_read("/api/adc/signatures")
     target_payload = await adapter_read("/api/adc/target")
-    profiles = nitro_records(profiles_payload, "appfwprofile")
+    profiles = provider_records(profiles_payload, "appfwprofile")
     source_name = source_profile_name
     if source_name:
         source = next((item for item in profiles if str(item.get("name", "")) == source_name), None)
@@ -1669,7 +1676,7 @@ async def preflight_signature_set(set_id: str, request: SignatureSetPreflightReq
         {"name": "Plan fingerprint", "status": "passed" if current["plan_fingerprint"] == request.plan_fingerprint else "failed", "detail": "Current discovery, ADC inventory, and edited selection match the approved plan." if current["plan_fingerprint"] == request.plan_fingerprint else "Discovery or ADC inventory changed since approval."},
         {"name": "Source profile", "status": "passed" if current.get("source_snapshot", {}).get("name") == record["source_profile"] else "failed", "detail": "Source profile is still present."},
         {"name": "Selected catalogs", "status": "passed" if set(selected_urls).issubset(current_urls) and selected_urls else "failed", "detail": f"{len(selected_urls)} selected catalog(s) are still available on the ADC."},
-        {"name": "Destination name", "status": "passed" if record["destination_profile"] not in {str(item.get("name", "")) for item in nitro_records(await adapter_read("/api/adc/appfw/profiles"), "appfwprofile")} else "failed", "detail": "Destination profile name is unused."},
+        {"name": "Destination name", "status": "passed" if record["destination_profile"] not in {str(item.get("name", "")) for item in provider_records(await adapter_read("/api/adc/appfw/profiles"), "appfwprofile")} else "failed", "detail": "Destination profile name is unused."},
         {"name": "ADC binding model", "status": "passed" if len(selected_urls) == 1 else "failed", "detail": "One selected catalog can be bound by the current adapter." if len(selected_urls) == 1 else "The current ADC profile binding exposes one signature catalog; reduce the selection to one before apply."},
     ]
     status = "drift-detected" if any(item["status"] == "failed" for item in checks) else ("blocked-write-disabled" if os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() != "true" else "ready-for-apply")
@@ -1769,7 +1776,7 @@ async def apply_appfw_profile_signature(request: SignatureWriteRequest) -> dict[
     if request.signature_catalog_url not in selected_catalog_urls:
         raise HTTPException(status_code=422, detail="Requested signature catalog was not included in the approved plan")
     profiles_payload = await adapter_read("/api/adc/appfw/profiles")
-    profiles = nitro_records(profiles_payload, "appfwprofile")
+    profiles = provider_records(profiles_payload, "appfwprofile")
     profile = next((item for item in profiles if str(item.get("name", "")) == request.profile_name), None)
     if not profile:
         raise HTTPException(status_code=404, detail="Target AppFW profile was not found")

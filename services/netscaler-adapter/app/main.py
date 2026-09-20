@@ -1,15 +1,27 @@
 import os
-from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
-import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from app.nextgen import (
+    OAS_CONTRACT,
+    OAS_VERSION,
+    application_path,
+    base_url,
+    get,
+    normalize_csvservers,
+    normalize_lbvservers,
+    normalize_services,
+    secret_present,
+    topology_payload,
+    unsupported_appfw,
+    write_enabled,
+)
 from app.rule_catalog import load_rule_catalog
 
-app = FastAPI(title="NetScaler Adapter", version="0.1.0")
+
+app = FastAPI(title="NetScaler Next-Gen Adapter", version="0.2.0")
 
 
 class ConnectionRequest(BaseModel):
@@ -36,128 +48,23 @@ class AppFwSignatureSetWriteRequest(BaseModel):
     enable: bool = True
 
 
-def read_secret() -> str:
-    path = os.getenv("NETSCALER_PASSWORD_FILE", "")
-    if not path or not Path(path).is_file():
-        return ""
-    return Path(path).read_text(encoding="utf-8").strip()
+def _raise_upstream(status: int, data: Any) -> None:
+    if status >= 300:
+        reason = data.get("reason", "Next-Gen API request failed") if isinstance(data, dict) else "Next-Gen API request failed"
+        raise HTTPException(status_code=502 if status >= 500 else status, detail=reason)
 
 
-def secret_present() -> bool:
-    return bool(read_secret())
-
-
-def write_enabled() -> bool:
-    return os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() == "true"
-
-
-def adc_base_url(host: str | None = None) -> str:
-    return f"https://{host or os.getenv('NETSCALER_HOST', '')}/nitro/v1/config"
-
-
-async def nitro_get(resource: str, host: str | None = None, username: str | None = None, password: str | None = None) -> tuple[int, Any]:
-    allowed = {
-        "nsversion",
-        "lbvserver",
-        "csvserver",
-        "cspolicy",
-        "csaction",
-        "service",
-        "servicegroup",
-        "appfwprofile",
-        "appfwpolicy",
-        "appfwsignatures",
-        "hanode",
-        "nshaconfig",
-    }
-    if resource not in allowed:
-        raise HTTPException(status_code=400, detail="Unsupported read-only resource")
-    password = password or read_secret()
-    username = username or os.getenv("NETSCALER_USERNAME", "")
-    if not password or not username or not (host or os.getenv("NETSCALER_HOST", "")):
-        raise HTTPException(status_code=503, detail="ADC credential is not configured")
-    async with httpx.AsyncClient(verify=False, timeout=15) as client:
-        response = await client.get(
-            f"{adc_base_url(host)}/{resource}",
-            headers={
-                "X-NITRO-USER": username,
-                "X-NITRO-PASS": password,
-                "Accept": "application/json",
-            },
-        )
-        try:
-            data = response.json()
-        except ValueError:
-            data = {"raw": "non-json response omitted"}
-        return response.status_code, data
-
-
-async def nitro_put(resource: str, payload: dict[str, Any]) -> tuple[int, Any]:
-    if not write_enabled():
-        raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
-    if resource != "appfwprofile":
-        raise HTTPException(status_code=400, detail="Unsupported write resource")
-    password = read_secret()
-    username = os.getenv("NETSCALER_USERNAME", "")
-    host = os.getenv("NETSCALER_HOST", "")
-    if not password or not username or not host:
-        raise HTTPException(status_code=503, detail="ADC write credential is not configured")
-    async with httpx.AsyncClient(verify=False, timeout=15) as client:
-        response = await client.put(
-            f"{adc_base_url(host)}/{resource}",
-            headers={"X-NITRO-USER": username, "X-NITRO-PASS": password, "Accept": "application/json", "Content-Type": "application/json"},
-            json=payload,
-        )
-        try:
-            data = response.json()
-        except ValueError:
-            data = {"message": "non-json ADC response"}
-        return response.status_code, data
-
-
-async def nitro_post(resource: str, payload: dict[str, Any]) -> tuple[int, Any]:
-    if not write_enabled():
-        raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
-    if resource != "appfwprofile":
-        raise HTTPException(status_code=400, detail="Unsupported write resource")
-    password = read_secret()
-    username = os.getenv("NETSCALER_USERNAME", "")
-    host = os.getenv("NETSCALER_HOST", "")
-    if not password or not username or not host:
-        raise HTTPException(status_code=503, detail="ADC write credential is not configured")
-    async with httpx.AsyncClient(verify=False, timeout=15) as client:
-        response = await client.post(
-            f"{adc_base_url(host)}/{resource}",
-            headers={"X-NITRO-USER": username, "X-NITRO-PASS": password, "Accept": "application/json", "Content-Type": "application/json"},
-            json=payload,
-        )
-        try:
-            data = response.json()
-        except ValueError:
-            data = {"message": "non-json ADC response"}
-        return response.status_code, data
-
-
-async def nitro_delete(resource: str, name: str) -> tuple[int, Any]:
-    if not write_enabled():
-        raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
-    if resource != "appfwprofile":
-        raise HTTPException(status_code=400, detail="Unsupported write resource")
-    password = read_secret()
-    username = os.getenv("NETSCALER_USERNAME", "")
-    host = os.getenv("NETSCALER_HOST", "")
-    if not password or not username or not host:
-        raise HTTPException(status_code=503, detail="ADC write credential is not configured")
-    async with httpx.AsyncClient(verify=False, timeout=15) as client:
-        response = await client.delete(
-            f"{adc_base_url(host)}/{resource}/{quote(name, safe='')}",
-            headers={"X-NITRO-USER": username, "X-NITRO-PASS": password, "Accept": "application/json"},
-        )
-        try:
-            data = response.json()
-        except ValueError:
-            data = {"message": "non-json ADC response"}
-        return response.status_code, data
+def _unsupported_write(resource: str) -> None:
+    raise HTTPException(
+        status_code=501,
+        detail={
+            "status": "unsupported-by-oas",
+            "provider": "netscaler-nextgen",
+            "resource": resource,
+            "reason": "The supplied OAS has no AppFW/signature operation and no fallback API is permitted.",
+            "write_enabled": write_enabled(),
+        },
+    )
 
 
 @app.get("/healthz")
@@ -166,73 +73,119 @@ async def healthz() -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": "ok",
         "service": "netscaler-adapter",
+        "provider": "netscaler-nextgen",
+        "api_contract": OAS_CONTRACT,
+        "api_version": OAS_VERSION,
         "target": host,
         "credential_configured": secret_present(),
-        "mode": "read-only",
+        "mode": "read-only" if not write_enabled() else "write-enabled-but-waf-write-unsupported",
+        "base_url": base_url(host),
     }
     try:
-        status, data = await nitro_get("nsversion")
-        result["adc_http_status"] = status
+        status, data = await get("/applications")
+        result["nextgen_http_status"] = status
         result["authenticated"] = status < 300
         result["reachable"] = True
-        result["version_data_present"] = bool(data)
-        if isinstance(data, dict):
-            result["nitro_error_code"] = data.get("errorcode")
-            result["nitro_message"] = data.get("message")
-    except (httpx.HTTPError, HTTPException) as exc:
+        result["applications_data_present"] = bool(data)
+        if isinstance(data, dict) and status >= 300:
+            result["error_status"] = data.get("http_status", status)
+            result["error_reason"] = data.get("reason")
+    except Exception as exc:  # healthz must remain diagnostic and non-fatal
         result["reachable"] = False
         result["authenticated"] = False
         result["error_type"] = type(exc).__name__
-        if isinstance(exc, HTTPException):
-            result["error_status"] = exc.status_code
     return result
 
 
 @app.get("/api/adc/target")
 async def target() -> dict[str, str]:
-    return {"host": os.getenv("NETSCALER_HOST", ""), "username": os.getenv("NETSCALER_USERNAME", "")}
+    return {
+        "host": os.getenv("NETSCALER_HOST", ""),
+        "username": os.getenv("NETSCALER_USERNAME", ""),
+        "provider": "netscaler-nextgen",
+        "api_contract": OAS_CONTRACT,
+        "api_version": OAS_VERSION,
+    }
 
 
 @app.get("/api/adc/version")
-async def version() -> Any:
-    return (await nitro_get("nsversion"))[1]
-
-
-def extract_version(data: Any) -> str:
-    if isinstance(data, dict):
-        records = data.get("nsversion")
-        if isinstance(records, dict):
-            for key in ("version", "installedversion", "build"):
-                if records.get(key) and key == "version":
-                    return str(records[key])[:500]
-        if isinstance(records, list) and records and isinstance(records[0], dict):
-            for key in ("version", "versionnumber", "build"):
-                if records[0].get(key):
-                    return str(records[0][key])[:500]
-    return "unknown"
+async def version() -> dict[str, Any]:
+    return {
+        "provider": "netscaler-nextgen",
+        "status": "not-exposed-by-oas",
+        "api_contract": OAS_CONTRACT,
+        "api_version": OAS_VERSION,
+        "reason": "The supplied OAS has no ADC software-version operation.",
+    }
 
 
 @app.post("/api/adc/connect")
-async def connect(request: ConnectionRequest) -> dict[str, str]:
-    status, data = await nitro_get("nsversion", request.nsip, request.username, request.password)
+async def connect(request: ConnectionRequest) -> dict[str, Any]:
+    status, data = await get("/applications", host=request.nsip, username=request.username, password=request.password)
     if status >= 300:
-        raise HTTPException(status_code=401, detail="NetScaler authentication or connection failed")
-    return {"nsip": request.nsip, "version": extract_version(data)}
+        raise HTTPException(status_code=401 if status in {401, 403} else 502, detail="NetScaler Next-Gen API authentication or connection failed")
+    return {"nsip": request.nsip, "provider": "netscaler-nextgen", "api_version": OAS_VERSION, "version": "unknown", "applications": len(data.get("applications", [])) if isinstance(data, dict) else 0}
+
+
+async def _applications() -> tuple[int, Any]:
+    return await get("/applications")
+
+
+@app.get("/api/adc/applications")
+async def applications() -> Any:
+    status, data = await _applications()
+    _raise_upstream(status, data)
+    return data
+
+
+@app.get("/api/adc/applications/{application_name}/frontends")
+async def application_frontends(application_name: str) -> Any:
+    status, data = await get(application_path(application_name, "/frontends"), params={"expanded": "true"})
+    _raise_upstream(status, data)
+    return data
+
+
+@app.get("/api/adc/applications/{application_name}/backends")
+async def application_backends(application_name: str) -> Any:
+    status, data = await get(application_path(application_name, "/backends"), params={"expanded": "true"})
+    _raise_upstream(status, data)
+    return data
+
+
+@app.get("/api/adc/applications/{application_name}/routes")
+async def application_routes(application_name: str) -> Any:
+    status, data = await get(application_path(application_name, "/routes"), params={"expanded": "true"})
+    _raise_upstream(status, data)
+    return data
+
+
+@app.get("/api/adc/applications/{application_name}/health")
+async def application_health(application_name: str) -> Any:
+    status, data = await get(application_path(application_name, "/health"), params={"expanded": "true"})
+    _raise_upstream(status, data)
+    return data
+
+
+@app.get("/api/adc/applications/{application_name}/statistics")
+async def application_statistics(application_name: str) -> Any:
+    status, data = await get(application_path(application_name, "/statistics"), params={"expanded": "true"})
+    _raise_upstream(status, data)
+    return data
 
 
 @app.get("/api/adc/appfw/profiles")
 async def appfw_profiles() -> Any:
-    return (await nitro_get("appfwprofile"))[1]
+    return {"appfwprofile": [], **unsupported_appfw("appfwprofile")}
 
 
 @app.get("/api/adc/appfw/policies")
 async def appfw_policies() -> Any:
-    return (await nitro_get("appfwpolicy"))[1]
+    return {"appfwpolicy": [], **unsupported_appfw("appfwpolicy")}
 
 
 @app.get("/api/adc/signatures")
 async def signatures() -> Any:
-    return (await nitro_get("appfwsignatures"))[1]
+    return {"appfwsignatures": [], **unsupported_appfw("appfwsignatures")}
 
 
 @app.get("/api/adc/signatures/rules")
@@ -243,79 +196,66 @@ async def signature_rules() -> dict[str, Any]:
 
 @app.post("/api/adc/writes/appfw-profile-signature")
 async def write_appfw_profile_signature(request: AppFwProfileSignatureWriteRequest) -> dict[str, Any]:
-    status, data = await nitro_put("appfwprofile", {"appfwprofile": {"name": request.profile_name, "signatures": request.signature_name}})
-    if status >= 300:
-        raise HTTPException(status_code=502, detail="NetScaler AppFW profile update failed")
-    return {"changes_applied": True, "resource": "appfwprofile", "profile_name": request.profile_name, "signature_name": request.signature_name, "adc_status": status, "adc_result": data}
+    _unsupported_write("appfwprofile")
+    return {}
 
 
 @app.post("/api/adc/writes/appfw-profile-duplicate")
 async def write_appfw_profile_duplicate(request: AppFwProfileDuplicateWriteRequest) -> dict[str, Any]:
-    profile: dict[str, Any] = {"name": request.destination_profile}
-    if request.profile_type:
-        profile["type"] = request.profile_type
-    if request.signature_binding and request.signature_binding.strip():
-        profile["signatures"] = request.signature_binding.strip()
-    status, data = await nitro_post("appfwprofile", {"appfwprofile": profile})
-    if status >= 300:
-        raise HTTPException(status_code=502, detail="NetScaler AppFW profile duplication failed")
-    return {"changes_applied": True, "resource": "appfwprofile", "destination_profile": request.destination_profile, "adc_status": status, "adc_result": data}
+    _unsupported_write("appfwprofile")
+    return {}
 
 
 @app.post("/api/adc/writes/signature-set")
 async def write_signature_set(request: AppFwSignatureSetWriteRequest) -> dict[str, Any]:
-    profile: dict[str, Any] = {"name": request.destination_profile, "signatures": request.signature_name}
-    if request.profile_type:
-        profile["type"] = request.profile_type
-    create_status, create_data = await nitro_post("appfwprofile", {"appfwprofile": profile})
-    if create_status >= 300:
-        raise HTTPException(status_code=502, detail="NetScaler signature profile creation failed")
-    enable_status = None
-    enable_data: Any = None
-    if request.enable:
-        enable_status, enable_data = await nitro_put("appfwprofile", {"appfwprofile": {"name": request.destination_profile, "state": "ENABLED"}})
-        if enable_status >= 300:
-            try:
-                await nitro_delete("appfwprofile", request.destination_profile)
-            except HTTPException:
-                pass
-            raise HTTPException(status_code=502, detail="NetScaler signature profile was created but could not be enabled; rollback was attempted")
-    return {"changes_applied": True, "resource": "appfwprofile", "destination_profile": request.destination_profile, "signature_name": request.signature_name, "enabled": request.enable, "create_status": create_status, "create_result": create_data, "enable_status": enable_status, "enable_result": enable_data}
+    _unsupported_write("appfwsignatures")
+    return {}
 
 
 @app.delete("/api/adc/writes/appfw-profile-duplicate/{profile_name}")
 async def delete_appfw_profile_duplicate(profile_name: str) -> dict[str, Any]:
-    status, data = await nitro_delete("appfwprofile", profile_name)
-    if status >= 300:
-        raise HTTPException(status_code=502, detail="NetScaler AppFW duplicate profile rollback failed")
-    return {"changes_applied": True, "resource": "appfwprofile", "deleted_profile": profile_name, "adc_status": status, "adc_result": data}
+    _unsupported_write("appfwprofile")
+    return {}
 
 
 @app.get("/api/adc/lbvservers")
 async def lbvservers() -> Any:
-    return (await nitro_get("lbvserver"))[1]
+    status, data = await _applications()
+    _raise_upstream(status, data)
+    return {"lbvserver": normalize_lbvservers(data), "provider": "netscaler-nextgen", "applications": data.get("applications", []) if isinstance(data, dict) else []}
 
 
 @app.get("/api/adc/csvservers")
 async def csvservers() -> Any:
-    return (await nitro_get("csvserver"))[1]
+    status, data = await _applications()
+    _raise_upstream(status, data)
+    return {"csvserver": normalize_csvservers(data), "provider": "netscaler-nextgen"}
 
 
 @app.get("/api/adc/cspolicies")
 async def cspolicies() -> Any:
-    return (await nitro_get("cspolicy"))[1]
+    return {"cspolicy": [], "provider": "netscaler-nextgen", "status": "not-exposed-by-oas", "reason": "Next-Gen routes are not classic CS policies."}
 
 
 @app.get("/api/adc/services")
 async def services() -> Any:
-    return (await nitro_get("service"))[1]
+    status, data = await _applications()
+    _raise_upstream(status, data)
+    return {"service": normalize_services(data), "provider": "netscaler-nextgen"}
 
 
 @app.get("/api/adc/servicegroups")
 async def servicegroups() -> Any:
-    return (await nitro_get("servicegroup"))[1]
+    return {"servicegroup": [], "provider": "netscaler-nextgen", "status": "not-exposed-by-oas"}
 
 
 @app.get("/api/adc/ha/nodes")
 async def ha_nodes() -> Any:
-    return (await nitro_get("hanode"))[1]
+    return {"hanode": [], "provider": "netscaler-nextgen", "status": "not-exposed-by-oas", "reason": "The supplied OAS has no HA node operation."}
+
+
+@app.get("/api/adc/topology")
+async def topology() -> Any:
+    status, data = await _applications()
+    _raise_upstream(status, data)
+    return topology_payload(data)
