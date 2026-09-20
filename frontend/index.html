@@ -81,6 +81,7 @@
     </form>
     <p id="discovery-status" class="small muted"></p>
     <div id="jobs"></div>
+    <div id="adc-correlation" class="profile"></div>
     <div id="profile" class="profile"></div>
   </section>
   <script>
@@ -90,7 +91,7 @@
       const host = document.querySelector('#jobs');
       if (!jobs.length) { host.innerHTML = '<p class="muted">No discovery jobs yet.</p>'; return; }
       host.innerHTML = '<table><thead><tr><th>Status</th><th>Target</th><th>Phase</th><th>Pages</th><th>Assets</th><th>Evidence</th><th>Created</th><th></th></tr></thead><tbody>' + jobs.map(job =>
-        `<tr><td>${job.status === 'queued' || job.status === 'running' ? `<span class="progress">● scanning${job.phase ? ` · ${escapeHtml(job.phase)}` : ''}</span>` : escapeHtml(job.status)}</td><td>${escapeHtml(job.scope?.seed_url || '-')}</td><td>${escapeHtml(job.phase || '-')}</td><td>${job.pages_visited || 0}</td><td>${job.assets_fetched || 0}</td><td>${job.evidence_count || 0}</td><td>${escapeHtml(job.created_at || '-')}</td><td><button class="secondary profile-button" data-job="${escapeHtml(job.id)}">View profile</button>${['queued','running'].includes(job.status) ? ` <button class="secondary cancel-button" data-job="${escapeHtml(job.id)}">Cancel</button>` : ''}${['completed','failed','interrupted','rejected','cancelled'].includes(job.status) ? ` <button class="secondary delete-button" data-job="${escapeHtml(job.id)}">Delete</button>` : ''}</td></tr>`
+        `<tr><td>${job.status === 'queued' || job.status === 'running' ? `<span class="progress">● scanning${job.phase ? ` · ${escapeHtml(job.phase)}` : ''}</span>` : escapeHtml(job.status)}</td><td>${escapeHtml(job.scope?.seed_url || '-')}</td><td>${escapeHtml(job.phase || '-')}</td><td>${job.pages_visited || 0}</td><td>${job.assets_fetched || 0}</td><td>${job.evidence_count || 0}</td><td>${escapeHtml(job.created_at || '-')}</td><td><button class="secondary profile-button" data-job="${escapeHtml(job.id)}">View profile</button>${['completed'].includes(job.status) ? ` <button class="secondary correlation-button" data-job="${escapeHtml(job.id)}">Check ADC path</button>` : ''}${['queued','running'].includes(job.status) ? ` <button class="secondary cancel-button" data-job="${escapeHtml(job.id)}">Cancel</button>` : ''}${['completed','failed','interrupted','rejected','cancelled'].includes(job.status) ? ` <button class="secondary delete-button" data-job="${escapeHtml(job.id)}">Delete</button>` : ''}</td></tr>`
       ).join('') + '</tbody></table>';
     }
     function renderDuplicateProfilePlan(plan) {
@@ -112,10 +113,13 @@
     function renderWafInventory(inventory) {
       const host = document.querySelector('#waf-inventory');
       const asRows = value => Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : [];
-      const profiles = asRows(inventory.profiles?.appfwprofile);
-      const policies = asRows(inventory.policies?.appfwpolicy);
-      const signatureCatalog = inventory.signatureCatalog || {};
-      const signatures = signatureCatalog.entries || [];
+      const resources = inventory.waf?.resources || {};
+      const profilesResource = resources.appfw_profiles || {};
+      const policiesResource = resources.appfw_policies || {};
+      const signatureCatalog = resources.signature_catalog || inventory.signatureCatalog || {};
+      const profiles = asRows(inventory.profiles?.appfwprofile || profilesResource.records);
+      const policies = asRows(inventory.policies?.appfwpolicy || policiesResource.records);
+      const signatures = asRows(signatureCatalog.entries || signatureCatalog.records);
       const waf = inventory.waf || {};
       const unsupported = waf.status === 'unsupported-by-oas';
       const capabilityMessage = unsupported ? `<div class="card"><h4>WAF inventory is not exposed by the supplied API contract</h4><p>${escapeHtml(waf.reason || 'AppFW profiles, policies, and signature catalogs are not defined by the supplied Next-Gen OAS.')}</p><p class="small muted">This is not an empty inventory. No legacy API fallback or automatic WAF change is permitted.</p></div>` : '';
@@ -123,10 +127,32 @@
       const profileRows = profiles.map(item => `<tr><td>${escapeHtml(item.name || '-')}</td><td>${escapeHtml(item.state || '-')}</td><td>${escapeHtml(Array.isArray(item.type) ? item.type.join(', ') : item.type || '-')}</td><td>${item.builtin ? 'built-in' : 'custom'}</td><td>${String(item.signatures || '').trim() ? 'configured' : 'not enumerated'}</td><td><input class="duplicate-profile-name" maxlength="128" placeholder="new name"><button class="secondary duplicate-profile-button" data-profile-name="${escapeHtml(item.name || '')}">Prepare duplicate plan</button></td></tr>`).join('');
       const policyRows = policies.map(item => `<tr><td>${escapeHtml(item.policyname || item.name || '-')}</td><td>${escapeHtml(item.action || item.state || '-')}</td><td>${escapeHtml(item.rule || '-')}</td></tr>`).join('');
       const namedSignatures = signatures.filter(item => item && (item.name || item.signaturename || item.id || item.signatureid));
-      const signatureStatus = signatureCatalog.status === 'enumerated' && namedSignatures.length ? 'enumerated' : 'not available';
+      const signatureStatus = signatureCatalog.status === 'enumerated' && namedSignatures.length ? 'enumerated' : (signatureCatalog.status || 'not available');
       const sourceOptions = profiles.map(item => `<option value="${escapeHtml(item.name || '')}">${escapeHtml(item.name || '-')}</option>`).join('');
       const signatureRows = signatures.map(item => { const key = item.url || item.name || ''; const checked = window.selectedSignatureCatalogUrls.includes(key) ? ' checked' : ''; return `<tr><td><label><input type="checkbox" class="signature-select" data-signature-url="${escapeHtml(key)}"${checked}> ${escapeHtml(item.name || '-')}</label></td><td>${escapeHtml(item.url || '-')}</td><td>${escapeHtml(item.base_version || '-')}</td><td>${escapeHtml(item.encrypted_version || '-')}</td><td>${escapeHtml(item.creation_date || '-')}</td></tr>`; }).join('');
+      const classic = inventory.classic || {};
+      const vservers = asRows(classic.vservers?.records);
+      const classicBindings = asRows(classic.bindings?.records);
+      const profileBindings = vservers.filter(item => String(item.appfw_profile || '').trim());
+      const classicRows = vservers.map(item => {
+        const bound = asRows(item.bound_services).map(service => `${escapeHtml(service.name || '-')} (${escapeHtml(service.host || '-')}:${escapeHtml(service.port || '-')})`).join('<br>') || '-';
+        return `<tr><td>${escapeHtml(item.name || '-')}</td><td>${escapeHtml(item.host || '-')}:${escapeHtml(item.port || '-')}</td><td>${escapeHtml(item.state || '-')}</td><td>${bound}</td><td>${escapeHtml(item.appfw_profile || 'none evidenced')}</td></tr>`;
+      }).join('');
+      const classicSection = `<h4>Classic ADC application topology</h4><p class="small">Status: <strong>${escapeHtml(classic.status || 'unavailable')}</strong> · vservers: <strong>${vservers.length}</strong> · services: <strong>${classic.services?.record_count || 0}</strong> · service groups: <strong>${classic.servicegroups?.record_count || 0}</strong> · bindings: <strong>${classicBindings.length}</strong></p><p class="small">AppFW feature: <strong>${escapeHtml(waf.feature?.status || 'unknown')}</strong> · vserver AppFW profile bindings: <strong>${profileBindings.length}</strong> · active policies: <strong>${policies.length}</strong></p>${classicRows ? `<table><thead><tr><th>LB vserver</th><th>VIP</th><th>State</th><th>Bound services</th><th>AppFW profile</th></tr></thead><tbody>${classicRows}</tbody></table>` : '<p class="small muted">No classic ADC topology was enumerated.</p>'}`;
       host.innerHTML = `<h3>NetScaler WAF inventory</h3><p class="small">AppFW profiles: <strong>${profiles.length}</strong> · policies: <strong>${policies.length}</strong> · signature catalogs: <strong>${signatures.length}</strong> · status: <strong>${escapeHtml(unsupported ? 'unsupported by supplied OAS' : signatureStatus)}</strong></p>${capabilityMessage}<h4>Available signature catalogs</h4><p class="small muted">Select catalogs for the proposal only. No NetScaler changes are made by selecting them. After selecting catalogs, run a discovery analysis and choose Generate ADC change plan.</p><p id="waf-selection-status" class="small">Selected for proposal: <strong>${window.selectedSignatureCatalogUrls.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Select / name</th><th>File</th><th>Base version</th><th>Encrypted version</th><th>Creation date</th></tr></thead><tbody>${signatureRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'Signature catalogs are not available through the supplied Next-Gen OAS.' : 'No enumerable signature catalogs returned.'}</p>`}<div class="card"><h4>Create new custom WAF profile</h4><p class="small muted">Choose an existing profile as the baseline and provide a new custom name. This only prepares a plan; no profile is created automatically.</p><label class="small">Base profile <select class="create-profile-source">${sourceOptions}</select></label><label class="small">Custom profile name <input class="create-profile-name" maxlength="128" placeholder="waf-web-custom"></label><button class="secondary create-profile-plan-button">Prepare profile creation plan</button></div><h4>AppFW profiles</h4>${profileRows ? `<table><thead><tr><th>Name</th><th>State</th><th>Types</th><th>Origin</th><th>Signatures</th><th>Duplicate</th></tr></thead><tbody>${profileRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'AppFW profiles are not exposed by the supplied Next-Gen OAS.' : 'No AppFW profiles returned.'}</p>`}<div id="profile-duplicate-plan"></div><h4>AppFW policies</h4>${policyRows ? `<table><thead><tr><th>Name</th><th>Action / state</th><th>Rule</th></tr></thead><tbody>${policyRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'AppFW policies are not exposed by the supplied Next-Gen OAS.' : 'No AppFW policies returned or policy inventory is unavailable.'}</p>`}<p class="small muted">The selected catalogs and profile plans are review-only. Write mode remains disabled.</p>`;
+      host.insertAdjacentHTML('beforeend', classicSection);
+    }
+    function renderClassicCorrelation(payload) {
+      const host = document.querySelector('#adc-correlation');
+      const correlation = payload?.correlation || {};
+      const matches = (correlation.matches || []).map(item => {
+        const vserver = item.vserver || {};
+        const services = (vserver.bound_services || []).map(service => `${escapeHtml(service.name || '-')} (${escapeHtml(service.host || '-')}:${escapeHtml(service.port || '-')})`).join('<br>') || '-';
+        return `<tr><td>${escapeHtml(vserver.name || '-')}</td><td>${escapeHtml(vserver.host || '-')}:${escapeHtml(vserver.port || '-')}</td><td>${escapeHtml(vserver.state || '-')}</td><td>${escapeHtml(item.match_reason || '-')}</td><td>${services}</td></tr>`;
+      }).join('');
+      const proposal = correlation.proposal || {};
+      const blocking = correlation.blocking_conditions || proposal.blocking_conditions || [];
+      host.innerHTML = `<div class="card"><h3>ADC path correlation</h3><p class="small">Target: <strong>${escapeHtml(correlation.target?.hostname || '-')}</strong>:${escapeHtml(correlation.target?.port || '-')} · status: <strong>${escapeHtml(correlation.status || '-')}</strong> · protection: <strong>${escapeHtml(correlation.protection_status || '-')}</strong></p>${matches ? `<table><thead><tr><th>LB vserver</th><th>VIP</th><th>State</th><th>Match</th><th>Backend</th></tr></thead><tbody>${matches}</tbody></table>` : '<p class="small muted">No exact ADC path match.</p>'}<p class="small">AppFW policies: <strong>${escapeHtml(correlation.appfw_policy_count ?? 0)}</strong> · automatic apply: <strong>${correlation.automatic_apply_allowed ? 'allowed' : 'disabled'}</strong></p><p class="small">Proposal: <strong>${escapeHtml(proposal.status || 'blocked')}</strong>${proposal.source_profile ? ` · source profile: <strong>${escapeHtml(proposal.source_profile)}</strong> · proposed profile: <strong>${escapeHtml(proposal.proposed_custom_profile || '-')}</strong> · mode: <strong>${escapeHtml(proposal.initial_enforcement_mode || '-')}</strong>` : ''}</p>${blocking.length ? `<p class="small"><strong>Blocking conditions:</strong></p><ul>${blocking.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}</div>`;
     }
     function renderEvidenceRows(items, filter = 'all') {
       return items.filter(item => filter === 'all' || item.evidence_type === filter).map(item => {
@@ -396,8 +422,10 @@
     });
     document.querySelector('#jobs').addEventListener('click', async event => {
       const button = event.target.closest('.profile-button');
+      const correlationButton = event.target.closest('.correlation-button');
       const cancelButton = event.target.closest('.cancel-button');
       const deleteButton = event.target.closest('.delete-button');
+      if (correlationButton) { const host = document.querySelector('#adc-correlation'); correlationButton.disabled = true; correlationButton.textContent = 'Correlating...'; if (host) host.textContent = 'Reading classic ADC topology and correlating the discovery target...'; try { renderClassicCorrelation(await api(`/api/discovery/jobs/${encodeURIComponent(correlationButton.dataset.job)}/classic-correlation`)); } catch (error) { if (host) host.textContent = `Unable to correlate the discovery target with classic ADC topology: ${error.message}`; } finally { correlationButton.disabled = false; correlationButton.textContent = 'Check ADC path'; } return; }
       if (cancelButton) { if (!window.confirm('Cancel this active discovery scan?')) return; cancelButton.disabled = true; cancelButton.textContent = 'Cancelling...'; try { await api(`/api/discovery/jobs/${encodeURIComponent(cancelButton.dataset.job)}/cancel`, {method: 'POST'}); document.querySelector('#discovery-status').textContent = 'Discovery scan cancelled.'; await loadJobs(); } catch (error) { cancelButton.disabled = false; cancelButton.textContent = 'Cancel'; document.querySelector('#discovery-status').textContent = 'Unable to cancel discovery scan.'; } return; }
       if (deleteButton) { if (!window.confirm('Delete this past analysis and all stored evidence?')) return; try { await api(`/api/discovery/jobs/${encodeURIComponent(deleteButton.dataset.job)}`, {method: 'DELETE'}); document.querySelector('#discovery-status').textContent = 'Past analysis deleted.'; document.querySelector('#profile').textContent = ''; await loadJobs(); } catch (error) { document.querySelector('#discovery-status').textContent = 'Unable to delete past analysis.'; } return; }
       if (!button) return;
