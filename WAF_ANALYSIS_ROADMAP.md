@@ -32,6 +32,16 @@ The generic policy layer is implemented in
 `services/analysis-service/app/generic_protection.py` and covered by tests. It does
 not yet replace the provider catalog resolver or enable automatic ADC writes.
 
+Generic policy layer verification:
+
+- Commit: `0a9c7b4`
+- Tests: 10 passing
+- Deployed to the analysis service on the lab server
+- Juice Shop output: generic web attack signatures included; XSS signatures included;
+  runtime-specific and technology-specific signatures conditional
+- Automation state: proposal-only; predefined rules enabled; AI advisory disabled;
+  automatic apply disabled
+
 ## Workflow
 
 ### 1. Discover the web application
@@ -198,5 +208,5 @@ If connectivity is lost or a machine reboots:
 - Last action: passive Juice Shop discovery plus read-only ADC path resolution
 - State: complete; no ADC mutation
 - Result: Juice Shop maps directly to `lb_vs_juice_shop` -> `web-mcp:3000`, but no active AppFW policy or signature binding exists
-- Next action: deploy and verify the generic policy layer, then design the provider rule-catalog resolver for Juice Shop evidence
+- Next action: design the provider rule-catalog resolver and guarded automation modes; use Juice Shop to validate catalog selection without applying changes
 - Resume instruction: verify server/API health, confirm job `6a06abe1-2986-4e87-9d6d-7cffc6cd699d` and inventory fingerprint `e81cc2c1abd26079bea33e6bd5af1ba2f7ac14a2dc512bf7c2e02c02de2c51fd`; do not enable the disabled profile or create an AppFW binding.
