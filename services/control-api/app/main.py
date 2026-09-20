@@ -1421,6 +1421,11 @@ async def adc_signatures() -> Any:
     return await adapter_read("/api/adc/signatures")
 
 
+@app.get("/api/adc/signatures/rules")
+async def adc_signature_rules() -> Any:
+    return await adapter_read("/api/adc/signatures/rules")
+
+
 @app.get("/api/adc/signatures/catalog")
 async def adc_signature_catalog() -> dict[str, Any]:
     signatures_payload = await adapter_read("/api/adc/signatures")
@@ -1519,7 +1524,12 @@ async def build_signature_set_plan(job_id: str, source_profile_name: str | None 
     recommendations = analysis.get("protection_plan", {}).get("signature_recommendations", [])
     recommendation_keys = [str(item.get("catalog_key", "")) for item in recommendations]
     generic_intents = analysis.get("generic_protection_intents", [])
-    rule_catalog_resolution = resolve_rule_catalog(generic_intents, [])
+    rule_catalog_payload = await adapter_read("/api/adc/signatures/rules")
+    rule_catalog_rules = rule_catalog_payload.get("rules", []) if isinstance(rule_catalog_payload, dict) else []
+    rule_catalog_resolution = resolve_rule_catalog(generic_intents, rule_catalog_rules)
+    if isinstance(rule_catalog_payload, dict):
+        rule_catalog_resolution["catalog_source_status"] = rule_catalog_payload.get("status")
+        rule_catalog_resolution["catalog_source_fingerprint"] = rule_catalog_payload.get("catalog_fingerprint")
     technology_names = [str(item.get("technology", "")) for item in (profile.get("technologies", []) or []) if item.get("technology")]
     current_binding = str(source.get("signatures", "")).strip().lower()
     available: list[dict[str, Any]] = []

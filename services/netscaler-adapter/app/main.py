@@ -7,6 +7,8 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from app.rule_catalog import load_rule_catalog
+
 app = FastAPI(title="NetScaler Adapter", version="0.1.0")
 
 
@@ -231,6 +233,12 @@ async def appfw_policies() -> Any:
 @app.get("/api/adc/signatures")
 async def signatures() -> Any:
     return (await nitro_get("appfwsignatures"))[1]
+
+
+@app.get("/api/adc/signatures/rules")
+async def signature_rules() -> dict[str, Any]:
+    """Read normalized rule metadata from a read-only administrator-mounted export."""
+    return load_rule_catalog(os.getenv("NETSCALER_SIGNATURE_RULE_CATALOG_FILE", ""))
 
 
 @app.post("/api/adc/writes/appfw-profile-signature")

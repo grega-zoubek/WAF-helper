@@ -52,7 +52,10 @@ services:
       NETSCALER_HOST: 192.168.11.101
       NETSCALER_USERNAME: mcp_user
       NETSCALER_PASSWORD_FILE: /run/secrets/netscaler_password
+      NETSCALER_SIGNATURE_RULE_CATALOG_FILE: /run/catalogs/netscaler_rule_catalog.json
       NETSCALER_WRITE_ENABLED: "false"
+    volumes:
+      - ./catalogs:/run/catalogs:ro
     secrets:
       - netscaler_password
     expose:

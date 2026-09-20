@@ -1,3 +1,4 @@
+import importlib.util
 import sys
 import unittest
 from pathlib import Path
@@ -6,6 +7,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "services" / "control-api"))
 
 from app.rule_catalog import resolve_rule_catalog
+
+_adapter_spec = importlib.util.spec_from_file_location(
+    "adapter_rule_catalog",
+    Path(__file__).parents[1] / "services" / "netscaler-adapter" / "app" / "rule_catalog.py",
+)
+_adapter_module = importlib.util.module_from_spec(_adapter_spec)
+assert _adapter_spec.loader is not None
+_adapter_spec.loader.exec_module(_adapter_module)
+load_rule_catalog = _adapter_module.load_rule_catalog
 
 
 class RuleCatalogTests(unittest.TestCase):
@@ -29,6 +39,11 @@ class RuleCatalogTests(unittest.TestCase):
         self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["1001"])
         self.assertEqual(result["conditional_intents"], ["technology-specific-signatures"])
         self.assertFalse(result["automatic_apply_allowed"])
+
+    def test_adapter_catalog_file_is_fail_closed_when_not_configured(self):
+        result = load_rule_catalog("")
+        self.assertEqual(result["status"], "not-configured")
+        self.assertEqual(result["rules"], [])
 
 
 if __name__ == "__main__":
