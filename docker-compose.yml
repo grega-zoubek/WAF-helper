@@ -55,6 +55,11 @@ services:
       NETSCALER_NEXTGEN_SCHEME: https
       NETSCALER_NEXTGEN_BASE_URL: ""
       NETSCALER_NEXTGEN_SESSION_TIMEOUT: 30min
+      NETSCALER_SSH_ENABLED: "true"
+      NETSCALER_SSH_HOST: 192.168.11.101
+      NETSCALER_SSH_USERNAME: mcp_user
+      NETSCALER_SSH_PASSWORD_FILE: /run/secrets/netscaler_password
+      NETSCALER_SSH_STRICT_HOST_KEY: "false"
       NETSCALER_SIGNATURE_RULE_CATALOG_FILE: /run/catalogs/netscaler_rule_catalog.json
       NETSCALER_WRITE_ENABLED: "false"
     volumes:

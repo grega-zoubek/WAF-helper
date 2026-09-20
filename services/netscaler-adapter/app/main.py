@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import Any
 
@@ -19,6 +20,7 @@ from app.nextgen import (
     write_enabled,
 )
 from app.rule_catalog import load_rule_catalog
+from app.ssh_inventory import collect_waf_inventory
 
 
 app = FastAPI(title="NetScaler Next-Gen Adapter", version="0.2.0")
@@ -156,16 +158,45 @@ async def inventory() -> dict[str, Any]:
         "The supplied NetScaler Next-Gen OAS does not define AppFW profile, "
         "AppFW policy, or signature catalog operations. No legacy API fallback is allowed."
     )
-    waf_resources = {
-        resource: {
-            "status": "unsupported-by-oas",
+    cli_waf = await asyncio.to_thread(collect_waf_inventory)
+    cli_status = str(cli_waf.get("status", "unavailable")) if isinstance(cli_waf, dict) else "unavailable"
+    if cli_status in {"enumerated", "feature-disabled", "not-reported"}:
+        waf_resources = {
+            "appfw_profiles": cli_waf.get("profiles", {}),
+            "appfw_policies": cli_waf.get("policies", {}),
+            "signature_catalog": cli_waf.get("signatures", {}),
+        }
+        waf = {
+            "status": cli_status,
+            "available": True,
+            "record_count": sum(int(item.get("record_count", 0)) for item in waf_resources.values() if isinstance(item, dict)),
+            "resources": waf_resources,
+            "feature": cli_waf.get("feature"),
+            "settings": cli_waf.get("settings"),
+            "provider": "netscaler-cli-over-ssh",
+            "reason": "WAF inventory was read from the ADC CLI over SSH; the Next-Gen OAS has no dedicated AppFW resources.",
+            "automatic_apply_allowed": False,
+        }
+    else:
+        waf_resources = {
+            resource: {
+                "status": "unsupported-by-oas",
+                "available": False,
+                "record_count": 0,
+                "records": [],
+                "reason": unsupported_reason,
+            }
+            for resource in ("appfw_profiles", "appfw_policies", "signature_catalog")
+        }
+        waf = {
+            "status": cli_status if cli_status not in {"not-configured"} else "unsupported-by-oas",
             "available": False,
             "record_count": 0,
-            "records": [],
-            "reason": unsupported_reason,
+            "resources": waf_resources,
+            "provider": "netscaler-nextgen",
+            "reason": cli_waf.get("reason", unsupported_reason) if isinstance(cli_waf, dict) else unsupported_reason,
+            "automatic_apply_allowed": False,
         }
-        for resource in ("appfw_profiles", "appfw_policies", "signature_catalog")
-    }
     return {
         "provider": "netscaler-nextgen",
         "api_contract": OAS_CONTRACT,
@@ -175,20 +206,14 @@ async def inventory() -> dict[str, Any]:
             "record_count": len(application_records),
             "records": application_records,
         },
-        "waf": {
-            "status": "unsupported-by-oas",
-            "available": False,
-            "record_count": 0,
-            "resources": waf_resources,
-            "reason": unsupported_reason,
-            "automatic_apply_allowed": False,
-        },
+        "waf": waf,
         "rule_catalog": load_rule_catalog(os.getenv("NETSCALER_SIGNATURE_RULE_CATALOG_FILE", "")),
         "capabilities": {
             "applications": True,
-            "appfw_profiles": False,
-            "appfw_policies": False,
-            "signature_catalog": False,
+            "appfw_profiles": cli_status == "enumerated",
+            "appfw_policies": cli_status == "enumerated",
+            "signature_catalog": cli_status == "enumerated",
+            "waf_cli_inventory": cli_status in {"enumerated", "feature-disabled", "not-reported"},
             "rule_level_catalog_import": True,
             "writes": False,
         },
@@ -233,17 +258,23 @@ async def application_statistics(application_name: str) -> Any:
 
 @app.get("/api/adc/appfw/profiles")
 async def appfw_profiles() -> Any:
-    return {"appfwprofile": [], **unsupported_appfw("appfwprofile")}
+    inventory_payload = await asyncio.to_thread(collect_waf_inventory)
+    profiles = inventory_payload.get("profiles", {}) if isinstance(inventory_payload, dict) else {}
+    return {"appfwprofile": profiles.get("records", []), "provider": inventory_payload.get("provider"), "status": profiles.get("status", inventory_payload.get("status")), "source": "cli-over-ssh", "automatic_apply_allowed": False}
 
 
 @app.get("/api/adc/appfw/policies")
 async def appfw_policies() -> Any:
-    return {"appfwpolicy": [], **unsupported_appfw("appfwpolicy")}
+    inventory_payload = await asyncio.to_thread(collect_waf_inventory)
+    policies = inventory_payload.get("policies", {}) if isinstance(inventory_payload, dict) else {}
+    return {"appfwpolicy": policies.get("records", []), "provider": inventory_payload.get("provider"), "status": policies.get("status", inventory_payload.get("status")), "source": "cli-over-ssh", "automatic_apply_allowed": False}
 
 
 @app.get("/api/adc/signatures")
 async def signatures() -> Any:
-    return {"appfwsignatures": [], **unsupported_appfw("appfwsignatures")}
+    inventory_payload = await asyncio.to_thread(collect_waf_inventory)
+    signatures_payload = inventory_payload.get("signatures", {}) if isinstance(inventory_payload, dict) else {}
+    return {"appfwsignatures": signatures_payload.get("records", []), "provider": inventory_payload.get("provider"), "status": signatures_payload.get("status", inventory_payload.get("status")), "source": "cli-over-ssh", "automatic_apply_allowed": False}
 
 
 @app.get("/api/adc/signatures/rules")
