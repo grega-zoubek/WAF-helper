@@ -275,3 +275,15 @@ If connectivity is lost or a machine reboots:
 - State: complete; read-only; no ADC mutation.
 - Next action: add an SSH CLI inventory source to the scanner with explicit states such as `feature-disabled`, `built-in-only`, and `not-enumerated`, then correlate CLI WAF objects with the Next-Gen application inventory. Do not propose or apply WAF changes while AppFW is disabled and no target policy binding is confirmed.
 - Recovery after connectivity loss or reboot: verify SSH to `grega@192.168.11.90`, verify ADC TCP/22, retry one read-only CLI inventory pass only after confirming the account still reaches the CLI prompt, and check this checkpoint before creating any scanner job or change plan.
+
+### CLI-backed WAF inventory implementation checkpoint
+
+- Timestamp: 2026-09-20 20:39:19 UTC
+- Action: added a read-only Paramiko SSH transport and sanitized AppFW CLI parser to the NetScaler adapter; retained Next-Gen API for application topology and used CLI only for WAF inventory.
+- Commits: `325342a` added CLI inventory integration; `919854d` preserved CLI signature sizes in the control parser. Server checkout is synchronized at `919854d`.
+- Validation: 22 repository tests passed in the adapter image; adapter rebuilt and restarted; control API rebuilt and restarted.
+- Live result: `GET /api/adc/inventory` returned HTTP 200 with `waf.status=enumerated`, provider `netscaler-cli-over-ssh`, AppFw enabled, 10 profiles, 0 policies, 2 signature catalogs, and `automatic_apply_allowed=false`. `GET /api/adc/signatures/catalog` returned HTTP 200 with signature sizes `2879756` and `2621` bytes.
+- State: implementation complete; inventory read-only; no WAF configuration was changed.
+- Interpretation: the WAF feature is enabled and built-in profiles/signatures are visible, but no active AppFW policy was enumerated. Built-in profiles must not be treated as protection applied to a discovered application.
+- Next action: enumerate classic ADC application endpoints/bindings through read-only CLI, correlate them with discovery targets such as Juice Shop, then prepare a guarded lab-only policy/profile proposal. Keep writes behind explicit plan, preflight, drift check, confirmation, audit, and rollback.
+- Recovery after connectivity loss or reboot: verify local/server revision `919854d`, `docker compose -p waf-intelligence ps` on `192.168.11.90`, query `http://192.168.11.90:8110/api/adc/inventory`, and retry the CLI-backed inventory only after confirming SSH reaches the ADC prompt. Do not create a policy or bind a profile from an empty correlation result.
