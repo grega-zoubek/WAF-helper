@@ -207,6 +207,7 @@ async def inventory() -> dict[str, Any]:
             "records": application_records,
         },
         "waf": waf,
+        "classic": cli_waf.get("classic", {"status": cli_status, "automatic_apply_allowed": False}),
         "rule_catalog": load_rule_catalog(os.getenv("NETSCALER_SIGNATURE_RULE_CATALOG_FILE", "")),
         "capabilities": {
             "applications": True,
@@ -218,6 +219,27 @@ async def inventory() -> dict[str, Any]:
             "writes": False,
         },
         "write_enabled": write_enabled(),
+    }
+
+
+@app.get("/api/adc/classic-inventory")
+async def classic_inventory() -> dict[str, Any]:
+    inventory_payload = await asyncio.to_thread(collect_waf_inventory)
+    classic = inventory_payload.get("classic", {}) if isinstance(inventory_payload, dict) else {}
+    return {
+        "provider": classic.get("provider", inventory_payload.get("provider", "netscaler-cli-over-ssh")),
+        "status": classic.get("status", inventory_payload.get("status", "unavailable")),
+        "classic": classic,
+        "waf": {
+            "status": inventory_payload.get("status"),
+            "feature": inventory_payload.get("feature"),
+            "profiles": inventory_payload.get("profiles"),
+            "policies": inventory_payload.get("policies"),
+            "policy_labels": inventory_payload.get("policy_labels"),
+            "signatures": inventory_payload.get("signatures"),
+            "settings": inventory_payload.get("settings"),
+        },
+        "automatic_apply_allowed": False,
     }
 
 

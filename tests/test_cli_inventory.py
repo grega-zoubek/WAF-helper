@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "services" / "netscaler-adapter"))
 
-from app.cli_inventory import build_waf_inventory, parse_profiles, parse_signatures
+from app.cli_inventory import build_classic_inventory, build_waf_inventory, parse_lb_vserver_detail, parse_profiles, parse_signatures
 
 
 class CliInventoryTests(unittest.TestCase):
@@ -48,6 +48,34 @@ class CliInventoryTests(unittest.TestCase):
         records = parse_signatures("1) Url: default.xml Name: \"Default\"\n\tBase Version: \"1\" Size: 12 bytes Encrypted Version: \"2\"\nTotal signatures Size: 0 bytes\n")
         self.assertEqual(records[0]["base_version"], "1")
         self.assertEqual(records[0]["size_bytes"], 12)
+
+    def test_classic_inventory_correlates_vserver_to_bound_service(self):
+        outputs = {
+            "show lb vserver": (
+                "1)\tlb_vs_juice_shop (192.168.11.91:80) - HTTP\n"
+                "\tState: UP\n\tEffective State: UP\n"
+                "\tNo. of Bound Services:  1 (Total) \t 1 (Active)\n"
+            ),
+            "show lb vserver lb_vs_juice_shop": (
+                "lb_vs_juice_shop (192.168.11.91:80) - HTTP\n"
+                "\tState: UP\n\n"
+                "1) lb_svc_juice_shop_3000 (192.168.11.90: 3000) - HTTP State: UP\n"
+            ),
+            "show service": "1)\tlb_svc_juice_shop_3000 (192.168.11.90:3000) - HTTP\n\tState: UP\n",
+            "show servicegroup": "Done\n",
+        }
+        result = build_classic_inventory(outputs)
+        self.assertEqual(result["status"], "enumerated")
+        self.assertEqual(result["vservers"]["records"][0]["bound_services"][0]["host"], "192.168.11.90")
+        self.assertEqual(result["bindings"]["records"][0]["vserver"], "lb_vs_juice_shop")
+
+    def test_vserver_detail_parser_keeps_only_endpoint_metadata(self):
+        result = parse_lb_vserver_detail(
+            "lb_vs_juice_shop (192.168.11.91:80) - HTTP\n"
+            "1) lb_svc_juice_shop_3000 (192.168.11.90: 3000) - HTTP State: UP\n"
+        )
+        self.assertEqual(result["vserver"]["name"], "lb_vs_juice_shop")
+        self.assertEqual(result["bound_services"][0]["port"], 3000)
 
 
 if __name__ == "__main__":

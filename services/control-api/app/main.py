@@ -23,6 +23,7 @@ from psycopg.types.json import Jsonb
 
 from app.rule_catalog import resolve_rule_catalog
 from app.nextgen_correlation import correlate_scope_to_nextgen
+from app.classic_correlation import correlate_scope_to_classic
 
 app = FastAPI(title="WAF Intelligence Control API", version="0.1.0")
 jobs: dict[str, dict[str, Any]] = {}
@@ -1211,6 +1212,17 @@ async def nextgen_correlation(job_id: str) -> dict[str, Any]:
     }
 
 
+@app.get("/api/discovery/jobs/{job_id}/classic-correlation")
+async def classic_correlation(job_id: str) -> dict[str, Any]:
+    job = await get_discovery_job(job_id)
+    classic_payload = await adapter_read("/api/adc/classic-inventory")
+    return {
+        "job_id": job_id,
+        "scope": job.get("scope", {}),
+        "correlation": correlate_scope_to_classic(job.get("scope", {}), classic_payload),
+    }
+
+
 @app.get("/api/adc/health")
 async def adc_health() -> dict[str, Any]:
     try:
@@ -1247,6 +1259,11 @@ async def adc_applications() -> Any:
 @app.get("/api/adc/inventory")
 async def adc_inventory() -> Any:
     return await adapter_read("/api/adc/inventory")
+
+
+@app.get("/api/adc/classic-inventory")
+async def adc_classic_inventory() -> Any:
+    return await adapter_read("/api/adc/classic-inventory")
 
 
 @app.get("/api/adc/appfw/profiles")

@@ -11,10 +11,13 @@ from typing import Any
 
 import paramiko
 
-from app.cli_inventory import build_waf_inventory
+from app.cli_inventory import build_waf_inventory, parse_lb_vservers, parse_servicegroups
 
 
 CLI_COMMANDS = (
+    "show lb vserver",
+    "show service",
+    "show servicegroup",
     "show ns feature",
     "show appfw profile",
     "show appfw policy",
@@ -72,6 +75,21 @@ def collect_waf_inventory() -> dict[str, Any]:
             channel.send(command + "\n")
             output = _read_until_prompt(channel, timeout)
             outputs[command] = output
+        # Detail queries are read-only and are derived only from sanitized
+        # object names returned by the ADC summary command. They provide the
+        # vserver-to-service binding chain needed for generic target matching.
+        for vserver in parse_lb_vservers(outputs.get("show lb vserver", "")):
+            name = str(vserver.get("name", ""))
+            if re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                command = f"show lb vserver {name}"
+                channel.send(command + "\n")
+                outputs[command] = _read_until_prompt(channel, timeout)
+        for servicegroup in parse_servicegroups(outputs.get("show servicegroup", "")):
+            name = str(servicegroup.get("name", ""))
+            if re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                command = f"show servicegroup {name}"
+                channel.send(command + "\n")
+                outputs[command] = _read_until_prompt(channel, timeout)
         channel.send("exit\n")
         inventory = build_waf_inventory(outputs)
         inventory["source"] = {"transport": "ssh", "host": host, "username": username, "commands": list(CLI_COMMANDS)}
