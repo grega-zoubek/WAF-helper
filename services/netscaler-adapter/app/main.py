@@ -138,6 +138,64 @@ async def applications() -> Any:
     return data
 
 
+@app.get("/api/adc/inventory")
+async def inventory() -> dict[str, Any]:
+    """Return an explicit capability-aware inventory for the supplied OAS.
+
+    AppFW profiles, policies, and signature catalogs are intentionally not
+    represented as empty provider inventories: the supplied Next-Gen OAS does
+    not expose those operations. This distinction prevents callers from
+    confusing "not exposed" with "enumerated and empty".
+    """
+    status, data = await _applications()
+    _raise_upstream(status, data)
+    application_records = data.get("applications", []) if isinstance(data, dict) else []
+    if not isinstance(application_records, list):
+        application_records = []
+    unsupported_reason = (
+        "The supplied NetScaler Next-Gen OAS does not define AppFW profile, "
+        "AppFW policy, or signature catalog operations. No legacy API fallback is allowed."
+    )
+    waf_resources = {
+        resource: {
+            "status": "unsupported-by-oas",
+            "available": False,
+            "record_count": 0,
+            "records": [],
+            "reason": unsupported_reason,
+        }
+        for resource in ("appfw_profiles", "appfw_policies", "signature_catalog")
+    }
+    return {
+        "provider": "netscaler-nextgen",
+        "api_contract": OAS_CONTRACT,
+        "api_version": OAS_VERSION,
+        "applications": {
+            "status": "enumerated",
+            "record_count": len(application_records),
+            "records": application_records,
+        },
+        "waf": {
+            "status": "unsupported-by-oas",
+            "available": False,
+            "record_count": 0,
+            "resources": waf_resources,
+            "reason": unsupported_reason,
+            "automatic_apply_allowed": False,
+        },
+        "rule_catalog": load_rule_catalog(os.getenv("NETSCALER_SIGNATURE_RULE_CATALOG_FILE", "")),
+        "capabilities": {
+            "applications": True,
+            "appfw_profiles": False,
+            "appfw_policies": False,
+            "signature_catalog": False,
+            "rule_level_catalog_import": True,
+            "writes": False,
+        },
+        "write_enabled": write_enabled(),
+    }
+
+
 @app.get("/api/adc/applications/{application_name}/frontends")
 async def application_frontends(application_name: str) -> Any:
     status, data = await get(application_path(application_name, "/frontends"), params={"expanded": "true"})

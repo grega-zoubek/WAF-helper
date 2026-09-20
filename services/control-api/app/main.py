@@ -153,6 +153,15 @@ def _signature_entry_from_record(item: dict[str, Any]) -> dict[str, Any] | None:
 
 def parse_signature_catalog(payload: Any) -> dict[str, Any]:
     """Normalize a provider signature inventory without retaining raw text."""
+    if isinstance(payload, dict) and payload.get("status") == "unsupported-by-oas":
+        return {
+            "status": "unsupported-by-oas",
+            "source": "netscaler-nextgen-oas",
+            "entry_count": 0,
+            "entries": [],
+            "raw_payload_retained": False,
+            "note": str(payload.get("reason") or "Signature catalog operations are not exposed by the supplied OAS."),
+        }
     resource = payload.get("appfwsignatures") if isinstance(payload, dict) else None
     entries: list[dict[str, Any]] = []
     source = "none"
@@ -216,7 +225,7 @@ def signature_inventory_summary(payload: Any, selected_catalog_urls: list[str] |
         "selected_entries": selected,
         "selected_count": len(selected),
         "raw_payload_retained": False,
-        "note": "Signature catalogs were parsed from the ADC response and raw response text was not retained." if status == "enumerated" else "No enumerable signature catalogs were returned by the ADC.",
+        "note": "Signature catalogs were parsed from the ADC response and raw response text was not retained." if status == "enumerated" else ("Signature catalog is not exposed by the supplied Next-Gen OAS; this is not an empty catalog." if status == "unsupported-by-oas" else "No enumerable signature catalogs were returned by the ADC."),
     }
 
 
@@ -258,7 +267,7 @@ def match_protection_plan_to_adc(protection_plan: dict[str, Any], profiles_paylo
         entry = dict(item)
         entry["adc_profile_match"] = selected_profile["name"] if selected_profile else None
         entry["adc_profile_match_status"] = "matched" if selected_profile else "not-found"
-        entry["adc_signature_match_status"] = "catalog-available" if signature_inventory["status"] == "enumerated" else "not-available"
+        entry["adc_signature_match_status"] = "catalog-available" if signature_inventory["status"] == "enumerated" else signature_inventory["status"]
         entry["deployment_ready"] = False
         matched_recommendations.append(entry)
     capability_block = ["AppFW profiles and signature operations are not exposed by the supplied Next-Gen OAS"] if appfw_capability_status == "unsupported-by-oas" else []
@@ -273,7 +282,7 @@ def match_protection_plan_to_adc(protection_plan: dict[str, Any], profiles_paylo
         "selected_signature_catalogs": signature_inventory.get("selected_entries", []),
         "signature_recommendations": matched_recommendations,
         "deployment_ready": False,
-        "blocking_conditions": capability_block + (["No suitable web AppFW profile was found"] if not selected_profile else []) + (["No signature catalog was returned by the ADC"] if signature_inventory["status"] != "enumerated" else []),
+        "blocking_conditions": capability_block + (["No suitable web AppFW profile was found"] if not selected_profile and appfw_capability_status != "unsupported-by-oas" else []) + (["Signature catalog is not exposed by the supplied Next-Gen OAS"] if signature_inventory["status"] == "unsupported-by-oas" else (["No signature catalog was returned by the ADC"] if signature_inventory["status"] != "enumerated" else [])),
     }
 
 
@@ -1232,6 +1241,11 @@ async def adc_version() -> Any:
 @app.get("/api/adc/applications")
 async def adc_applications() -> Any:
     return await adapter_read("/api/adc/applications")
+
+
+@app.get("/api/adc/inventory")
+async def adc_inventory() -> Any:
+    return await adapter_read("/api/adc/inventory")
 
 
 @app.get("/api/adc/appfw/profiles")

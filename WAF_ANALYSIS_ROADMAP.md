@@ -251,3 +251,13 @@ If connectivity is lost or a machine reboots:
 - Correlation implementation: added `/api/discovery/jobs/{job_id}/nextgen-correlation`, which generically correlates a scan hostname to a Next-Gen application name or virtual IP and fails closed with `matched`, `no-match`, or `empty-inventory`.
 - Validation/deployment: revision `ba60f65`; 18 tests passed; control API rebuilt and restarted; Juice Shop correlation returned HTTP 200 with `status=empty-inventory`, `application_count=0`, and `automatic_apply_allowed=false`.
 - Resume instruction: use `GET /api/discovery/jobs/6a06abe1-2986-4e87-9d6d-7cffc6cd699d/nextgen-correlation` after Next-Gen application objects are present. Do not infer or create ADC objects from an empty inventory.
+
+### Inventory semantics correction checkpoint
+
+- Timestamp: 2026-09-20 UTC
+- Action: corrected WAF inventory reporting so unsupported AppFW/profile/signature operations are not presented as an empty WAF inventory; added capability-aware adapter/control inventory route and explicit UI status.
+- State: implementation complete locally; validation and deployment pending.
+- Read-only scope: the change only reads `/applications` through the supplied Next-Gen OAS. It does not call legacy APIs, mutate the ADC, enable writes, or retain credentials/raw provider payloads.
+- Expected live result: applications are enumerated independently; WAF resources report `unsupported-by-oas` with `automatic_apply_allowed=false`; this is not equivalent to an empty catalog.
+- Next action: run the repository tests in Docker, deploy the changed adapter/control/frontend services, and verify `GET /api/adc/inventory` plus the UI-facing control route.
+- Recovery after connectivity loss or reboot: verify local/server `git rev-parse --short HEAD`, SSH to `grega@192.168.11.90`, run `docker compose -p waf-intelligence ps`, query `http://192.168.11.90:8110/healthz`, then query `http://192.168.11.90:8110/api/adc/inventory`. Do not re-run discovery or enable writes; resume from the inventory verification step.
