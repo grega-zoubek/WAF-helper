@@ -234,7 +234,7 @@ If connectivity is lost or a machine reboots:
 - OAS source: `C:\Users\G.Zoubek\Downloads\Nextgen-API-Spec.yaml`
 - OAS SHA-256: `88006C4D59EB0C0E4344458CAA5CEB130EEFF41AF325087221536260319FDD8F`
 - OAS contract: `NetScaler Next-Gen API` version `0.1.10`, base path `/mgmt/api/nextgen/v1`, login `POST /login`, cookie `sessionid`.
-- Local/server revision: `ea306bb` / `ea306bb`.
+- Local/server checkout revision: `42f64f5`; changed service images were built from `ea306bb` and the later commit only updates this checkpoint document.
 - Validation: 16 repository tests passed; changed adapter and control images built; adapter, control API, and frontend are running in Compose project `waf-intelligence`.
 - Live ADC result: adapter health reached `192.168.11.101` but Next-Gen login returned HTTP 403 from Apache. Application discovery is therefore blocked with no fallback and no ADC mutation.
 - AppFW result: the supplied OAS has no AppFW profile, policy, or signature operation; those endpoints return `unsupported-by-oas`, and old AppFW write routes return HTTP 501.
