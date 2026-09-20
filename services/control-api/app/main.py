@@ -141,12 +141,13 @@ def _signature_entry_from_record(item: dict[str, Any]) -> dict[str, Any] | None:
     url = item.get("url") or item.get("signatureurl") or item.get("filename")
     if not name and not url:
         return None
+    size_bytes = item.get("size") if isinstance(item.get("size"), int) else item.get("size_bytes") if isinstance(item.get("size_bytes"), int) else None
     return {
         "name": str(name or url)[:200],
         "url": str(url or "")[:300],
         "creation_date": str(item.get("creationdate") or item.get("creation_date") or "")[:120] or None,
         "base_version": str(item.get("baseversion") or item.get("base_version") or "")[:80] or None,
-        "size_bytes": item.get("size") if isinstance(item.get("size"), int) else None,
+        "size_bytes": size_bytes,
         "encrypted_version": str(item.get("encryptedversion") or item.get("encrypted_version") or "")[:80] or None,
     }
 
