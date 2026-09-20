@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
 
 from app.rule_catalog import resolve_rule_catalog
+from app.nextgen_correlation import correlate_scope_to_nextgen
 
 app = FastAPI(title="WAF Intelligence Control API", version="0.1.0")
 jobs: dict[str, dict[str, Any]] = {}
@@ -1187,6 +1188,17 @@ async def get_discovery_profile(job_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Discovery job not found") from exc
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail="Discovery worker unavailable") from exc
+
+
+@app.get("/api/discovery/jobs/{job_id}/nextgen-correlation")
+async def nextgen_correlation(job_id: str) -> dict[str, Any]:
+    job = await get_discovery_job(job_id)
+    applications_payload = await adapter_read("/api/adc/applications")
+    return {
+        "job_id": job_id,
+        "scope": job.get("scope", {}),
+        "correlation": correlate_scope_to_nextgen(job.get("scope", {}), applications_payload),
+    }
 
 
 @app.get("/api/adc/health")
