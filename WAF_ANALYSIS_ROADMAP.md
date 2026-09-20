@@ -308,3 +308,13 @@ If connectivity is lost or a machine reboots:
 - Root cause: the current frontend renderer still reads the legacy fields `profiles.appfwprofile`, `policies.appfwpolicy`, and `signatureCatalog`. The current `/api/adc/inventory` response uses `waf.resources.appfw_profiles`, `waf.resources.appfw_policies`, `waf.resources.signature_catalog`, and adds `classic`; the frontend also has no classic topology/correlation view.
 - State: verification complete; no ADC or GUI configuration was changed. A frontend compatibility/update task is required before the GUI can be considered consistent with the backend.
 - Recovery after connectivity loss or reboot: verify server revision with `git rev-parse --short HEAD`, run `docker compose -p waf-intelligence ps`, query `/api/adc/inventory` and `/api/adc/classic-inventory`, then refresh the dashboard and reconnect the saved ADC connection. Treat the GUI as stale until it shows the enumerated WAF counts and classic topology evidence.
+
+### GUI inventory synchronization fix checkpoint
+
+- Timestamp: 2026-09-20 UTC
+- Action: updated `frontend/index.html` to normalize the current `waf.resources.*` inventory shape while retaining compatibility with legacy fields. Added classic ADC vserver/service/binding rendering and a read-only `Check ADC path` action for completed discovery jobs.
+- Revision: `48cbd5f`, pushed to GitHub and synchronized to `/home/grega/waf-intelligence-repo`. The frontend uses a bind mount, so the running Nginx container served the updated file without an image rebuild.
+- Live GUI result after refresh and reconnect: AppFW profiles `10`, policies `0`, signature catalogs `2`, inventory status `enumerated`; classic topology `10` vservers, `5` services, `5` service groups, `9` bindings; AppFW feature `enabled`; vserver profile bindings `0`.
+- Live GUI correlation result for job `913c5f59-1fd9-4705-8028-a774a4102622`: target `192.168.11.91:80`, status `matched`, vserver `lb_vs_juice_shop`, backend `192.168.11.90:3000`, protection `feature-enabled-no-policy-binding-evidenced`, proposal `proposal-only`, automatic apply `disabled`.
+- State: complete; no ADC configuration changed.
+- Recovery after connectivity loss or reboot: verify server revision `48cbd5f` or later, run `docker compose -p waf-intelligence ps frontend`, refresh `http://192.168.11.90:8180/`, reconnect the saved ADC connection, press `Reload WAF inventory`, and use `Check ADC path` on a completed discovery job. If the GUI regresses to zero/not-available inventory, compare the served frontend revision and `/api/adc/inventory` before changing ADC state.
