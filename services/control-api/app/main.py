@@ -24,6 +24,7 @@ from psycopg.types.json import Jsonb
 from app.rule_catalog import resolve_rule_catalog
 from app.nextgen_correlation import correlate_scope_to_nextgen
 from app.classic_correlation import correlate_scope_to_classic
+from app.custom_signatures import build_custom_signature_spec
 
 app = FastAPI(title="WAF Intelligence Control API", version="0.1.0")
 jobs: dict[str, dict[str, Any]] = {}
@@ -124,6 +125,29 @@ class SignatureSetPreflightRequest(BaseModel):
 class SignatureSetWriteRequest(SignatureSetPreflightRequest):
     preview_id: str = Field(min_length=1, max_length=128)
     confirmation_phrase: str = Field(min_length=1, max_length=64)
+
+
+class CustomSignatureDraftRequest(BaseModel):
+    job_id: str = Field(min_length=1, max_length=128)
+    signature_object_name: str = Field(min_length=1, max_length=31)
+    rule_name: str = Field(min_length=1, max_length=128)
+    category: str = Field(default="web-misc", min_length=1, max_length=64)
+    log_string: str = Field(min_length=1, max_length=256)
+    comment: str = Field(default="", max_length=512)
+    pattern_type: str = Field(min_length=1, max_length=32)
+    pattern: str = Field(default="", max_length=4096)
+    match_location: str = Field(default="BODY", min_length=1, max_length=64)
+    action: str = Field(default="LOG", max_length=16)
+    enabled: bool = False
+    rule_id: int | None = Field(default=None, ge=1_000_000, le=1_999_999)
+    version: int = Field(default=1, ge=1, le=9999)
+    source: str = Field(default="Local", max_length=64)
+    harm_score: int = Field(default=5, ge=1, le=10)
+    severity: str = Field(default="Medium", max_length=16)
+    violation_type: str = Field(default="Warning", max_length=16)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=50)
+    positive_test_cases: list[str] = Field(default_factory=list, max_length=20)
+    negative_test_cases: list[str] = Field(default_factory=list, max_length=20)
 
 
 def provider_records(payload: Any, key: str) -> list[dict[str, Any]]:
@@ -483,6 +507,8 @@ def init_db_sync() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_csp_reports_received_at ON csp_reports (received_at DESC)")
         conn.execute("""CREATE TABLE IF NOT EXISTS netscaler_signature_sets (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, nsip TEXT NOT NULL, source_profile TEXT NOT NULL, destination_profile TEXT NOT NULL, status TEXT NOT NULL, plan_fingerprint TEXT NOT NULL, source_snapshot JSONB NOT NULL, technology_context JSONB NOT NULL, available_signatures JSONB NOT NULL, selected_signature_urls JSONB NOT NULL, added_signature_urls JSONB NOT NULL, removed_signature_urls JSONB NOT NULL, approval_id TEXT, approved_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, preview_id TEXT, preflight_status TEXT, changes_applied BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_netscaler_signature_sets_job ON netscaler_signature_sets (job_id, updated_at DESC)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS netscaler_custom_signature_drafts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, signature_object_name TEXT NOT NULL, rule_id INTEGER NOT NULL, status TEXT NOT NULL, spec JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_netscaler_custom_signature_drafts_job ON netscaler_custom_signature_drafts (job_id, updated_at DESC)")
         conn.commit()
 
 
@@ -646,6 +672,45 @@ def update_signature_set_sync(set_id: str, values: dict[str, Any]) -> None:
     with db_connect() as conn:
         conn.execute(f"UPDATE netscaler_signature_sets SET {assignments} WHERE id = %s", params)
         conn.commit()
+
+
+def save_custom_signature_draft_sync(spec: dict[str, Any]) -> str:
+    draft_id = str(uuid4())
+    now = datetime.now(timezone.utc)
+    with db_connect() as conn:
+        conn.execute(
+            """INSERT INTO netscaler_custom_signature_drafts (id, job_id, signature_object_name, rule_id, status, spec, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (draft_id, str(spec["detection_context"]["job_id"])[:128], str(spec["signature_object_name"])[:31], int(spec["rule"]["rule_id"]), str(spec["status"])[:64], Jsonb(spec), now, now),
+        )
+        conn.commit()
+    return draft_id
+
+
+def load_custom_signature_draft_sync(draft_id: str) -> dict[str, Any] | None:
+    with db_connect() as conn:
+        row = conn.execute("SELECT id, job_id, signature_object_name, rule_id, status, spec, created_at, updated_at FROM netscaler_custom_signature_drafts WHERE id = %s", (draft_id,)).fetchone()
+    if not row:
+        return None
+    columns = ["id", "job_id", "signature_object_name", "rule_id", "status", "spec", "created_at", "updated_at"]
+    result = dict(zip(columns, row))
+    result["draft_id"] = result.pop("id")
+    return result
+
+
+def list_custom_signature_drafts_sync(job_id: str | None = None) -> list[dict[str, Any]]:
+    with db_connect() as conn:
+        if job_id:
+            rows = conn.execute("SELECT id, job_id, signature_object_name, rule_id, status, created_at, updated_at FROM netscaler_custom_signature_drafts WHERE job_id = %s ORDER BY updated_at DESC", (job_id,)).fetchall()
+        else:
+            rows = conn.execute("SELECT id, job_id, signature_object_name, rule_id, status, created_at, updated_at FROM netscaler_custom_signature_drafts ORDER BY updated_at DESC LIMIT 100").fetchall()
+    columns = ["draft_id", "job_id", "signature_object_name", "rule_id", "status", "created_at", "updated_at"]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def list_custom_signature_rule_ids_sync() -> set[int]:
+    with db_connect() as conn:
+        rows = conn.execute("SELECT rule_id FROM netscaler_custom_signature_drafts").fetchall()
+    return {int(row[0]) for row in rows}
 
 
 def save_csp_report_sync(report: dict[str, Any]) -> str:
@@ -1808,6 +1873,47 @@ async def rollback_signature_set(set_id: str, request: SignatureSetWriteRequest)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail="NetScaler write service unavailable") from exc
     return {"signature_set_id": set_id, "rolled_back": True, "changes_applied": True, "adapter_result": result}
+
+
+@app.post("/api/custom-signatures/drafts", status_code=201)
+async def create_custom_signature_draft(request: CustomSignatureDraftRequest) -> dict[str, Any]:
+    job = await get_discovery_job(request.job_id)
+    if job.get("status") != "completed":
+        raise HTTPException(status_code=409, detail="Custom signature authoring requires a completed discovery job")
+    profile = await get_discovery_profile(request.job_id)
+    try:
+        existing_rule_ids = await asyncio.to_thread(list_custom_signature_rule_ids_sync)
+        spec = build_custom_signature_spec(request=request.model_dump(), job=job, profile=profile, existing_rule_ids=existing_rule_ids)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if spec["status"] != "draft-needs-review":
+        raise HTTPException(status_code=422, detail={"message": "Custom signature draft failed validation", "validation": spec["validation"]})
+    spec["draft_fingerprint"] = plan_fingerprint(spec)
+    try:
+        draft_id = await asyncio.to_thread(save_custom_signature_draft_sync, spec)
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Custom signature draft database unavailable") from exc
+    return {"draft_id": draft_id, **spec}
+
+
+@app.get("/api/custom-signatures/drafts")
+async def list_custom_signature_drafts(job_id: str | None = Query(default=None, max_length=128)) -> list[dict[str, Any]]:
+    try:
+        return await asyncio.to_thread(list_custom_signature_drafts_sync, job_id)
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Custom signature draft database unavailable") from exc
+
+
+@app.get("/api/custom-signatures/drafts/{draft_id}")
+async def get_custom_signature_draft(draft_id: str) -> dict[str, Any]:
+    try:
+        record = await asyncio.to_thread(load_custom_signature_draft_sync, draft_id)
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Custom signature draft database unavailable") from exc
+    if not record:
+        raise HTTPException(status_code=404, detail="Custom signature draft was not found")
+    spec = record.get("spec") or {}
+    return {"draft_id": draft_id, **spec, "created_at": record.get("created_at"), "updated_at": record.get("updated_at")}
 
 
 @app.post("/api/adc/writes/appfw-profile-signature")
