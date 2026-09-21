@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -44,6 +45,39 @@ class RuleCatalogTests(unittest.TestCase):
         result = load_rule_catalog("")
         self.assertEqual(result["status"], "not-configured")
         self.assertEqual(result["rules"], [])
+
+    def test_adapter_parses_netscaler_signature_rule_metadata(self):
+        xml = """<?xml version=\"1.0\"?>
+        <SignaturesFile schema_version=\"6\">
+          <Signatures>
+            <SignatureRule id=\"1001\" enabled=\"ON\" actions=\"log,block\" category=\"sql\" source=\"Snort\" version=\"2\">
+              <PatternList><RequestPatterns><Pattern>
+                <Location area=\"HTTP_POST_BODY\"/>
+                <Match type=\"SQLInjection\">select</Match>
+              </Pattern></RequestPatterns></PatternList>
+              <LogString>SQL injection test</LogString>
+              <Reference>cve,2024-0001</Reference>
+            </SignatureRule>
+            <SignatureRule id=\"1002\" enabled=\"OFF\" actions=\"log\" category=\"xss\" source=\"Snort\" version=\"1\">
+              <PatternList><RequestPatterns><Pattern>
+                <Location area=\"HTTP_URL\"/>
+                <Match type=\"CrossSiteScripting\">script</Match>
+              </Pattern></RequestPatterns></PatternList>
+              <LogString>Cross-site scripting test</LogString>
+            </SignatureRule>
+          </Signatures>
+        </SignaturesFile>"""
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "default_signatures.xml"
+            source.write_text(xml, encoding="utf-8")
+            result = load_rule_catalog(str(source))
+        self.assertEqual(result["status"], "enumerated")
+        self.assertEqual(result["rule_count"], 2)
+        self.assertEqual(result["rules"][0]["rule_id"], "1001")
+        self.assertIn("sql-injection", result["rules"][0]["attack_classes"])
+        self.assertEqual(result["rules"][0]["locations"], ["http_post_body"])
+        self.assertEqual(result["rules"][0]["reference_count"], 1)
+        self.assertFalse(result["rules"][1]["enabled"])
 
 
 if __name__ == "__main__":

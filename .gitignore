@@ -2,3 +2,7 @@ secrets/
 __pycache__/
 *.pyc
 .env
+catalogs/netscaler_rule_catalog.json
+catalogs/*.xml
+signature-cache/raw/
+signature-cache/index/
