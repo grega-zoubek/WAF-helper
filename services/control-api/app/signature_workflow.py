@@ -118,6 +118,20 @@ def select_rules_for_detection(
             selected_ids.add(rule_id)
             if not any(item.get("rule_id") == rule_id for item in technology_matches):
                 technology_matches.append({"rule_id": rule_id, "source": "selected-product"})
+    tag_rule_sets: dict[str, set[str]] = {}
+    for tag in technology_tags:
+        tag_rule_sets[tag] = {str(rule["rule_id"]) for rule in rules if tag in set(rule.get("technology_tags", []))}
+    canonical_filters: list[str] = []
+    for tag in sorted(technology_tags):
+        tag_key = f"tag:{tag}"
+        matching_products = [key for key, rule_ids in product_rule_map.items() if rule_ids and rule_ids == tag_rule_sets.get(tag, set())]
+        canonical_filters.extend(sorted(matching_products) or [tag_key])
+    if explicit_filters is not None:
+        canonical_filters = sorted({
+            value if value.startswith("product:") else f"tag:{value.removeprefix('tag:')}"
+            for value in (explicit_filters or [])
+            if str(value).strip()
+        })
     if requested_rule_ids is not None:
         requested = {str(value) for value in requested_rule_ids}
         missing = sorted(requested - set(by_id))
@@ -142,7 +156,7 @@ def select_rules_for_detection(
         "catalog_rule_count": len(rules),
         "generic_resolution": filtered_generic,
         "technology_tags": sorted(technology_tags),
-        "technology_filters": sorted({str(value).strip().casefold() for value in explicit_filters or []}),
+        "technology_filters": canonical_filters,
         "technology_selection_mode": "explicit" if explicit_filters is not None else "detected",
         "selected_product_rule_count": len(product_rule_ids),
         "include_generic_signatures": bool(include_generic_signatures),

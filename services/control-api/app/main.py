@@ -1827,9 +1827,21 @@ async def signature_technologies(
             if rule_id not in item["rule_ids"]:
                 item["rule_ids"].append(rule_id)
                 item["rule_count"] += 1
+    product_index = catalog.get("product_index") if isinstance(catalog, dict) else None
+    product_rule_sets = {
+        f"product:{str(item.get('key')).strip().casefold()}": {str(value) for value in (item.get("rule_ids") or []) if value is not None}
+        for item in (product_index.get("products", []) if isinstance(product_index, dict) else [])
+        if isinstance(item, dict) and item.get("key")
+    }
+    duplicate_tag_keys = {
+        f"tag:{tag}" for tag, item in by_tag.items()
+        if set(item.get("rule_ids") or []) and any(set(item.get("rule_ids") or []) == rule_ids for rule_ids in product_rule_sets.values())
+    }
     query = q.strip().casefold()
     options = []
     for item in by_tag.values():
+        if f"tag:{item['key']}" in duplicate_tag_keys:
+            continue
         if query and query not in f"{item['key']} {item['label']}".casefold():
             continue
         item["rule_ids"].sort(key=lambda value: int(value) if str(value).isdigit() else str(value))
@@ -1839,7 +1851,6 @@ async def signature_technologies(
     options.sort(key=lambda item: str(item["label"]).casefold())
     options = options[:limit]
     groups: dict[str, dict[str, Any]] = {}
-    product_index = catalog.get("product_index") if isinstance(catalog, dict) else None
     if isinstance(product_index, dict):
         for vendor_entry in product_index.get("vendors", []):
             if not isinstance(vendor_entry, dict) or not vendor_entry.get("vendor"):
