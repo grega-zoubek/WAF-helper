@@ -142,7 +142,7 @@ def workflow_fingerprint(plan: dict[str, Any]) -> str:
 def cli_import_commands(signature_object_name: str, rule_ids: list[str], action: str, chunk_size: int = 50) -> list[str]:
     ids = [str(value) for value in rule_ids]
     return [
-        f"import appfw signature DEFAULT {signature_object_name} -sigRuleId {' '.join(chunk)} -Enabled ON -Action {action}"
+        f"import appfw signatures DEFAULT {signature_object_name} -ruleID {' '.join(chunk)} -Enabled ON -Action {str(action).lower()}"
         for start in range(0, len(ids), chunk_size)
         for chunk in [ids[start:start + chunk_size]]
     ] + ["save ns config"]

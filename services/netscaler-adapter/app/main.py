@@ -349,7 +349,7 @@ async def write_custom_signature_set(request: CustomSignatureSetWriteRequest) ->
     if len(set(rule_ids)) != len(rule_ids):
         raise HTTPException(status_code=422, detail="Rule IDs must be unique")
     commands = [
-        f"import appfw signature DEFAULT {request.signature_object_name} -sigRuleId {' '.join(chunk)} -Enabled ON -Action {action}"
+        f"import appfw signatures DEFAULT {request.signature_object_name} -ruleID {' '.join(chunk)} -Enabled ON -Action {action.lower()}"
         for start in range(0, len(rule_ids), 50)
         for chunk in [rule_ids[start:start + 50]]
     ] + ["save ns config"]
