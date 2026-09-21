@@ -226,7 +226,7 @@ def _index_payload(
         raise ValueError(f"signature XML produced no rule metadata: {catalog.get('status')}")
     raw_sha256 = hashlib.sha256(raw_path.read_bytes()).hexdigest()
     index = {
-        "schema_version": "1.2.0",
+        "schema_version": INDEX_SCHEMA_VERSION,
         "generated_at": utc_now(),
         "source": "citrix-netscaler-signature-mapping",
         "source_url": mapping["file_url"],
