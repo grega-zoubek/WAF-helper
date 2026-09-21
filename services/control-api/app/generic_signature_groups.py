@@ -376,16 +376,53 @@ def build_cve_signature_group(
     candidate_rule_ids: set[str],
     rules_by_id: dict[str, dict[str, Any]],
     selected_rule_ids: set[str],
+    product_index: dict[str, Any] | None = None,
+    view_mode: str = "number",
+    search_mode: str = "description",
+    search_query: str = "",
 ) -> dict[str, Any] | None:
-    """Build one cross-cutting CVE tree whose rule checkboxes share global IDs."""
-    grouped: dict[str, list[dict[str, Any]]] = {}
+    """Build a cross-cutting CVE tree whose rule checkboxes share global IDs.
+
+    CVEs are a cross-list, not another export selection.  A rule can therefore
+    occur under several CVEs or vendor/product branches while its global rule
+    ID remains the single source of selection truth.
+    """
+    view_mode = str(view_mode or "number").strip().casefold()
+    search_mode = str(search_mode or "description").strip().casefold()
+    if view_mode not in {"number", "vendor"}:
+        raise ValueError("cve_view_mode must be number or vendor")
+    if search_mode not in {"description", "attack_pattern"}:
+        raise ValueError("cve_search_mode must be description or attack_pattern")
+    query = str(search_query or "").strip()
+    attack_pattern_re = None
+    if search_mode == "attack_pattern" and query:
+        try:
+            attack_pattern_re = re.compile(query, re.IGNORECASE)
+        except re.error as exc:
+            raise ValueError(f"Invalid CVE attack-pattern regular expression: {exc}") from exc
+
+    indexed_labels = _cve_vendor_product_by_rule(product_index)
+    entries: list[dict[str, Any]] = []
     for rule_id in sorted(candidate_rule_ids):
         rule = rules_by_id.get(str(rule_id))
         if not rule:
             continue
         cves = extract_cve_ids(rule)
+        vendor, product = indexed_labels.get(str(rule_id), _fallback_cve_vendor_product(rule))
+        attack_text = " ".join(
+            str(rule.get(field) or "")
+            for field in ("description", "category", "source", "attack_classes", "locations", "match_types")
+        )
         for cve_id in cves:
-            grouped.setdefault(cve_id, []).append({
+            description_text = " ".join((cve_id, vendor, product, str(rule.get("description") or ""))).casefold()
+            if search_mode == "description" and query and query.casefold() not in description_text:
+                continue
+            if search_mode == "attack_pattern" and attack_pattern_re and not attack_pattern_re.search(attack_text):
+                continue
+            entries.append({
+                "cve_id": cve_id,
+                "vendor": vendor,
+                "product": product,
                 "rule_id": str(rule_id),
                 "description": rule.get("description"),
                 "category": rule.get("category"),
@@ -399,32 +436,108 @@ def build_cve_signature_group(
                 "selected": str(rule_id) in selected_rule_ids,
                 "match_reasons": [f"CVE reference: {cve_id}"],
             })
-    if not grouped:
+    if not entries and not any(extract_cve_ids(rules_by_id.get(str(rule_id), {})) for rule_id in candidate_rule_ids):
         return None
-    subgroups = []
-    for cve_id, cve_rules in sorted(grouped.items()):
-        cve_rules.sort(key=lambda item: (str(item.get("category") or ""), str(item.get("rule_id") or "")))
-        subgroups.append({
-            "subgroup_id": f"cve:{cve_id.casefold()}",
-            "name": cve_id,
-            "rule_count": len(cve_rules),
-            "selected_rule_count": sum(1 for item in cve_rules if item["selected"]),
-            "rules": cve_rules,
-        })
-    unique_rule_ids = {str(item["rule_id"]) for rules in grouped.values() for item in rules}
+
+    def cve_nodes(items: list[dict[str, Any]], prefix: str) -> list[dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            grouped.setdefault(str(item["cve_id"]), []).append(item)
+        result = []
+        for cve_id, cve_rules in sorted(grouped.items()):
+            unique_cve_rules = {str(item["rule_id"]): item for item in cve_rules}
+            rules = sorted(unique_cve_rules.values(), key=lambda item: (str(item.get("category") or ""), str(item.get("rule_id") or "")))
+            result.append({
+                "subgroup_id": f"{prefix}cve:{cve_id.casefold()}",
+                "name": cve_id,
+                "rule_count": len(rules),
+                "selected_rule_count": sum(1 for item in rules if item["selected"]),
+                "rules": rules,
+            })
+        return result
+
+    if view_mode == "number":
+        subgroups = cve_nodes(entries, "")
+    else:
+        vendor_entries: dict[str, list[dict[str, Any]]] = {}
+        for item in entries:
+            vendor_entries.setdefault(str(item["vendor"] or "Other"), []).append(item)
+        subgroups = []
+        for vendor, vendor_items in sorted(vendor_entries.items(), key=lambda item: item[0].casefold()):
+            distinct_cves = {str(item["cve_id"]) for item in vendor_items}
+            children: list[dict[str, Any]]
+            if len(distinct_cves) > 10:
+                product_entries: dict[str, list[dict[str, Any]]] = {}
+                for item in vendor_items:
+                    product_entries.setdefault(str(item["product"] or "Other"), []).append(item)
+                children = []
+                for product, product_items in sorted(product_entries.items(), key=lambda item: item[0].casefold()):
+                    product_cves = cve_nodes(product_items, f"vendor:{vendor.casefold()}:product:{product.casefold()}:" )
+                    product_rule_ids = {str(item["rule_id"]) for item in product_items}
+                    children.append({
+                        "subgroup_id": f"vendor:{vendor.casefold()}:product:{product.casefold()}",
+                        "name": product,
+                        "rule_count": len(product_rule_ids),
+                        "selected_rule_count": len(product_rule_ids & selected_rule_ids),
+                        "children": product_cves,
+                    })
+            else:
+                children = cve_nodes(vendor_items, f"vendor:{vendor.casefold()}:")
+            vendor_rule_ids = {str(item["rule_id"]) for item in vendor_items}
+            subgroups.append({
+                "subgroup_id": f"vendor:{vendor.casefold()}",
+                "name": vendor,
+                "rule_count": len(vendor_rule_ids),
+                "selected_rule_count": len(vendor_rule_ids & selected_rule_ids),
+                "children": children,
+            })
+
+    unique_rule_ids = {str(item["rule_id"]) for item in entries}
+    unique_cve_ids = {str(item["cve_id"]) for item in entries}
     return {
         "group_id": "cve-references",
         "name": "CVE references",
         "priority": "P1",
         "decision": "include",
         "applicability_confidence": "high",
-        "rationale": "Rules with CVE references are cross-listed here without creating duplicate rule IDs.",
+        "rationale": "Rules with CVE references are cross-listed here without creating duplicate rule IDs. Use number view for a direct CVE list or vendor view for vendor/product navigation.",
         "provider_mapping": "normalized catalog CVE references",
         "candidate_rule_count": len(unique_rule_ids),
         "selected_rule_count": len(unique_rule_ids & selected_rule_ids),
         "selected_rule_ids": sorted(unique_rule_ids & selected_rule_ids),
         "rule_ids": sorted(unique_rule_ids),
-        "cve_count": len(subgroups),
+        "cve_count": len(unique_cve_ids),
         "subgroups": subgroups,
+        "view_mode": view_mode,
+        "search_mode": search_mode,
+        "search_query": query,
+        "search_result_count": len(entries),
         "proposal_only": True,
     }
+
+
+def _cve_vendor_product_by_rule(product_index: dict[str, Any] | None) -> dict[str, tuple[str, str]]:
+    result: dict[str, tuple[str, str]] = {}
+    if not isinstance(product_index, dict):
+        return result
+    for vendor_entry in product_index.get("vendors", []):
+        if not isinstance(vendor_entry, dict):
+            continue
+        vendor = str(vendor_entry.get("vendor") or "Other").strip() or "Other"
+        for product_entry in vendor_entry.get("products", []):
+            if not isinstance(product_entry, dict):
+                continue
+            product = str(product_entry.get("product") or "Other").strip() or "Other"
+            for rule_id in product_entry.get("rule_ids", []):
+                result[str(rule_id)] = (vendor, product)
+    return result
+
+
+def _fallback_cve_vendor_product(rule: dict[str, Any]) -> tuple[str, str]:
+    label = _clean_web_misc_software(str(rule.get("description") or ""))
+    if not label:
+        return "Other", "Unspecified"
+    tokens = label.split()
+    if len(tokens) == 1:
+        return tokens[0], "Unspecified"
+    return tokens[0], " ".join(tokens[1:])

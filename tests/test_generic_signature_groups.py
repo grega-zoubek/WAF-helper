@@ -128,6 +128,43 @@ def test_cve_group_cross_lists_rules_without_duplicate_selection_state():
     assert cve_51["rules"][0]["selected"] is False
 
 
+def test_cve_vendor_view_adds_product_level_navigation_after_ten_cves():
+    rules = {
+        str(index): rule(str(index), classes=["command-injection"], description=f"WEB-MISC Cisco ISE - issue (CVE-2020-{index:04d})")
+        for index in range(1, 12)
+    }
+    group = build_cve_signature_group(set(rules), rules, set(), view_mode="vendor")
+    assert group["view_mode"] == "vendor"
+    assert group["cve_count"] == 11
+    vendor = next(item for item in group["subgroups"] if item["name"] == "Cisco")
+    assert vendor["children"]
+    assert vendor["children"][0]["name"] == "ISE"
+    assert vendor["children"][0]["children"][0]["name"].startswith("CVE-")
+
+
+def test_cve_search_supports_description_and_attack_pattern_modes():
+    rules = {
+        "60": rule("60", classes=["sql-injection"], description="WEB-MISC Cisco ISE query issue (CVE-2024-6000)"),
+        "61": rule("61", classes=["path-traversal"], description="WEB-MISC Ivanti file issue (CVE-2024-6100)"),
+    }
+    description_group = build_cve_signature_group(set(rules), rules, {"60"}, search_query="Ivanti")
+    assert description_group["cve_count"] == 1
+    assert description_group["subgroups"][0]["name"] == "CVE-2024-6100"
+    attack_group = build_cve_signature_group(set(rules), rules, set(), search_mode="attack_pattern", search_query=r"path[- ]traversal")
+    assert attack_group["cve_count"] == 1
+    assert attack_group["subgroups"][0]["rules"][0]["rule_id"] == "61"
+
+
+def test_cve_attack_pattern_rejects_invalid_python_regex():
+    rules = {"70": rule("70", classes=["sql-injection"], description="Issue (CVE-2024-7000)")}
+    try:
+        build_cve_signature_group(set(rules), rules, set(), search_mode="attack_pattern", search_query="[")
+    except ValueError as exc:
+        assert "regular expression" in str(exc)
+    else:
+        raise AssertionError("invalid attack-pattern regex was accepted")
+
+
 if __name__ == "__main__":
     test_first_five_are_stable_and_signature_only()
     test_file_upload_rules_require_upload_evidence_but_traversal_does_not()
@@ -135,4 +172,7 @@ if __name__ == "__main__":
     test_subgroups_keep_rule_details_and_selection_state()
     test_web_misc_prefers_software_then_protection_family()
     test_cve_group_cross_lists_rules_without_duplicate_selection_state()
-    print("6 generic signature-group tests passed")
+    test_cve_vendor_view_adds_product_level_navigation_after_ten_cves()
+    test_cve_search_supports_description_and_attack_pattern_modes()
+    test_cve_attack_pattern_rejects_invalid_python_regex()
+    print("9 generic signature-group tests passed")

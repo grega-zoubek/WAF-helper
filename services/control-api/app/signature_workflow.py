@@ -76,6 +76,9 @@ def select_rules_for_detection(
     selected_technology_filters: list[str] | None = None,
     selected_release_years: list[int] | None = None,
     selected_signature_groups: list[str] | None = None,
+    cve_view_mode: str = "number",
+    cve_search_mode: str = "description",
+    cve_search_query: str = "",
 ) -> dict[str, Any]:
     rules = normalize_rule_catalog(catalog)
     by_id = {str(item["rule_id"]): item for item in rules}
@@ -198,7 +201,15 @@ def select_rules_for_detection(
         selected_ids,
         catalog.get("product_index") if isinstance(catalog, dict) else None,
     )
-    cve_signature_group = build_cve_signature_group(candidate_rule_ids, by_id, selected_ids)
+    cve_signature_group = build_cve_signature_group(
+        candidate_rule_ids,
+        by_id,
+        selected_ids,
+        catalog.get("product_index") if isinstance(catalog, dict) else None,
+        cve_view_mode,
+        cve_search_mode,
+        cve_search_query,
+    )
     generic_group_rule_count = sum(int(group.get("selected_rule_count") or 0) for group in generic_groups.get("groups", []))
     filtered_generic = {
         **generic,
