@@ -164,7 +164,11 @@ def select_rules_for_detection(
     if release_years is not None:
         selected_ids = {rule_id for rule_id in selected_ids if _rule_year(by_id[rule_id]) in release_years}
         technology_matches = [item for item in technology_matches if str(item.get("rule_id")) in selected_ids]
-    candidate_rule_ids = set(selected_ids)
+    # The CVE menu is a catalog browser, not an applicability-only list.  Keep
+    # every catalog rule with CVE metadata visible so an administrator can
+    # search for and explicitly select a known vulnerability such as Log4j,
+    # while the checkbox state still reflects the scan's current selection.
+    cve_candidate_rule_ids = set(by_id)
     tag_rule_sets: dict[str, set[str]] = {}
     for tag in technology_tags:
         tag_rule_sets[tag] = {str(rule["rule_id"]) for rule in rules if tag in set(rule.get("technology_tags", []))}
@@ -202,7 +206,7 @@ def select_rules_for_detection(
         catalog.get("product_index") if isinstance(catalog, dict) else None,
     )
     cve_signature_group = build_cve_signature_group(
-        candidate_rule_ids,
+        cve_candidate_rule_ids,
         by_id,
         selected_ids,
         catalog.get("product_index") if isinstance(catalog, dict) else None,
