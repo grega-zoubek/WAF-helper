@@ -67,6 +67,34 @@ def _rule_year(rule: dict[str, Any]) -> int | None:
     return year if 1900 <= year <= 2100 else None
 
 
+def _positive_model_recommendation(profile: dict[str, Any], explicit_filters: list[str] | None) -> dict[str, Any]:
+    detected_technologies = [
+        item for item in (profile.get("technologies") or [])
+        if isinstance(item, dict) and str(item.get("technology") or "").strip()
+    ]
+    detected_tags = _technology_tags(profile)
+    if explicit_filters is None and not detected_technologies and not detected_tags:
+        return {
+            "enabled": False,
+            "recommended": True,
+            "status": "recommended",
+            "mode": "positive-model",
+            "action": "build-positive-model",
+            "reason": "No application technology or product was detected; a generic signature baseline is not sufficiently application-specific.",
+            "next_step": "Build an allow-list model from observed routes, methods, parameters, cookies, and content types before BLOCK enforcement.",
+            "automatic_apply_allowed": False,
+        }
+    return {
+        "enabled": False,
+        "recommended": False,
+        "status": "not-required",
+        "mode": "positive-model",
+        "action": "deferred",
+        "reason": "Application technology evidence is available or an explicit technology selection was provided.",
+        "automatic_apply_allowed": False,
+    }
+
+
 def select_rules_for_detection(
     profile: dict[str, Any],
     analysis: dict[str, Any],
@@ -100,6 +128,7 @@ def select_rules_for_detection(
         "positive_model": {"enabled": False, "reason": "deferred to a later phase"},
     }
     explicit_filters = selected_technology_filters if selected_technology_filters is not None else selected_technology_tags
+    positive_model = _positive_model_recommendation(profile, explicit_filters)
     product_rule_map = _product_rule_ids(catalog)
     product_rule_ids: set[str] = set()
     if explicit_filters is not None:
@@ -254,7 +283,7 @@ def select_rules_for_detection(
         "generic_signature_group_rule_count": generic_group_rule_count,
         "unresolved_generic_signature_groups": generic_groups.get("unresolved_group_ids", []),
         "signature_only": True,
-        "positive_model": {"enabled": False, "reason": "deferred to a later phase"},
+        "positive_model": positive_model,
         "technology_tags": sorted(technology_tags),
         "technology_filters": canonical_filters,
         "technology_selection_mode": "explicit" if explicit_filters is not None else "detected",

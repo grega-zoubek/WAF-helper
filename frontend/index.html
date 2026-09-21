@@ -457,9 +457,10 @@
       const genericRuleTree = renderGenericSignatureTree(signatureSelectionGroups);
       const excludedCount = Number(selectionMeta.excluded_unmatched_technology_rule_count || 0);
       const excludedRules = selectionMeta.excluded_unmatched_technology_rules || [];
+      const positiveModel = selectionMeta.positive_model || {};
       const confidenceSummary = selectionMeta.confidence_summary || {};
       const applicabilityCounts = confidenceSummary.applicability || {};
-      const confidenceSummaryText = `high ${Number(applicabilityCounts.high || 0)} · medium ${Number(applicabilityCounts.medium || 0)} · low ${Number(applicabilityCounts.low || 0)} · explicit ${Number(applicabilityCounts.explicit || 0)}`;
+      const confidenceSummaryText = `high ${Number(applicabilityCounts.high || 0)} · medium ${Number(applicabilityCounts.medium || 0)} · low ${Number(applicabilityCounts.low || 0)} · explicit ${Number(applicabilityCounts.explicit || 0)}${positiveModel.recommended ? ' · POSITIVE MODEL RECOMMENDED' : ''}`;
       const severityCounts = exactRules.reduce((counts, item) => { const key = item.severity || 'unclassified'; counts[key] = (counts[key] || 0) + 1; return counts; }, {});
       const severitySummary = Object.entries(severityCounts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([severity, count]) => `${escapeHtml(severity)} ${count}`).join(' · ');
       const exactRuleRows = exactRules.slice(0, 50).map(item => `<tr><td><code>${escapeHtml(item.rule_id || '-')}</code></td><td>${escapeHtml(item.category || '-')}</td><td>${escapeHtml((item.attack_classes || []).join(', ') || '-')}</td><td>${escapeHtml((item.locations || []).join(', ') || '-')}</td><td>${escapeHtml(item.description || '-')}</td><td>${renderRuleConfidence(item)}</td><td>${escapeHtml((item.selection_sources || []).join(', ') || '-')}</td></tr>`).join('');

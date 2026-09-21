@@ -39,6 +39,15 @@ class SignatureWorkflowTests(unittest.TestCase):
         self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["42"])
         self.assertEqual(result["missing_requested_rule_ids"], ["99"])
 
+    def test_positive_model_is_recommended_when_no_technology_is_detected(self):
+        result = select_rules_for_detection(
+            {"signature_technology_context": {}, "technologies": [], "route_inventory": [{"path": "/"}]},
+            {"generic_protection_intents": []},
+            {"status": "ready", "rules": [{"rule_id": "42", "attack_classes": ["cross-site-scripting"]}]},
+        )
+        self.assertTrue(result["positive_model"]["recommended"])
+        self.assertEqual(result["positive_model"]["action"], "build-positive-model")
+
     def test_explicit_technology_filters_replace_detected_tags(self):
         profile = {
             "signature_technology_context": {"technology_matches": [{"matched_signature_tags": ["wordpress"]}]},
