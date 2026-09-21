@@ -35,6 +35,13 @@ selection response reports group confidence, exact rule counts, match reasons, a
 `positive_model.enabled=false` marker. Positive security, allowlisting, schema,
 behavioral, bot, and rate-limit controls are deliberately deferred.
 
+Each generic group is also returned as a closed-by-default selection tree. The tree is
+grouped into catalog-derived subgroups (for example SQL/command/LDAP/NoSQL injection,
+path traversal/file upload, XSS catalog categories, and protocol/evasion families) and
+contains individual rule checkboxes. The GUI sends the resulting exact `selected_rule_ids`
+to both recommendation and prepare endpoints; deselected rules remain visible as
+unchecked candidates and are not exported.
+
 The `signature-sync` service checks Citrix's published `SignaturesMapping.xml`
 hourly, defaults to the ADC 14.1 build 0 entry, verifies the published SHA-1,
 downloads a changed signature XML atomically, and builds a normalized upstream

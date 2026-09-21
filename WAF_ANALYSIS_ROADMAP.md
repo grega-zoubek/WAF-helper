@@ -44,6 +44,11 @@ technology-tagged rules from generic groups, and requires upload evidence before
 file-upload rules. Positive-model, schema, allowlist, behavioral, bot, and rate-limit
 controls remain deferred. Every proposal remains LOG/BLOCK reviewable and proposal-only.
 
+The GUI now exposes these groups as closed expandable trees. Administrators can select a
+whole group, a subgroup, or individual rule IDs. The exact selection is sent as
+`selected_rule_ids` to recommendation and prepare workflows, and deselected candidates
+remain visible for auditability.
+
 The generic policy layer is implemented in
 `services/analysis-service/app/generic_protection.py` and covered by tests. It does
 not yet replace the provider catalog resolver or enable automatic ADC writes.
