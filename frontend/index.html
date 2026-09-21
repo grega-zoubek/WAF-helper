@@ -59,7 +59,9 @@
     .technology-filter-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .35rem .7rem; margin-top: .65rem; padding: .5rem; border: 1px solid #d9dee3; border-radius: 6px; background: #fafbfc; }
     .technology-filter-item { display: flex; align-items: center; gap: .4rem; padding: .25rem; }
     .technology-filter-item input { width: auto; }
-    .technology-thumbprint { display: inline-grid; place-items: center; flex: 0 0 1.45rem; width: 1.45rem; height: 1.45rem; border-radius: 50%; font-size: .62rem; font-weight: 800; letter-spacing: -.03em; line-height: 1; color: #17202a; border: 1px solid #b9c2ca; background: #e9eef2; }
+    .technology-thumbprint { position: relative; display: inline-grid; place-items: center; flex: 0 0 1.45rem; width: 1.45rem; height: 1.45rem; border-radius: 50%; overflow: hidden; font-size: .62rem; font-weight: 800; letter-spacing: -.03em; line-height: 1; color: #17202a; border: 1px solid #b9c2ca; background: #e9eef2; }
+    .technology-thumbprint-initials { display: grid; place-items: center; width: 100%; height: 100%; }
+    .technology-logo { position: absolute; inset: .15rem; width: calc(100% - .3rem); height: calc(100% - .3rem); object-fit: contain; border-radius: .2rem; background: #fff; }
     .technology-thumbprint-vendor { color: #fff; background: #315c7d; border-color: #315c7d; }
     .technology-thumbprint-product { background: #dbeafe; border-color: #93c5fd; }
     .technology-thumbprint-tag { background: #dcfce7; border-color: #86efac; }
@@ -339,18 +341,27 @@
       const signatures = (plan.signature_recommendations || []).slice(0, 6).map(item => `<li>${escapeHtml(item.name || item.catalog_key || '-')} · ${escapeHtml(item.deployment_mode || '-')}</li>`).join('');
       host.innerHTML = `<div class="card"><h3>Analysis summary <span class="small muted">${escapeHtml(analysis.run_id || '-')}</span></h3><p class="small muted">${escapeHtml(analysis.analysis_mode || 'deterministic-synthesis')} · ${analysis.observation_count || 0} sanitized observations</p><p><strong>Likely architecture:</strong> ${architecture}</p><p><strong>Protection areas:</strong></p><ul>${protections || '<li>None identified</li>'}</ul>${intents ? `<p><strong>Included protection intents:</strong></p><ul>${intents}</ul>` : ''}${signatures ? `<p><strong>Recommended signature groups:</strong></p><ul>${signatures}</ul>` : ''}<p class="small muted">This is a compact summary. Detailed evidence remains available through the API and can be exposed later as an explicit drill-down.</p></div>`;
     }
-    function technologyThumbprint(label, kind = 'product') {
+    const technologyLogoAliases = { 'asp.net': 'dotnet', 'exchange-owa': 'microsoftoutlook', 'http-server': 'apache', 'jboss-wildfly': 'redhat', 'node-js': 'nodedotjs', 'red-hat': 'redhat', 'sharepoint': 'microsoftsharepoint', 'vba': 'visualbasic', 'vmware-vcenter': 'vmware', 'vrealize-operations-manager': 'vmware', 'aria-operations-for-logs': 'vmware', 'aria-operations-for-networks': 'vmware', 'cloud-foundation': 'vmware', 'sd-wan-orchestrator': 'vmware', 'workspace-one-access': 'vmware' };
+    function technologyLogoSlug(label) {
+      const key = String(label || '').toLowerCase().replace(/&/g, ' and ').replace(/[/.]/g, '-').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      return technologyLogoAliases[key] || key;
+    }
+    function technologyThumbprint(label, kind = 'product', fallbackLabel = '') {
       const value = String(label || '?').trim();
       const words = value.split(/\s+/).filter(Boolean);
       const initials = (words.length > 1 ? `${words[0][0]}${words[1][0]}` : value.replace(/[^a-z0-9]/gi, '').slice(0, 2)).toUpperCase() || '?';
-      return `<span class="technology-thumbprint technology-thumbprint-${escapeHtml(kind)}" role="img" aria-label="${escapeHtml(value)}" title="${escapeHtml(value)}">${escapeHtml(initials)}</span>`;
+      const slug = technologyLogoSlug(value);
+      const fallbackSlug = technologyLogoSlug(fallbackLabel);
+      const fallback = fallbackSlug && fallbackSlug !== slug ? `/assets/vendor-logos/${fallbackSlug}.svg` : '';
+      const fallbackAttribute = fallback ? ` data-fallback="${escapeHtml(fallback)}"` : '';
+      return `<span class="technology-thumbprint technology-thumbprint-${escapeHtml(kind)}" role="img" aria-label="${escapeHtml(value)}" title="${escapeHtml(value)}"><span class="technology-thumbprint-initials">${escapeHtml(initials)}</span><img class="technology-logo" src="/assets/vendor-logos/${escapeHtml(slug)}.svg"${fallbackAttribute} alt="" loading="lazy" onerror="if(this.dataset.fallback && this.dataset.tried !== '1'){this.dataset.tried='1';this.src=this.dataset.fallback;}else{this.remove();}"></span>`;
     }
     function renderTechnologyFilterOptions(catalog, selectedFilters, query = '') {
       const selected = new Set((selectedFilters || []).map(item => String(item).toLowerCase()));
       const needle = String(query || '').trim().toLowerCase();
       const groups = (catalog?.groups || []).map(group => { const children = (group.children || []).filter(item => !needle || `${group.label || ''} ${item.key || ''} ${item.label || ''}`.toLowerCase().includes(needle)); return {...group, children}; }).filter(group => group.children.length);
       if (!groups.length) return '<p class="small muted">No matching catalog technology or product options.</p>';
-      return groups.map(group => { const children = group.children || []; const allSelected = children.length > 0 && children.every(item => selected.has(String(item.key).toLowerCase())); const childRows = children.map(item => { const kind = item.kind === 'technology-tag' ? 'tag' : 'product'; return `<label class="technology-filter-item"><input type="checkbox" class="recommendation-technology-select" data-vendor-key="${escapeHtml(group.key || '')}" value="${escapeHtml(item.key || '')}"${selected.has(String(item.key || '').toLowerCase()) ? ' checked' : ''}> ${technologyThumbprint(item.label || item.key || '-', kind)} <span>${escapeHtml(item.label || item.key || '-')} <span class="small muted">(${item.rule_count || 0} rules)</span></span></label>`; }).join(''); return `<details class="signature-vendor-node"><summary><label><input type="checkbox" class="recommendation-technology-group" data-group-key="${escapeHtml(group.key || '')}"${allSelected ? ' checked' : ''}> ${technologyThumbprint(group.label || group.key || '-', 'vendor')} <strong>${escapeHtml(group.label || group.key || '-')}</strong> <span class="small muted">${children.length} options</span></label></summary><div class="technology-filter-list">${childRows}</div></details>`; }).join('');
+      return groups.map(group => { const children = group.children || []; const allSelected = children.length > 0 && children.every(item => selected.has(String(item.key).toLowerCase())); const childRows = children.map(item => { const kind = item.kind === 'technology-tag' ? 'tag' : 'product'; return `<label class="technology-filter-item"><input type="checkbox" class="recommendation-technology-select" data-vendor-key="${escapeHtml(group.key || '')}" value="${escapeHtml(item.key || '')}"${selected.has(String(item.key || '').toLowerCase()) ? ' checked' : ''}> ${technologyThumbprint(item.label || item.key || '-', kind, group.label || '')} <span>${escapeHtml(item.label || item.key || '-')} <span class="small muted">(${item.rule_count || 0} rules)</span></span></label>`; }).join(''); return `<details class="signature-vendor-node"><summary><label><input type="checkbox" class="recommendation-technology-group" data-group-key="${escapeHtml(group.key || '')}"${allSelected ? ' checked' : ''}> ${technologyThumbprint(group.label || group.key || '-', 'vendor')} <strong>${escapeHtml(group.label || group.key || '-')}</strong> <span class="small muted">${children.length} options</span></label></summary><div class="technology-filter-list">${childRows}</div></details>`; }).join('');
     }
     function renderGenericSignatureTree(groups) {
       if (!groups?.length) return '<p class="small muted">No matching CVE references or generic signature groups were resolved.</p>';
