@@ -108,6 +108,11 @@ def match_rule_to_group(group_id: str, rule: dict[str, Any], profile: dict[str, 
         return matched, ["structured HTTP/protocol description"] if matched else []
     if group_id == "canonicalization-evasion":
         matched = bool(_EVASION_RE.search(text))
+        # Transfer/chunked encoding is protocol handling, not payload
+        # canonicalization. Keep it in the protocol group unless the same
+        # description also carries an explicit normalization/evasion cue.
+        if matched and re.search(r"\bchunked(?:[- ]encoding)?\b|\btransfer[- ]encoding\b", text, re.IGNORECASE):
+            matched = bool(re.search(r"double|url\s+encod|null\s+byte|unicode|obfuscat|canonical|normaliz", text, re.IGNORECASE))
         return matched, ["encoding or normalization description"] if matched else []
     if group_id == "injection":
         matched = bool(classes & _INJECTION_CLASSES)
