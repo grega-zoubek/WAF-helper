@@ -185,9 +185,94 @@ def _display_label(value: str) -> str:
     return str(value or "other").replace("-", " ").replace("_", " ").title()
 
 
-def subgroup_for_rule(group_id: str, rule: dict[str, Any]) -> tuple[str, str]:
+def _product_labels_by_rule(product_index: dict[str, Any] | None) -> dict[str, tuple[str, str]]:
+    result: dict[str, tuple[str, str]] = {}
+    if not isinstance(product_index, dict):
+        return result
+    for vendor_entry in product_index.get("vendors", []):
+        if not isinstance(vendor_entry, dict):
+            continue
+        vendor = str(vendor_entry.get("vendor") or "").strip()
+        for product_entry in vendor_entry.get("products", []):
+            if not isinstance(product_entry, dict):
+                continue
+            product = str(product_entry.get("product") or "").strip()
+            label = " / ".join(value for value in (vendor, product) if value) or str(product_entry.get("key") or "").strip()
+            for rule_id in product_entry.get("rule_ids", []):
+                result[str(rule_id)] = (str(product_entry.get("key") or "").casefold(), label)
+    return result
+
+
+def _clean_web_misc_software(value: str) -> str | None:
+    candidate = re.sub(r"^web-misc\s+", "", str(value or "").strip(), flags=re.IGNORECASE)
+    if not candidate or not re.search(r"[a-z]", candidate, re.IGNORECASE):
+        return None
+    if " - " in candidate:
+        candidate = candidate.split(" - ", 1)[0]
+    candidate = re.split(
+        r"\b(?:prior\s+to|prior|up\s+to|before|multiple\s+versions|versions?|v\d+|"
+        r"access|attempt|directory|traversal|overflow|dos|scan|probe|search|"
+        r"source|configuration|arbitrary|unauthenticated|authentication|"
+        r"vulnerability|exploit|execution|rce)\b",
+        candidate,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    candidate = re.sub(r"\s+", " ", candidate).strip(" -:/")
+    if not candidate or len(candidate) < 3:
+        return None
+    if candidate.casefold() in {"web", "http", "misc", "pccs mysql database admin tool"}:
+        return None
+    return candidate
+
+
+def _web_misc_protection_subgroup(rule: dict[str, Any]) -> tuple[str, str]:
+    classes = {str(value).casefold() for value in (rule.get("attack_classes") or [])}
+    class_labels = {
+        "sql-injection": ("sql-injection", "SQL injection protection"),
+        "command-injection": ("command-injection", "Command/code execution protection"),
+        "os-command-injection": ("os-command-injection", "OS command execution protection"),
+        "cross-site-scripting": ("cross-site-scripting", "Cross-site scripting protection"),
+        "path-traversal": ("path-traversal", "Path and directory traversal protection"),
+        "file-upload": ("file-upload", "File upload protection"),
+        "buffer-overflow": ("buffer-overflow", "Overflow and availability protection"),
+        "ldap-injection": ("ldap-injection", "LDAP injection protection"),
+        "nosql-injection": ("nosql-injection", "NoSQL injection protection"),
+    }
+    for attack_class in ("sql-injection", "command-injection", "os-command-injection", "cross-site-scripting", "path-traversal", "file-upload", "buffer-overflow", "ldap-injection", "nosql-injection"):
+        if attack_class in classes:
+            return class_labels[attack_class]
+    description = str(rule.get("description") or "").casefold()
+    families = (
+        ("directory|traversal|path", "directory-access", "Path and directory access protection"),
+        ("file|upload|include|passwd|htaccess|source", "file-disclosure", "File and sensitive-resource protection"),
+        ("command|execution|shell|rce", "command-execution", "Command and code-execution protection"),
+        ("overflow|dos|denial", "availability", "Availability and overflow protection"),
+        ("auth|login|cookie|session|bypass", "authentication", "Authentication and access-control protection"),
+        ("scan|probe|crawler", "reconnaissance", "Reconnaissance and probing protection"),
+    )
+    for pattern, subgroup_id, label in families:
+        if re.search(pattern, description, re.IGNORECASE):
+            return subgroup_id, label
+    return "other-web-misc", "Other WEB-MISC protection"
+
+
+def subgroup_for_rule(
+    group_id: str,
+    rule: dict[str, Any],
+    product_index: dict[str, Any] | None = None,
+) -> tuple[str, str]:
     """Return a stable, useful expandable subgroup for a generic rule."""
     classes = {str(value).casefold() for value in (rule.get("attack_classes") or [])}
+    if str(rule.get("category") or "").casefold() == "web-misc":
+        product_labels = _product_labels_by_rule(product_index)
+        product_key, product_label = product_labels.get(str(rule.get("rule_id")), ("", ""))
+        if not product_label:
+            product_label = _clean_web_misc_software(str(rule.get("description") or "")) or ""
+            product_key = re.sub(r"[^a-z0-9]+", "-", product_label.casefold()).strip("-") if product_label else ""
+        if product_label and product_key:
+            return f"software:{product_key}", f"Software: {product_label}"
+        return _web_misc_protection_subgroup(rule)
     if group_id == "injection":
         priorities = (
             ("sql-injection", "SQL injection"),
@@ -234,6 +319,7 @@ def build_generic_group_subgroups(
     groups: list[dict[str, Any]],
     rules_by_id: dict[str, dict[str, Any]],
     selected_rule_ids: set[str],
+    product_index: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Attach compact subgroup/rule details while preserving deselected rules."""
     for group in groups:
@@ -248,7 +334,7 @@ def build_generic_group_subgroups(
             rule = rules_by_id.get(rule_id)
             if not rule:
                 continue
-            subgroup_id, subgroup_label = subgroup_for_rule(str(group.get("group_id")), rule)
+            subgroup_id, subgroup_label = subgroup_for_rule(str(group.get("group_id")), rule, product_index)
             grouped.setdefault((subgroup_id, subgroup_label), []).append({
                 "rule_id": rule_id,
                 "description": rule.get("description"),

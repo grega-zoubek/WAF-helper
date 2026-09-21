@@ -195,6 +195,7 @@ def select_rules_for_detection(
         generic_groups.get("groups", []),
         by_id,
         selected_ids,
+        catalog.get("product_index") if isinstance(catalog, dict) else None,
     )
     generic_group_rule_count = sum(int(group.get("selected_rule_count") or 0) for group in generic_groups.get("groups", []))
     filtered_generic = {

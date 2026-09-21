@@ -102,9 +102,23 @@ def test_subgroups_keep_rule_details_and_selection_state():
     assert any(rule_item["rule_id"] == "31" and not rule_item["selected"] for subgroup in injection["subgroups"] for rule_item in subgroup["rules"])
 
 
+def test_web_misc_prefers_software_then_protection_family():
+    rules = [
+        rule("40", classes=["command-injection"], description="WEB-MISC Cisco ISE - unauthenticated command injection vulnerability"),
+        rule("41", description="WEB-MISC directory listing attempt"),
+    ]
+    groups = select_generic_signature_groups(rules, {"route_inventory": [{"path": "/"}], "evidence": []})["groups"]
+    details = build_generic_group_subgroups(groups, {item["rule_id"]: item for item in rules}, {"40", "41"})
+    injection = next(item for item in details if item["group_id"] == "injection")
+    path_file = next(item for item in details if item["group_id"] == "path-file")
+    assert any(subgroup["name"] == "Software: Cisco ISE" for subgroup in injection["subgroups"])
+    assert any(subgroup["name"] == "Path and directory access protection" for subgroup in path_file["subgroups"])
+
+
 if __name__ == "__main__":
     test_first_five_are_stable_and_signature_only()
     test_file_upload_rules_require_upload_evidence_but_traversal_does_not()
     test_group_matcher_does_not_select_tagged_product_rules()
     test_subgroups_keep_rule_details_and_selection_state()
-    print("4 generic signature-group tests passed")
+    test_web_misc_prefers_software_then_protection_family()
+    print("5 generic signature-group tests passed")
