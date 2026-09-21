@@ -366,9 +366,20 @@ class SyncRunner:
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self._make_cache_operator_readable()
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="signature-sync", daemon=True)
         self._thread.start()
+
+    def _make_cache_operator_readable(self) -> None:
+        if not self.config.upstream_dir.exists():
+            return
+        for path in self.config.upstream_dir.rglob("*"):
+            if path.is_file():
+                try:
+                    os.chmod(path, 0o644)
+                except OSError:
+                    pass
 
     def stop(self) -> None:
         self._stop.set()
