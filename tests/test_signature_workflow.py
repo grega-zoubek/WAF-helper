@@ -102,6 +102,17 @@ class SignatureWorkflowTests(unittest.TestCase):
         self.assertEqual([item["rule_id"] for item in result["selected_rules"]], [])
         self.assertEqual(result["release_years"], [2021])
 
+    def test_file_upload_intent_does_not_select_all_web_misc_rules(self):
+        result = select_rules_for_detection(
+            {"signature_technology_context": {}, "technologies": []},
+            {"generic_protection_intents": [{"intent_id": "file-upload-protection", "decision": "include"}]},
+            {"status": "ready", "rules": [
+                {"rule_id": "50", "category": "web-misc", "attack_classes": ["web-misc"]},
+                {"rule_id": "51", "category": "web-misc", "attack_classes": ["file-upload"]},
+            ]},
+        )
+        self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["51"])
+
     def test_commands_are_chunked_and_save_config_is_last(self):
         commands = cli_import_commands("waf-test", [str(value) for value in range(101)], "BLOCK", chunk_size=50)
         self.assertEqual(len(commands), 4)

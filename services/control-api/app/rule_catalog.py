@@ -12,7 +12,10 @@ INTENT_ATTACK_CLASSES: dict[str, set[str]] = {
     "generic-web-attack-signatures": {"buffer-overflow", "command-injection", "cross-site-scripting", "sql-injection"},
     "injection-and-input-signatures": {"command-injection", "ldap-injection", "nosql-injection", "os-command-injection", "sql-injection"},
     "cross-site-scripting-signatures": {"cross-site-scripting"},
-    "file-upload-protection": {"file-upload", "web-misc"},
+    # Do not use web-misc as a proxy here: it contains the majority of the
+    # catalog and would turn an upload recommendation into an unrelated
+    # broad selection. Path/file generic grouping handles path access rules.
+    "file-upload-protection": {"file-upload"},
     "xml-service-protection": {"xml", "xml-dos", "xpath-injection"},
 }
 
