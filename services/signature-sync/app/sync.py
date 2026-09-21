@@ -190,6 +190,7 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+    os.chmod(path, 0o644)
 
 
 def _atomic_json(path: Path, value: dict[str, object]) -> None:
