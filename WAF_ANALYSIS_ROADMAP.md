@@ -496,3 +496,10 @@ If connectivity is lost or a machine reboots:
 - On-demand behavior: after connection, the GUI presents a small Tools menu. WAF inventory and passive discovery are opened only when selected. AppFW profiles and profile actions are hidden inside an expandable panel rather than shown in the initial inventory view.
 - Live validation: server revision `5ecd17f` serves the simplified page. The browser showed the compact landing view, reconnected to `192.168.11.101`, reported `Guarded write-enabled` / `enabled`, loaded WAF inventory on demand, and showed `Show AppFW profiles and profile actions (10)` collapsed. No ADC configuration change was made.
 - Recovery after connectivity loss or reboot: verify `/home/grega/waf-intelligence-repo` is at `5ecd17f` or later, reload `http://192.168.11.90:8180/`, reconnect the saved ADC session, and open WAF inventory or application discovery from Tools as needed. If the page is stale, run `git pull --ff-only origin main`; no container recreation is required because the frontend is bind-mounted.
+
+### Discovery action-row layout checkpoint
+
+- Timestamp: 2026-09-21 UTC
+- Action: grouped discovery-row controls into a non-wrapping action container so `View profile`, `Check ADC path`, and `Delete` remain on the same line with consistent spacing.
+- Live validation: revision `1de6b8e` is deployed and the browser displayed all three controls together for the completed ESS discovery job. No discovery data or ADC configuration was changed.
+- Recovery after connectivity loss or reboot: verify the server checkout is at `1de6b8e` or later and reload the GUI. If the old layout remains, run `git pull --ff-only origin main`; no container recreation is required for this frontend-only change.
