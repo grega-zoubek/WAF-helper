@@ -1843,7 +1843,11 @@ async def signature_technologies(
                 item["rule_count"] += 1
     product_index = catalog.get("product_index") if isinstance(catalog, dict) else None
     def taxonomy_terms(value: Any) -> set[str]:
-        return {term for term in re.findall(r"[a-z0-9]+", str(value or "").casefold()) if term}
+        tokens = [term for term in re.findall(r"[a-z0-9]+", str(value or "").casefold()) if term]
+        return set(tokens) | ({"".join(tokens)} if tokens else set())
+
+    def compact_taxonomy_term(value: Any) -> str:
+        return "".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
 
     represented_taxonomy_terms: set[str] = set()
     if isinstance(product_index, dict):
@@ -1864,7 +1868,8 @@ async def signature_technologies(
     taxonomy_ambiguous_tags = {"asp"}
     duplicate_tag_keys = {
         f"tag:{tag}" for tag in by_tag
-        if tag in represented_taxonomy_terms and tag not in taxonomy_ambiguous_tags
+        if tag not in taxonomy_ambiguous_tags
+        and (tag in represented_taxonomy_terms or compact_taxonomy_term(tag) in represented_taxonomy_terms)
     }
     suppressed_duplicate_tags = sorted(tag for tag in by_tag if f"tag:{tag}" in duplicate_tag_keys)
     query = q.strip().casefold()
