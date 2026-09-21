@@ -2073,6 +2073,7 @@ async def build_custom_signature_set_plan(job_id: str, signature_object_name: st
         "status": status,
         "catalog_fingerprint": selection.get("catalog_fingerprint"),
         "selected_rules": selection.get("selected_rules") or [],
+        "selected_rule_count": len(selection.get("selected_rules") or []),
         "technology_context": technology_context,
         "approval_required": True,
         "write_enabled": False,
