@@ -1842,15 +1842,31 @@ async def signature_technologies(
                 item["rule_ids"].append(rule_id)
                 item["rule_count"] += 1
     product_index = catalog.get("product_index") if isinstance(catalog, dict) else None
-    product_rule_sets = {
-        f"product:{str(item.get('key')).strip().casefold()}": {str(value) for value in (item.get("rule_ids") or []) if value is not None}
-        for item in (product_index.get("products", []) if isinstance(product_index, dict) else [])
-        if isinstance(item, dict) and item.get("key")
-    }
+    def taxonomy_terms(value: Any) -> set[str]:
+        return {term for term in re.findall(r"[a-z0-9]+", str(value or "").casefold()) if term}
+
+    represented_taxonomy_terms: set[str] = set()
+    if isinstance(product_index, dict):
+        for vendor_entry in product_index.get("vendors", []):
+            if not isinstance(vendor_entry, dict):
+                continue
+            represented_taxonomy_terms.update(taxonomy_terms(vendor_entry.get("vendor")))
+            represented_taxonomy_terms.update(taxonomy_terms(vendor_entry.get("key")))
+            for product_entry in vendor_entry.get("products", []):
+                if not isinstance(product_entry, dict):
+                    continue
+                represented_taxonomy_terms.update(taxonomy_terms(product_entry.get("product")))
+                represented_taxonomy_terms.update(taxonomy_terms(product_entry.get("key")))
+                for source_term in product_entry.get("source_terms", []):
+                    represented_taxonomy_terms.update(taxonomy_terms(source_term))
+    # Classic ASP is separate from ASP.NET. Keep that tag although the
+    # product taxonomy contains ASP.NET and therefore the token "asp".
+    taxonomy_ambiguous_tags = {"asp"}
     duplicate_tag_keys = {
-        f"tag:{tag}" for tag, item in by_tag.items()
-        if set(item.get("rule_ids") or []) and any(set(item.get("rule_ids") or []) == rule_ids for rule_ids in product_rule_sets.values())
+        f"tag:{tag}" for tag in by_tag
+        if tag in represented_taxonomy_terms and tag not in taxonomy_ambiguous_tags
     }
+    suppressed_duplicate_tags = sorted(tag for tag in by_tag if f"tag:{tag}" in duplicate_tag_keys)
     query = q.strip().casefold()
     options = []
     for item in by_tag.values():
@@ -1905,6 +1921,8 @@ async def signature_technologies(
         "catalog_version": catalog.get("version"),
         "option_count": len(options),
         "total_option_count": len(by_tag),
+        "suppressed_duplicate_tags": suppressed_duplicate_tags,
+        "suppressed_duplicate_tag_count": len(suppressed_duplicate_tags),
         "options": options,
         "groups": filtered_groups,
         "total_group_count": len(groups),
