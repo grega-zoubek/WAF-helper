@@ -81,11 +81,19 @@ class PreflightRequest(BaseModel):
 class ProfileDuplicateRequest(BaseModel):
     profile_name: str = Field(min_length=1, max_length=128)
     duplicate_name: str | None = Field(default=None, max_length=128)
+    signature_object_name: str | None = Field(default=None, max_length=31)
+    policy_name: str | None = Field(default=None, max_length=31)
+    vserver_name: str | None = Field(default=None, max_length=128)
+    priority: int = Field(default=100, ge=1, le=65535)
 
 
 class DuplicateProfileApprovalRequest(BaseModel):
     source_profile: str = Field(min_length=1, max_length=128)
     destination_profile: str = Field(min_length=1, max_length=128)
+    signature_object_name: str | None = Field(default=None, max_length=31)
+    policy_name: str | None = Field(default=None, max_length=31)
+    vserver_name: str | None = Field(default=None, max_length=128)
+    priority: int = Field(default=100, ge=1, le=65535)
     plan_fingerprint: str = Field(min_length=64, max_length=128)
     approval_phrase: str = Field(min_length=1, max_length=64)
 
@@ -93,6 +101,10 @@ class DuplicateProfileApprovalRequest(BaseModel):
 class DuplicateProfilePreflightRequest(BaseModel):
     source_profile: str = Field(min_length=1, max_length=128)
     destination_profile: str = Field(min_length=1, max_length=128)
+    signature_object_name: str | None = Field(default=None, max_length=31)
+    policy_name: str | None = Field(default=None, max_length=31)
+    vserver_name: str | None = Field(default=None, max_length=128)
+    priority: int = Field(default=100, ge=1, le=65535)
     approval_id: str = Field(min_length=1, max_length=128)
     plan_fingerprint: str = Field(min_length=64, max_length=128)
 
@@ -192,6 +204,26 @@ def provider_records(payload: Any, key: str) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
     return []
+
+
+def _safe_adc_name(value: str, field_name: str, *, max_length: int = 128) -> str:
+    if not value or len(value) > max_length or not re.fullmatch(r"[A-Za-z0-9_.# @=-]+", value):
+        raise HTTPException(status_code=422, detail=f"Invalid NetScaler {field_name}")
+    return value
+
+
+def _safe_adc_simple_name(value: str, field_name: str) -> str:
+    return _safe_adc_name(value, field_name, max_length=31)
+
+
+def _profile_type_tokens(profile_type: Any) -> list[str]:
+    values = profile_type if isinstance(profile_type, list) else [profile_type] if profile_type else []
+    tokens: list[str] = []
+    for value in values:
+        for token in re.findall(r"\b(?:HTML|XML|JSON)\b", str(value).upper()):
+            if token not in tokens:
+                tokens.append(token)
+    return tokens or ["HTML", "XML", "JSON"]
 
 
 def _signature_entry_from_record(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -1444,6 +1476,7 @@ async def adc_appfw_profiles() -> Any:
 
 @app.post("/api/adc/appfw/profiles/duplicate-plan")
 async def duplicate_appfw_profile_plan(request: ProfileDuplicateRequest) -> dict[str, Any]:
+    _safe_adc_name(request.profile_name, "source profile")
     profiles_payload = await adapter_read("/api/adc/appfw/profiles")
     profiles = provider_records(profiles_payload, "appfwprofile")
     source = next((item for item in profiles if str(item.get("name", "")) == request.profile_name), None)
@@ -1462,17 +1495,55 @@ async def duplicate_appfw_profile_plan(request: ProfileDuplicateRequest) -> dict
         while requested_name in existing_names:
             requested_name = f"{slug}-custom-{suffix}"
             suffix += 1
+    _safe_adc_name(requested_name, "destination profile")
+    signature_name = (request.signature_object_name or "").strip() or None
+    if signature_name:
+        _safe_adc_simple_name(signature_name, "signature object name")
+    vserver_name = (request.vserver_name or "").strip() or None
+    if vserver_name:
+        _safe_adc_name(vserver_name, "vServer name")
+    policy_name = (request.policy_name or "").strip() or None
+    if vserver_name and not policy_name:
+        policy_name = f"{requested_name}-policy"[:31]
+    if policy_name:
+        _safe_adc_simple_name(policy_name, "policy name")
+    if policy_name and not vserver_name:
+        raise HTTPException(status_code=422, detail="A vServer is required when an AppFW policy is requested")
     source_snapshot = {key: source.get(key) for key in ("name", "type", "state", "signatures", "builtin") if key in source}
-    profile_body: dict[str, Any] = {"name": requested_name}
-    if source.get("type"):
-        profile_body["type"] = source.get("type")
-    if str(source.get("signatures", "")).strip():
-        profile_body["signatures"] = str(source.get("signatures")).strip()
-    profile_type = source.get("type")
-    cli_type = profile_type[0] if isinstance(profile_type, list) and profile_type else profile_type
-    cli_create = f"add appfw profile {requested_name}{(' ' + str(cli_type)) if cli_type else ''}"
-    if str(source.get("signatures", "")).strip():
-        cli_create += f" && set appfw profile {requested_name} -signatures {str(source.get('signatures')).strip()}"
+    profile_types = _profile_type_tokens(source.get("type"))
+    cli_commands = [f"add appfw profile {requested_name} -defaults advanced -type {' '.join(profile_types)}"]
+    source_signature = str(source.get("signatures") or "").strip()
+    if signature_name:
+        cli_commands[0] += f" -signatures {signature_name}"
+    elif source_signature:
+        cli_commands[0] += f" -signatures {source_signature}"
+    if policy_name and vserver_name:
+        cli_commands.extend([
+            f"add appfw policy {policy_name} true {requested_name}",
+            f"bind lb vserver {vserver_name} -policyName {policy_name} -priority {request.priority} -type REQUEST",
+        ])
+    cli_commands.append("save ns config")
+    signature_check = {"name": "Signature object", "status": "not-requested", "detail": "No custom signature object was selected for this profile plan."}
+    if signature_name:
+        signatures_payload = await adapter_read("/api/adc/signatures")
+        signature_records = provider_records(signatures_payload, "appfwsignatures")
+        signature_found = next((item for item in signature_records if str(item.get("name", "")) == signature_name), None)
+        signature_check = {
+            "name": "Signature object",
+            "status": "passed" if signature_found else "failed",
+            "detail": "The selected exported signature object is present in the current ADC inventory." if signature_found else "The selected signature object was not found in the current ADC inventory.",
+        }
+    vserver_check = {"name": "Target vServer", "status": "not-requested", "detail": "No vServer policy binding was selected for this profile plan."}
+    if vserver_name:
+        classic_payload = await adapter_read("/api/adc/classic-inventory")
+        classic = classic_payload.get("classic", classic_payload) if isinstance(classic_payload, dict) else {}
+        vserver_records = ((classic.get("vservers") or {}).get("records") or []) if isinstance(classic, dict) else []
+        vserver_found = next((item for item in vserver_records if str(item.get("name", "")) == vserver_name and str(item.get("vserver_type", "")) == "lb"), None)
+        vserver_check = {
+            "name": "Target vServer",
+            "status": "passed" if vserver_found else "failed",
+            "detail": "The selected LB vServer is present in the current ADC inventory." if vserver_found else "The selected target must be an existing LB vServer.",
+        }
     plan = {
         "operation_id": "appfw-profile-duplicate",
         "plan_status": "prepared-disabled",
@@ -1482,58 +1553,73 @@ async def duplicate_appfw_profile_plan(request: ProfileDuplicateRequest) -> dict
         "source_profile": request.profile_name,
         "proposed_profile_name": requested_name,
         "source_snapshot": source_snapshot,
-        "copy_mode": "copy-source-profile-to-new-custom-profile",
+        "signature_object_name": signature_name,
+        "policy_name": policy_name,
+        "vserver_name": vserver_name,
+        "priority": request.priority,
+        "enforcement_mode": "LOG",
+        "copy_mode": "create-custom-profile-from-source-type-and-bind-selected-signatures",
         "checks": [
             {"name": "Source profile", "status": "passed", "detail": "The source AppFW profile was found in the current ADC inventory."},
             {"name": "Destination name", "status": "passed", "detail": "The proposed custom profile name is not currently present."},
+            signature_check,
+            vserver_check,
             {"name": "Write safety", "status": "blocked", "detail": "No ADC change is applied from this plan view."},
         ],
         "write_plan": {
             "resource": "appfwprofile",
-            "action": "duplicate-profile",
+            "action": "create-profile-bind-signatures-and-policy",
             "source_profile": request.profile_name,
             "destination_profile": requested_name,
+            "signature_object_name": signature_name,
+            "policy_name": policy_name,
+            "vserver_name": vserver_name,
+            "priority": request.priority,
             "mode": "Log",
             "status": "blocked-until-approved",
             "requires_drift_check": True,
-            "rollback": "Delete only the newly created destination profile after verifying it is not referenced.",
+            "rollback": "Unbind the generated policy, remove the generated policy, then delete only the newly created profile after reference checks.",
         },
         "command_preview": {
             "create": {
                 "nextgen": None,
-                "cli_equivalent": cli_create,
+                "cli_equivalent": " && ".join(cli_commands),
+                "cli_commands": cli_commands,
                 "note": "Credentials and session headers are intentionally omitted from the preview.",
             },
             "rollback": {
                 "nextgen": None,
-                "cli_equivalent": f"rm appfw profile {requested_name}",
+                "cli_equivalent": " && ".join(([f"unbind lb vserver {vserver_name} -policyName {policy_name} -priority {request.priority} -type REQUEST", f"rm appfw policy {policy_name}"] if policy_name and vserver_name else []) + [f"rm appfw profile {requested_name}"]),
                 "note": "Rollback is allowed only after the destination profile is confirmed unreferenced.",
             },
         },
         "rollback": [
-            "Verify the destination profile is not referenced by an AppFW policy or binding.",
+            "Verify the generated policy and destination profile are not referenced by unrelated configuration.",
+            "Unbind the generated policy from the target LB vServer and remove the generated policy.",
             "Delete only the newly created destination profile.",
             "Re-read the source profile and target bindings.",
         ],
-        "note": "Proposal only. The source profile is not modified and no destination profile is created.",
+        "note": "Proposal only. The source profile is not modified and no destination profile, policy, or binding is created.",
     }
     plan["plan_fingerprint"] = plan_fingerprint(plan)
     return plan
 
 
-def duplicate_plan_job_key(source_profile: str, destination_profile: str) -> str:
-    return f"profile-duplicate:{source_profile}:{destination_profile}"[:128]
+def duplicate_plan_job_key(source_profile: str, destination_profile: str, signature_object_name: str | None = None, policy_name: str | None = None, vserver_name: str | None = None, priority: int = 100) -> str:
+    scope = ":".join(item or "-" for item in (signature_object_name, policy_name, vserver_name))
+    return f"profile-duplicate:{source_profile}:{destination_profile}:{scope}:{priority}"[:128]
 
 
 @app.post("/api/adc/appfw/profiles/duplicate-plan/approve")
 async def approve_duplicate_profile_plan(request: DuplicateProfileApprovalRequest) -> dict[str, Any]:
     if request.approval_phrase != "APPROVE PLAN":
         raise HTTPException(status_code=400, detail="Exact approval phrase APPROVE PLAN is required")
-    plan = await duplicate_appfw_profile_plan(ProfileDuplicateRequest(profile_name=request.source_profile, duplicate_name=request.destination_profile))
+    plan_request = ProfileDuplicateRequest(profile_name=request.source_profile, duplicate_name=request.destination_profile, signature_object_name=request.signature_object_name, policy_name=request.policy_name, vserver_name=request.vserver_name, priority=request.priority)
+    plan = await duplicate_appfw_profile_plan(plan_request)
     if plan.get("plan_fingerprint") != request.plan_fingerprint:
         raise HTTPException(status_code=409, detail="Duplicate profile plan fingerprint changed")
     try:
-        approval_id, expires_at = await asyncio.to_thread(save_plan_approval_sync, duplicate_plan_job_key(request.source_profile, request.destination_profile), request.plan_fingerprint, [], plan)
+        approval_id, expires_at = await asyncio.to_thread(save_plan_approval_sync, duplicate_plan_job_key(request.source_profile, request.destination_profile, request.signature_object_name, request.policy_name, request.vserver_name, request.priority), request.plan_fingerprint, [], plan)
     except psycopg.Error as exc:
         raise HTTPException(status_code=503, detail="Plan approval database unavailable") from exc
     return {"approval_id": approval_id, "status": "approved", "source_profile": request.source_profile, "destination_profile": request.destination_profile, "plan_fingerprint": request.plan_fingerprint, "approved_at": datetime.now(timezone.utc), "expires_at": expires_at, "write_enabled": os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() == "true", "changes_applied": False}
@@ -1542,24 +1628,25 @@ async def approve_duplicate_profile_plan(request: DuplicateProfileApprovalReques
 @app.post("/api/adc/appfw/profiles/duplicate-plan/preflight")
 async def preflight_duplicate_profile_plan(request: DuplicateProfilePreflightRequest) -> dict[str, Any]:
     approval = await asyncio.to_thread(load_plan_approval_sync, request.approval_id)
-    expected_job = duplicate_plan_job_key(request.source_profile, request.destination_profile)
+    expected_job = duplicate_plan_job_key(request.source_profile, request.destination_profile, request.signature_object_name, request.policy_name, request.vserver_name, request.priority)
     if not approval or approval.get("status") != "approved" or approval.get("job_id") != expected_job:
         raise HTTPException(status_code=403, detail="Valid approved duplicate profile plan not found")
     if approval.get("plan_fingerprint") != request.plan_fingerprint:
         raise HTTPException(status_code=409, detail="Approval does not match the duplicate profile plan")
     if approval.get("expires_at") and approval["expires_at"] <= datetime.now(timezone.utc):
         raise HTTPException(status_code=403, detail="Plan approval has expired")
-    current_plan = await duplicate_appfw_profile_plan(ProfileDuplicateRequest(profile_name=request.source_profile, duplicate_name=request.destination_profile))
+    current_plan = await duplicate_appfw_profile_plan(ProfileDuplicateRequest(profile_name=request.source_profile, duplicate_name=request.destination_profile, signature_object_name=request.signature_object_name, policy_name=request.policy_name, vserver_name=request.vserver_name, priority=request.priority))
     current_fingerprint = current_plan.get("plan_fingerprint")
     checks = [
         {"name": "Approval validity", "status": "passed", "detail": "Approval exists and has not expired."},
         {"name": "Plan fingerprint", "status": "passed" if current_fingerprint == request.plan_fingerprint else "failed", "detail": "The current duplicate plan matches the approved plan." if current_fingerprint == request.plan_fingerprint else "The source profile or destination state changed."},
         {"name": "Source profile", "status": "passed" if current_plan.get("source_profile") == request.source_profile else "failed", "detail": "The source profile is still present."},
         {"name": "Destination name", "status": "passed", "detail": "The destination profile name is still available."},
+        *[item for item in current_plan.get("checks", []) if item.get("status") == "failed"],
         {"name": "Rollback snapshot", "status": "passed", "detail": "Rollback will remove only the newly created destination profile after reference checks."},
     ]
     status = "drift-detected" if any(item["status"] == "failed" for item in checks) else ("blocked-write-disabled" if os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() != "true" else "ready-for-apply")
-    rollback_snapshot = {"status": "ready", "destination_profile": request.destination_profile, "action": "delete-new-profile-after-reference-check", "verification": ["Confirm the destination profile is not referenced.", "Re-read the source profile and AppFW bindings."]}
+    rollback_snapshot = {"status": "ready", "destination_profile": request.destination_profile, "policy_name": request.policy_name, "vserver_name": request.vserver_name, "action": "unbind-policy-remove-policy-delete-new-profile-after-reference-check", "verification": ["Confirm the generated policy and destination profile are not referenced by unrelated configuration.", "Re-read the source profile and AppFW bindings."]}
     try:
         preview_id = await asyncio.to_thread(save_change_preview_sync, request.approval_id, expected_job, request.plan_fingerprint, status, request.plan_fingerprint, current_fingerprint or "", checks, rollback_snapshot)
     except psycopg.Error as exc:
@@ -1573,7 +1660,7 @@ async def apply_duplicate_profile(request: DuplicateProfileWriteRequest) -> dict
         raise HTTPException(status_code=400, detail="Exact confirmation phrase ENABLE WRITE is required")
     if os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() != "true":
         raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
-    expected_job = duplicate_plan_job_key(request.source_profile, request.destination_profile)
+    expected_job = duplicate_plan_job_key(request.source_profile, request.destination_profile, request.signature_object_name, request.policy_name, request.vserver_name, request.priority)
     approval = await asyncio.to_thread(load_plan_approval_sync, request.approval_id)
     if not approval or approval.get("status") != "approved" or approval.get("job_id") != expected_job or approval.get("plan_fingerprint") != request.plan_fingerprint:
         raise HTTPException(status_code=403, detail="Valid approved duplicate profile plan not found")
@@ -1582,13 +1669,13 @@ async def apply_duplicate_profile(request: DuplicateProfileWriteRequest) -> dict
     preview = await asyncio.to_thread(load_change_preview_sync, request.preview_id)
     if not preview or preview.get("status") != "ready-for-apply" or preview.get("approval_id") != request.approval_id or preview.get("job_id") != expected_job or preview.get("plan_fingerprint") != request.plan_fingerprint:
         raise HTTPException(status_code=403, detail="Successful duplicate profile preflight is required")
-    current_plan = await duplicate_appfw_profile_plan(ProfileDuplicateRequest(profile_name=request.source_profile, duplicate_name=request.destination_profile))
+    current_plan = await duplicate_appfw_profile_plan(ProfileDuplicateRequest(profile_name=request.source_profile, duplicate_name=request.destination_profile, signature_object_name=request.signature_object_name, policy_name=request.policy_name, vserver_name=request.vserver_name, priority=request.priority))
     if current_plan.get("plan_fingerprint") != request.plan_fingerprint:
         raise HTTPException(status_code=409, detail="Duplicate profile plan drifted; regenerate and re-approve")
     source = current_plan.get("source_snapshot") or {}
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(f"{ADAPTER_URL}/api/adc/writes/appfw-profile-duplicate", json={"destination_profile": request.destination_profile, "profile_type": source.get("type"), "signature_binding": source.get("signatures")})
+            response = await client.post(f"{ADAPTER_URL}/api/adc/writes/appfw-profile-duplicate", json={"destination_profile": request.destination_profile, "profile_type": source.get("type"), "signature_binding": source.get("signatures"), "signature_name": request.signature_object_name, "policy_name": request.policy_name, "vserver_name": request.vserver_name, "priority": request.priority})
             response.raise_for_status()
             result = response.json()
     except httpx.HTTPStatusError as exc:
@@ -1610,17 +1697,18 @@ async def rollback_duplicate_profile(request: DuplicateProfileWriteRequest) -> d
         raise HTTPException(status_code=400, detail="Exact confirmation phrase ENABLE WRITE is required")
     if os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() != "true":
         raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
-    expected_job = duplicate_plan_job_key(request.source_profile, request.destination_profile)
+    expected_job = duplicate_plan_job_key(request.source_profile, request.destination_profile, request.signature_object_name, request.policy_name, request.vserver_name, request.priority)
     approval = await asyncio.to_thread(load_plan_approval_sync, request.approval_id)
     preview = await asyncio.to_thread(load_change_preview_sync, request.preview_id)
     if not approval or approval.get("job_id") != expected_job or approval.get("plan_fingerprint") != request.plan_fingerprint or not preview or preview.get("status") != "ready-for-apply":
         raise HTTPException(status_code=403, detail="Valid duplicate profile approval and preflight are required")
-    policies = await adapter_read("/api/adc/appfw/policies")
-    if request.destination_profile in json.dumps(policies, sort_keys=True):
-        raise HTTPException(status_code=409, detail="Rollback blocked because the destination profile appears in the current AppFW policy inventory")
+    policies = provider_records(await adapter_read("/api/adc/appfw/policies"), "appfwpolicy")
+    unexpected_references = [item for item in policies if str(item.get("profilename", "")).strip() == request.destination_profile and str(item.get("name", "")) != str(request.policy_name or "")]
+    if unexpected_references:
+        raise HTTPException(status_code=409, detail="Rollback blocked because the destination profile is referenced by an unexpected AppFW policy")
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.delete(f"{ADAPTER_URL}/api/adc/writes/appfw-profile-duplicate/{quote(request.destination_profile, safe='')}")
+            response = await client.post(f"{ADAPTER_URL}/api/adc/writes/appfw-profile-duplicate/rollback", json={"destination_profile": request.destination_profile, "policy_name": request.policy_name, "vserver_name": request.vserver_name, "priority": request.priority})
             response.raise_for_status()
             result = response.json()
     except httpx.HTTPStatusError as exc:

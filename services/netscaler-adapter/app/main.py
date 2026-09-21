@@ -46,6 +46,17 @@ class AppFwProfileDuplicateWriteRequest(BaseModel):
     destination_profile: str = Field(min_length=1, max_length=128)
     profile_type: list[str] | str | None = None
     signature_binding: str | None = Field(default=None, max_length=200)
+    signature_name: str | None = Field(default=None, max_length=31)
+    policy_name: str | None = Field(default=None, max_length=31)
+    vserver_name: str | None = Field(default=None, max_length=128)
+    priority: int = Field(default=100, ge=1, le=65535)
+
+
+class AppFwProtectionRollbackRequest(BaseModel):
+    destination_profile: str = Field(min_length=1, max_length=128)
+    policy_name: str | None = Field(default=None, max_length=31)
+    vserver_name: str | None = Field(default=None, max_length=128)
+    priority: int = Field(default=100, ge=1, le=65535)
 
 
 class AppFwSignatureSetWriteRequest(BaseModel):
@@ -128,6 +139,68 @@ def _remote_signature_path(signature_object_name: str) -> str:
     return f"/var/tmp/waf-scanner-{safe}.xml"
 
 
+_ADC_NAME_RE = re.compile(r"[A-Za-z0-9_.# @=-]{1,128}")
+_ADC_SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.# @=-]{1,31}")
+
+
+def _validate_adc_name(value: str, field_name: str, *, simple: bool = False) -> str:
+    pattern = _ADC_SIMPLE_NAME_RE if simple else _ADC_NAME_RE
+    if not pattern.fullmatch(value):
+        raise ValueError(f"Invalid NetScaler {field_name}")
+    return value
+
+
+def _profile_types(profile_type: list[str] | str | None) -> list[str]:
+    values = profile_type if isinstance(profile_type, list) else [profile_type] if profile_type else []
+    result: list[str] = []
+    for value in values:
+        for item in re.findall(r"\b(?:HTML|XML|JSON)\b", str(value).upper()):
+            if item not in result:
+                result.append(item)
+    return result or ["HTML", "XML", "JSON"]
+
+
+def _build_appfw_protection_commands(request: AppFwProfileDuplicateWriteRequest) -> list[str]:
+    profile = _validate_adc_name(request.destination_profile, "profile name")
+    signature = request.signature_name or request.signature_binding
+    if signature:
+        signature = _validate_adc_name(signature, "signature object name", simple=True)
+    policy = _validate_adc_name(request.policy_name, "policy name", simple=True) if request.policy_name else None
+    vserver = _validate_adc_name(request.vserver_name, "vServer name") if request.vserver_name else None
+    if policy and not vserver:
+        raise ValueError("A vServer is required when an AppFW policy is requested")
+    if vserver and not policy:
+        raise ValueError("A policy name is required when a vServer binding is requested")
+    type_args = " ".join(_profile_types(request.profile_type))
+    command = f"add appfw profile {profile} -defaults advanced -type {type_args}"
+    if signature:
+        command += f" -signatures {signature}"
+    commands = [command]
+    if policy and vserver:
+        commands.extend([
+            f"add appfw policy {policy} true {profile}",
+            f"bind lb vserver {vserver} -policyName {policy} -priority {request.priority} -type REQUEST",
+        ])
+    commands.append("save ns config")
+    return commands
+
+
+def _build_appfw_protection_rollback_commands(request: AppFwProtectionRollbackRequest) -> list[str]:
+    profile = _validate_adc_name(request.destination_profile, "profile name")
+    policy = _validate_adc_name(request.policy_name, "policy name", simple=True) if request.policy_name else None
+    vserver = _validate_adc_name(request.vserver_name, "vServer name") if request.vserver_name else None
+    if policy and not vserver:
+        raise ValueError("A vServer is required when removing an AppFW policy")
+    if vserver and not policy:
+        raise ValueError("A policy name is required when removing a vServer binding")
+    commands: list[str] = []
+    if policy and vserver:
+        commands.append(f"unbind lb vserver {vserver} -policyName {policy} -priority {request.priority} -type REQUEST")
+        commands.append(f"rm appfw policy {policy}")
+    commands.extend([f"rm appfw profile {profile}", "save ns config"])
+    return commands
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     host = os.getenv("NETSCALER_HOST", "")
@@ -139,7 +212,7 @@ async def healthz() -> dict[str, Any]:
         "api_version": OAS_VERSION,
         "target": host,
         "credential_configured": secret_present(),
-        "mode": "read-only" if not write_enabled() else "write-enabled-but-waf-write-unsupported",
+        "mode": "read-only" if not write_enabled() else "write-enabled-cli-waf",
         "base_url": base_url(host),
     }
     try:
@@ -276,6 +349,7 @@ async def inventory() -> dict[str, Any]:
             "waf_cli_inventory": cli_status in {"enumerated", "feature-disabled", "not-reported"},
             "rule_level_catalog_import": True,
             "writes": False,
+            "waf_cli_writes": write_enabled(),
         },
         "write_enabled": write_enabled(),
     }
@@ -372,8 +446,48 @@ async def write_appfw_profile_signature(request: AppFwProfileSignatureWriteReque
 
 @app.post("/api/adc/writes/appfw-profile-duplicate")
 async def write_appfw_profile_duplicate(request: AppFwProfileDuplicateWriteRequest) -> dict[str, Any]:
-    _unsupported_write("appfwprofile")
-    return {}
+    if not write_enabled():
+        raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
+    try:
+        commands = _build_appfw_protection_commands(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        result = await asyncio.to_thread(execute_cli_commands, commands)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (RuntimeError, TimeoutError, OSError) as exc:
+        # Creation is deliberately one guarded transaction. If a later policy
+        # or binding command is rejected, remove objects created by this call
+        # before returning the failure to the control API.
+        cleanup: list[dict[str, Any]] = []
+        failed_match = re.search(r"command\s+(\d+)", str(exc), flags=re.IGNORECASE)
+        failed_command = int(failed_match.group(1)) if failed_match else len(commands)
+        cleanup_batches: list[list[str]] = []
+        if request.policy_name and request.vserver_name and failed_command > 3:
+            cleanup_batches.append([f"unbind lb vserver {request.vserver_name} -policyName {request.policy_name} -priority {request.priority} -type REQUEST"])
+        if request.policy_name and request.vserver_name and failed_command > 2:
+            cleanup_batches.append([f"rm appfw policy {request.policy_name}"])
+        if failed_command > 1:
+            cleanup_batches.append([f"rm appfw profile {request.destination_profile}"])
+        for batch in cleanup_batches:
+            try:
+                cleanup.append(await asyncio.to_thread(execute_cli_commands, batch))
+            except Exception as cleanup_exc:  # preserve the original failure, but expose safe status
+                cleanup.append({"status": "cleanup-failed", "error_type": type(cleanup_exc).__name__})
+        raise HTTPException(status_code=502, detail={"message": "NetScaler AppFW protection write failed", "cleanup": cleanup}) from exc
+    return {
+        "status": "applied",
+        "destination_profile": request.destination_profile,
+        "signature_name": request.signature_name or request.signature_binding,
+        "policy_name": request.policy_name,
+        "vserver_name": request.vserver_name,
+        "priority": request.priority,
+        "mode": "LOG-only signature enforcement",
+        "command_count": len(commands),
+        "changes_applied": True,
+        "result": result,
+    }
 
 
 @app.post("/api/adc/writes/signature-set")
@@ -432,8 +546,42 @@ async def rollback_custom_signature_set(request: CustomSignatureSetRollbackReque
 
 @app.delete("/api/adc/writes/appfw-profile-duplicate/{profile_name}")
 async def delete_appfw_profile_duplicate(profile_name: str) -> dict[str, Any]:
-    _unsupported_write("appfwprofile")
-    return {}
+    if not write_enabled():
+        raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
+    try:
+        request = AppFwProtectionRollbackRequest(destination_profile=profile_name)
+        commands = _build_appfw_protection_rollback_commands(request)
+        result = await asyncio.to_thread(execute_cli_commands, commands)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (RuntimeError, TimeoutError, OSError) as exc:
+        raise HTTPException(status_code=502, detail="NetScaler CLI rollback failed") from exc
+    return {"status": "rolled-back", "destination_profile": profile_name, "changes_applied": True, "result": result}
+
+
+@app.post("/api/adc/writes/appfw-profile-duplicate/rollback")
+async def rollback_appfw_profile_protection(request: AppFwProtectionRollbackRequest) -> dict[str, Any]:
+    if not write_enabled():
+        raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
+    try:
+        commands = _build_appfw_protection_rollback_commands(request)
+        result = await asyncio.to_thread(execute_cli_commands, commands)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (RuntimeError, TimeoutError, OSError) as exc:
+        raise HTTPException(status_code=502, detail="NetScaler CLI rollback failed") from exc
+    return {
+        "status": "rolled-back",
+        "destination_profile": request.destination_profile,
+        "policy_name": request.policy_name,
+        "vserver_name": request.vserver_name,
+        "changes_applied": True,
+        "result": result,
+    }
 
 
 @app.get("/api/adc/lbvservers")
