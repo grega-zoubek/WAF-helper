@@ -111,14 +111,19 @@ def parse_policies(text: str, feature_enabled: bool | None) -> list[dict[str, An
     if feature_enabled is not True or "Feature(s) not enabled [AppFw]" in text:
         return []
     records: list[dict[str, Any]] = []
-    for block in _profile_blocks(text):
+    blocks = _profile_blocks(text)
+    if not blocks and re.search(r"(?m)^\s*Name:\s*", text):
+        blocks = [text]
+    for block in blocks:
         name = _value(block, r"^\s*Name:\s*(.+)$")
         if name:
             records.append({
                 "name": name[:200],
                 "rule": _value(block, r"^\s*Rule:\s*(.+)$"),
-                "profilename": _value(block, r"^\s*ProfileName:\s*(.+)$"),
+                "profilename": _value(block, r"^\s*(?:ProfileName|Profile):\s*(.+)$"),
                 "logaction": _value(block, r"^\s*LogAction:\s*(.+)$"),
+                "bound_vservers": re.findall(r"Bound to:\s+(?:REQ|RESP)\s+VSERVER\s+([A-Za-z0-9_.-]+)", block, flags=re.IGNORECASE),
+                "priority": _value(block, r"^\s*Priority:\s*(\d+)$"),
             })
     return records
 
@@ -333,6 +338,11 @@ def build_waf_inventory(outputs: dict[str, str]) -> dict[str, Any]:
     feature_enabled = feature.get("enabled") is True
     profiles = parse_profiles(outputs.get("show appfw profile", ""))
     policies = parse_policies(outputs.get("show appfw policy", ""), feature.get("enabled"))
+    for policy in policies:
+        name = str(policy.get("name", ""))
+        detail = parse_policies(outputs.get(f"show appfw policy {name}", ""), feature.get("enabled"))
+        if detail:
+            policy.update(detail[0])
     policy_labels = parse_policies(outputs.get("show appfw policylabel", ""), feature.get("enabled"))
     signatures = parse_signatures(outputs.get("show appfw signatures", ""))
     status = "enumerated" if feature_enabled else "feature-disabled" if feature.get("enabled") is False else "not-reported"

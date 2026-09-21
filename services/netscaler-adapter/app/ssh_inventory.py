@@ -11,7 +11,7 @@ from typing import Any
 
 import paramiko
 
-from app.cli_inventory import build_waf_inventory, parse_servicegroups, parse_virtual_servers
+from app.cli_inventory import build_waf_inventory, parse_policies, parse_servicegroups, parse_virtual_servers
 
 
 CLI_COMMANDS = (
@@ -155,6 +155,15 @@ def collect_waf_inventory() -> dict[str, Any]:
             name = str(servicegroup.get("name", ""))
             if re.fullmatch(r"[A-Za-z0-9_.-]+", name):
                 command = f"show servicegroup {name}"
+                channel.send(command + "\n")
+                outputs[command] = _read_until_prompt(channel, timeout)
+        # The summary policy command does not expose the rule/profile or
+        # binding target. Detail queries are derived from sanitized policy
+        # names so the inventory can verify policy-to-profile-to-vServer paths.
+        for policy in parse_policies(outputs.get("show appfw policy", ""), True):
+            name = str(policy.get("name", ""))
+            if re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                command = f"show appfw policy {name}"
                 channel.send(command + "\n")
                 outputs[command] = _read_until_prompt(channel, timeout)
         channel.send("exit\n")
