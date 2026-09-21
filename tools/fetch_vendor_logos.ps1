@@ -2,6 +2,8 @@ param(
   [string]$CatalogUrl = "http://192.168.11.90:8110/api/signatures/technologies",
   [string]$OutputDirectory = "frontend/assets/vendor-logos",
   [string]$SimpleIconsVersion = "latest",
+  [string]$CveJobId = "",
+  [string]$ControlApiUrl = "http://192.168.11.90:8110",
   [switch]$ForceRefresh
 )
 
@@ -49,6 +51,13 @@ function ConvertTo-Slug([string]$Value) {
   return $slug
 }
 
+function Get-IconColor([string]$Slug) {
+  $palette = @("#2563eb", "#7c3aed", "#0891b2", "#0f766e", "#ca8a04", "#c2410c", "#be123c", "#4f46e5")
+  $hash = 0
+  foreach ($char in $Slug.ToCharArray()) { $hash = (($hash * 31) + [int][char]$char) % $palette.Count }
+  return $palette[$hash]
+}
+
 function Get-Icon([string]$Slug, [string]$Destination) {
   if (-not $Slug) { return $false }
   $uri = "https://cdn.jsdelivr.net/npm/simple-icons@$SimpleIconsVersion/icons/$Slug.svg"
@@ -56,6 +65,7 @@ function Get-Icon([string]$Slug, [string]$Destination) {
     $response = Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 30
     if ($response.StatusCode -ne 200 -or [string]::IsNullOrWhiteSpace($response.Content)) { return $false }
     $svg = $response.Content
+    if (-not $colors.ContainsKey($Slug)) { $colors[$Slug] = Get-IconColor $Slug }
     if ($colors.ContainsKey($Slug)) {
       $svg = $svg -replace '<svg\s+', "<svg fill='$($colors[$Slug])' "
     }
@@ -74,6 +84,17 @@ $catalog = Invoke-RestMethod -Uri $CatalogUrl -TimeoutSec 30
 $assets = @{}
 $groups = @($catalog.groups | Where-Object { $_.label })
 $extraLabels = @("Cisco", "Infoblox", "Ivanti")
+if ($CveJobId) {
+  $recommendationBody = @{ job_id = $CveJobId; action = "LOG"; include_generic_signatures = $true; cve_view_mode = "vendor"; cve_search_mode = "description"; cve_search_query = "" } | ConvertTo-Json
+  $recommendation = Invoke-RestMethod -Uri "$ControlApiUrl/api/custom-signature-sets/recommendations" -Method Post -ContentType "application/json" -Body $recommendationBody -TimeoutSec 120
+  $cveGroup = $recommendation.technology_context.selection.cve_signature_group
+  foreach ($node in @($cveGroup.subgroups)) {
+    if ($node.subgroup_id -like "vendor:*") { $extraLabels += [string]$node.name }
+    foreach ($child in @($node.children)) {
+      if ($child.subgroup_id -like "vendor:*:product:*") { $extraLabels += [string]$child.name }
+    }
+  }
+}
 foreach ($group in $groups) {
   $vendorSlug = ConvertTo-Slug ([string]$group.label)
   $vendorPath = Join-Path $OutputDirectory "$vendorSlug.svg"
@@ -90,7 +111,7 @@ foreach ($group in $groups) {
     if (Test-Path $productPath) { $assets[[string]$child.label] = $productSlug }
   }
 }
-foreach ($label in $extraLabels) {
+foreach ($label in @($extraLabels | Where-Object { $_ } | Sort-Object -Unique)) {
   $slug = ConvertTo-Slug $label
   $path = Join-Path $OutputDirectory "$slug.svg"
   if ($ForceRefresh -or -not (Test-Path $path)) { [void](Get-Icon $slug $path) }
