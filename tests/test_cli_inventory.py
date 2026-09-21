@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "services" / "netscaler-adapter"))
 
-from app.cli_inventory import build_classic_inventory, build_waf_inventory, parse_lb_vserver_detail, parse_profiles, parse_signatures, parse_virtual_servers
+from app.cli_inventory import build_classic_inventory, build_waf_inventory, parse_lb_vserver_detail, parse_policies, parse_profiles, parse_signatures, parse_virtual_servers
 
 
 class CliInventoryTests(unittest.TestCase):
@@ -48,6 +48,20 @@ class CliInventoryTests(unittest.TestCase):
         records = parse_signatures("1) Url: default.xml Name: \"Default\"\n\tBase Version: \"1\" Size: 12 bytes Encrypted Version: \"2\"\nTotal signatures Size: 0 bytes\n")
         self.assertEqual(records[0]["base_version"], "1")
         self.assertEqual(records[0]["size_bytes"], 12)
+
+    def test_appfw_policy_detail_keeps_profile_and_vserver_binding(self):
+        records = parse_policies(
+            "show appfw policy demo-policy\n"
+            "\tName: demo-policy\n"
+            "\tRule: true\n"
+            "\tProfile: demo-profile\n"
+            "1)\tBound to: REQ VSERVER demo-lb\n"
+            "\tPriority: 100\n",
+            True,
+        )
+        self.assertEqual(records[0]["profilename"], "demo-profile")
+        self.assertEqual(records[0]["bound_vservers"], ["demo-lb"])
+        self.assertEqual(records[0]["priority"], "100")
 
     def test_classic_inventory_correlates_vserver_to_bound_service(self):
         outputs = {
