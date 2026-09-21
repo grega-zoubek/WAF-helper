@@ -503,3 +503,10 @@ If connectivity is lost or a machine reboots:
 - Action: grouped discovery-row controls into a non-wrapping action container so `View profile`, `Check ADC path`, and `Delete` remain on the same line with consistent spacing.
 - Live validation: revision `1de6b8e` is deployed and the browser displayed all three controls together for the completed ESS discovery job. No discovery data or ADC configuration was changed.
 - Recovery after connectivity loss or reboot: verify the server checkout is at `1de6b8e` or later and reload the GUI. If the old layout remains, run `git pull --ff-only origin main`; no container recreation is required for this frontend-only change.
+
+### Compact discovery summary workflow checkpoint
+
+- Timestamp: 2026-09-21 UTC
+- Action: added a direct `Generate analysis` button beside `View profile`, `Check ADC path`, and `Delete` for completed discovery jobs. `View profile` now renders a compact technology summary; `Generate analysis` renders a compact protection summary with architecture, protection areas, intents, and recommended signature groups.
+- Live validation: revision `6a4533c` is deployed. The Juice Shop discovery row displayed all four actions on one line. View profile showed one summary card, and Generate analysis showed `54` sanitized observations with compact protection recommendations. No target-side or ADC configuration change was made.
+- Recovery after connectivity loss or reboot: verify the server checkout is at `6a4533c` or later and reload the GUI. If the old detailed view remains, run `git pull --ff-only origin main`; no container recreation is required for this frontend-only change.
