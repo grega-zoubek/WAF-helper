@@ -62,9 +62,9 @@
     .technology-thumbprint { position: relative; display: inline-grid; place-items: center; flex: 0 0 1.45rem; width: 1.45rem; height: 1.45rem; border-radius: 50%; overflow: hidden; font-size: .62rem; font-weight: 800; letter-spacing: -.03em; line-height: 1; color: #17202a; border: 1px solid #b9c2ca; background: #e9eef2; }
     .technology-thumbprint-initials { display: grid; place-items: center; width: 100%; height: 100%; }
     .technology-logo { position: absolute; inset: .15rem; width: calc(100% - .3rem); height: calc(100% - .3rem); object-fit: contain; border-radius: .2rem; background: #fff; }
-    .technology-thumbprint-vendor { color: #fff; background: #315c7d; border-color: #315c7d; }
-    .technology-thumbprint-product { background: #dbeafe; border-color: #93c5fd; }
-    .technology-thumbprint-tag { background: #dcfce7; border-color: #86efac; }
+    .technology-thumbprint-vendor { color: #fff; background: var(--thumbprint-color, #315c7d); border-color: var(--thumbprint-color, #315c7d); }
+    .technology-thumbprint-product { background: #fff; border-color: var(--thumbprint-color, #93c5fd); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--thumbprint-color, #93c5fd) 16%, white); }
+    .technology-thumbprint-tag { background: #fff; border-color: var(--thumbprint-color, #86efac); }
     .technology-thumbprint-year { background: #fff3cd; border-color: #e8c66a; }
     .release-year-list { display: flex; flex-direction: column; gap: .35rem; box-sizing: border-box; height: 7.8rem; overflow-y: auto; overscroll-behavior: contain; scroll-snap-type: y proximity; margin: .65rem 0; padding: .35rem; border: 1px solid #d9dee3; border-radius: 6px; background: #fafbfc; }
     .release-year-item { flex: 0 0 2.1rem; display: flex; align-items: center; justify-content: space-between; gap: .5rem; box-sizing: border-box; padding: .25rem .4rem; border: 1px solid #d9dee3; border-radius: 5px; background: #fff; scroll-snap-align: start; }
@@ -77,7 +77,7 @@
     .generic-signature-node > summary, .generic-signature-subgroup > summary { cursor: pointer; }
     .generic-signature-summary { display: inline-flex; align-items: center; gap: .45rem; flex-wrap: wrap; }
     .generic-signature-rule-list { display: grid; gap: .3rem; max-height: 24rem; overflow-y: auto; margin-top: .55rem; padding: .45rem; border-top: 1px solid #e6e9ec; }
-    .generic-signature-rule { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: .45rem; padding: .35rem; border-bottom: 1px solid #eef0f2; }
+    .generic-signature-rule { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: start; gap: .45rem; padding: .35rem; border-bottom: 1px solid #eef0f2; }
     .generic-signature-rule input { margin-top: .2rem; width: auto; }
     .generic-signature-rule-title { overflow-wrap: anywhere; }
     .generic-signature-rule-meta { display: block; margin-top: .15rem; }
@@ -342,19 +342,23 @@
       host.innerHTML = `<div class="card"><h3>Analysis summary <span class="small muted">${escapeHtml(analysis.run_id || '-')}</span></h3><p class="small muted">${escapeHtml(analysis.analysis_mode || 'deterministic-synthesis')} · ${analysis.observation_count || 0} sanitized observations</p><p><strong>Likely architecture:</strong> ${architecture}</p><p><strong>Protection areas:</strong></p><ul>${protections || '<li>None identified</li>'}</ul>${intents ? `<p><strong>Included protection intents:</strong></p><ul>${intents}</ul>` : ''}${signatures ? `<p><strong>Recommended signature groups:</strong></p><ul>${signatures}</ul>` : ''}<p class="small muted">This is a compact summary. Detailed evidence remains available through the API and can be exposed later as an explicit drill-down.</p></div>`;
     }
     const technologyLogoAliases = { 'asp.net': 'dotnet', 'exchange-owa': 'microsoftoutlook', 'http-server': 'apache', 'jboss-wildfly': 'redhat', 'node-js': 'nodedotjs', 'red-hat': 'redhat', 'sharepoint': 'microsoftsharepoint', 'vba': 'visualbasic', 'vmware-vcenter': 'vmware', 'vrealize-operations-manager': 'vmware', 'aria-operations-for-logs': 'vmware', 'aria-operations-for-networks': 'vmware', 'cloud-foundation': 'vmware', 'sd-wan-orchestrator': 'vmware', 'workspace-one-access': 'vmware' };
+    const technologyVendorColors = { adobe: '#fa0f00', apache: '#d22128', atlassian: '#1868db', cisco: '#049fd9', citrix: '#452170', drupal: '#0678be', ibm: '#0f62fe', infoblox: '#0064a5', ivanti: '#ff6a00', joomla: '#f44321', microsoft: '#5e5e5e', nginx: '#009639', oracle: '#f80000', php: '#777bb4', redhat: '#ee0000', vmware: '#607078', wordpress: '#21759b' };
     function technologyLogoSlug(label) {
       const key = String(label || '').toLowerCase().replace(/&/g, ' and ').replace(/[/.]/g, '-').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
       return technologyLogoAliases[key] || key;
     }
     function technologyThumbprint(label, kind = 'product', fallbackLabel = '') {
       const value = String(label || '?').trim();
+      const cleanValue = value.replace(/^software:\s*/i, '').trim();
       const words = value.split(/\s+/).filter(Boolean);
       const initials = (words.length > 1 ? `${words[0][0]}${words[1][0]}` : value.replace(/[^a-z0-9]/gi, '').slice(0, 2)).toUpperCase() || '?';
-      const slug = technologyLogoSlug(value);
-      const fallbackSlug = technologyLogoSlug(fallbackLabel);
+      const slug = technologyLogoSlug(cleanValue);
+      const fallbackName = fallbackLabel || cleanValue.split(/\s+/)[0];
+      const fallbackSlug = technologyLogoSlug(fallbackName);
+      const color = technologyVendorColors[fallbackSlug] || technologyVendorColors[slug] || '#7b8794';
       const fallback = fallbackSlug && fallbackSlug !== slug ? `/assets/vendor-logos/${fallbackSlug}.svg` : '';
       const fallbackAttribute = fallback ? ` data-fallback="${escapeHtml(fallback)}"` : '';
-      return `<span class="technology-thumbprint technology-thumbprint-${escapeHtml(kind)}" role="img" aria-label="${escapeHtml(value)}" title="${escapeHtml(value)}"><span class="technology-thumbprint-initials">${escapeHtml(initials)}</span><img class="technology-logo" src="/assets/vendor-logos/${escapeHtml(slug)}.svg"${fallbackAttribute} alt="" loading="lazy" onerror="if(this.dataset.fallback && this.dataset.tried !== '1'){this.dataset.tried='1';this.src=this.dataset.fallback;}else{this.remove();}"></span>`;
+      return `<span class="technology-thumbprint technology-thumbprint-${escapeHtml(kind)}" style="--thumbprint-color:${escapeHtml(color)}" role="img" aria-label="${escapeHtml(value)}" title="${escapeHtml(value)}"><span class="technology-thumbprint-initials">${escapeHtml(initials)}</span><img class="technology-logo" src="/assets/vendor-logos/${escapeHtml(slug)}.svg"${fallbackAttribute} alt="" loading="lazy" onerror="if(this.dataset.fallback && this.dataset.tried !== '1'){this.dataset.tried='1';this.src=this.dataset.fallback;}else{this.remove();}"></span>`;
     }
     function renderTechnologyFilterOptions(catalog, selectedFilters, query = '') {
       const selected = new Set((selectedFilters || []).map(item => String(item).toLowerCase()));
@@ -365,15 +369,21 @@
     }
     function renderGenericSignatureTree(groups) {
       if (!groups?.length) return '<p class="small muted">No matching CVE references or generic signature groups were resolved.</p>';
-      const renderRule = rule => `<label class="generic-signature-rule"><input type="checkbox" class="generic-signature-rule-select" data-rule-id="${escapeHtml(rule.rule_id || '')}"${rule.selected ? ' checked' : ''}><span class="generic-signature-rule-title"><strong>${escapeHtml(rule.rule_id || '-')}</strong> · ${escapeHtml(rule.description || 'No description')}<span class="generic-signature-rule-meta small muted">${escapeHtml(rule.vendor || '')}${rule.product ? ` / ${escapeHtml(rule.product)}` : ''}${rule.vendor || rule.product ? ' · ' : ''}${escapeHtml(rule.category || 'uncategorized')} · ${escapeHtml((rule.attack_classes || []).join(', ') || 'unclassified')} · ${escapeHtml((rule.locations || []).join(', ') || 'location n/a')} · ${escapeHtml((rule.match_types || []).join(', ') || 'match type n/a')} · ${escapeHtml(rule.severity || 'severity n/a')}</span></span></label>`;
-      const renderSubgroup = (subgroup, groupId) => {
+      const renderRule = rule => { const ruleIcon = rule.vendor || rule.product ? technologyThumbprint(rule.product || rule.vendor, rule.product ? 'product' : 'vendor', rule.vendor || '') : ''; return `<label class="generic-signature-rule"><input type="checkbox" class="generic-signature-rule-select" data-rule-id="${escapeHtml(rule.rule_id || '')}"${rule.selected ? ' checked' : ''}>${ruleIcon}<span class="generic-signature-rule-title"><strong>${escapeHtml(rule.rule_id || '-')}</strong> · ${escapeHtml(rule.description || 'No description')}<span class="generic-signature-rule-meta small muted">${escapeHtml(rule.vendor || '')}${rule.product ? ` / ${escapeHtml(rule.product)}` : ''}${rule.vendor || rule.product ? ' · ' : ''}${escapeHtml(rule.category || 'uncategorized')} · ${escapeHtml((rule.attack_classes || []).join(', ') || 'unclassified')} · ${escapeHtml((rule.locations || []).join(', ') || 'location n/a')} · ${escapeHtml((rule.match_types || []).join(', ') || 'match type n/a')} · ${escapeHtml(rule.severity || 'severity n/a')}</span></span></label>`; };
+      const renderSubgroup = (subgroup, groupId, parentLabel = '') => {
         const rules = subgroup.rules || [];
         const children = subgroup.children || [];
-        const childRows = children.map(child => renderSubgroup(child, groupId)).join('');
+        const childRows = children.map(child => renderSubgroup(child, groupId, subgroup.name || parentLabel)).join('');
         const ruleRows = rules.map(renderRule).join('');
         const hasItems = rules.length > 0 || children.length > 0;
         const subgroupChecked = hasItems && Number(subgroup.selected_rule_count || 0) === Number(subgroup.rule_count || 0);
-        return `<details class="generic-signature-subgroup"><summary><label class="generic-signature-summary"><input type="checkbox" class="generic-signature-subgroup-toggle" data-group-id="${escapeHtml(groupId || '')}" data-subgroup-id="${escapeHtml(subgroup.subgroup_id || '')}"${subgroupChecked ? ' checked' : ''}> <strong>${escapeHtml(subgroup.name || subgroup.subgroup_id || '-')}</strong> <span class="small muted">${subgroup.selected_rule_count || 0}/${subgroup.rule_count || 0} selected</span></label></summary>${childRows}<div class="generic-signature-rule-list">${ruleRows}</div></details>`;
+        const subgroupId = String(subgroup.subgroup_id || '');
+        const subgroupName = String(subgroup.name || subgroupId || '-');
+        const isVendor = subgroupId.startsWith('vendor:') && !subgroupId.includes(':product:');
+        const isProduct = subgroupId.includes(':product:');
+        const isSoftware = /^software:\s*/i.test(subgroupName);
+        const subgroupIcon = isVendor || isProduct || isSoftware ? technologyThumbprint(subgroupName.replace(/^software:\s*/i, ''), isVendor ? 'vendor' : 'product', parentLabel) : '';
+        return `<details class="generic-signature-subgroup"><summary><label class="generic-signature-summary"><input type="checkbox" class="generic-signature-subgroup-toggle" data-group-id="${escapeHtml(groupId || '')}" data-subgroup-id="${escapeHtml(subgroupId)}"${subgroupChecked ? ' checked' : ''}> ${subgroupIcon}<strong>${escapeHtml(subgroupName)}</strong> <span class="small muted">${subgroup.selected_rule_count || 0}/${subgroup.rule_count || 0} selected</span></label></summary>${childRows}<div class="generic-signature-rule-list">${ruleRows}</div></details>`;
       };
       const groupRows = groups.map(group => {
         const groupRules = (group.subgroups || []).flatMap(subgroup => {
