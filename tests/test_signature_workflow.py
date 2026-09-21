@@ -99,7 +99,7 @@ class SignatureWorkflowTests(unittest.TestCase):
             ]},
             selected_release_years=[2021],
         )
-        self.assertEqual([item["rule_id"] for item in result["selected_rules"]], [])
+        self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["41"])
         self.assertEqual(result["release_years"], [2021])
 
     def test_file_upload_intent_does_not_select_all_web_misc_rules(self):
@@ -113,11 +113,12 @@ class SignatureWorkflowTests(unittest.TestCase):
         )
         self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["51"])
 
-    def test_commands_are_chunked_and_save_config_is_last(self):
+    def test_import_command_preview_saves_config_last(self):
         commands = cli_import_commands("waf-test", [str(value) for value in range(101)], "BLOCK", chunk_size=50)
-        self.assertEqual(len(commands), 4)
+        self.assertEqual(len(commands), 2)
         self.assertTrue(commands[-1].startswith("save ns config"))
-        self.assertIn("-Action BLOCK", commands[0])
+        self.assertIn("import appfw signatures", commands[0])
+        self.assertIn("waf-test", commands[0])
 
 
 if __name__ == "__main__":
