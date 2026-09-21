@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -20,7 +21,7 @@ from app.nextgen import (
     write_enabled,
 )
 from app.rule_catalog import load_rule_catalog
-from app.ssh_inventory import collect_waf_inventory
+from app.ssh_inventory import collect_waf_inventory, execute_cli_commands
 
 
 app = FastAPI(title="NetScaler Next-Gen Adapter", version="0.2.0")
@@ -48,6 +49,16 @@ class AppFwSignatureSetWriteRequest(BaseModel):
     profile_type: list[str] | str | None = None
     signature_name: str = Field(min_length=1, max_length=200)
     enable: bool = True
+
+
+class CustomSignatureSetWriteRequest(BaseModel):
+    signature_object_name: str = Field(min_length=1, max_length=31)
+    rule_ids: list[str] = Field(min_length=1, max_length=5000)
+    action: str = Field(default="LOG", max_length=16)
+
+
+class CustomSignatureSetRollbackRequest(BaseModel):
+    signature_object_name: str = Field(min_length=1, max_length=31)
 
 
 def _raise_upstream(status: int, data: Any) -> None:
@@ -321,6 +332,50 @@ async def write_appfw_profile_duplicate(request: AppFwProfileDuplicateWriteReque
 async def write_signature_set(request: AppFwSignatureSetWriteRequest) -> dict[str, Any]:
     _unsupported_write("appfwsignatures")
     return {}
+
+
+@app.post("/api/adc/writes/custom-signature-set")
+async def write_custom_signature_set(request: CustomSignatureSetWriteRequest) -> dict[str, Any]:
+    if not write_enabled():
+        raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
+    if not re.fullmatch(r"[A-Za-z0-9_.# @=-]{1,31}", request.signature_object_name):
+        raise HTTPException(status_code=422, detail="Invalid NetScaler signature object name")
+    action = request.action.upper()
+    if action not in {"LOG", "BLOCK"}:
+        raise HTTPException(status_code=422, detail="Action must be LOG or BLOCK")
+    if any(not re.fullmatch(r"[0-9]{1,10}", str(rule_id)) for rule_id in request.rule_ids):
+        raise HTTPException(status_code=422, detail="Rule IDs must be numeric")
+    rule_ids = [str(int(rule_id)) for rule_id in request.rule_ids]
+    if len(set(rule_ids)) != len(rule_ids):
+        raise HTTPException(status_code=422, detail="Rule IDs must be unique")
+    commands = [
+        f"import appfw signature DEFAULT {request.signature_object_name} -sigRuleId {' '.join(chunk)} -Enabled ON -Action {action}"
+        for start in range(0, len(rule_ids), 50)
+        for chunk in [rule_ids[start:start + 50]]
+    ] + ["save ns config"]
+    try:
+        result = await asyncio.to_thread(execute_cli_commands, commands)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (RuntimeError, TimeoutError, OSError) as exc:
+        raise HTTPException(status_code=502, detail="NetScaler CLI export failed") from exc
+    return {"status": "applied", "signature_object_name": request.signature_object_name, "action": action, "rule_count": len(rule_ids), "command_count": len(commands), "changes_applied": True, "result": result}
+
+
+@app.post("/api/adc/writes/custom-signature-set/rollback")
+async def rollback_custom_signature_set(request: CustomSignatureSetRollbackRequest) -> dict[str, Any]:
+    if not write_enabled():
+        raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
+    if not re.fullmatch(r"[A-Za-z0-9_.# @=-]{1,31}", request.signature_object_name):
+        raise HTTPException(status_code=422, detail="Invalid NetScaler signature object name")
+    commands = [f"rm appfw signatures {request.signature_object_name}", "save ns config"]
+    try:
+        result = await asyncio.to_thread(execute_cli_commands, commands)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (RuntimeError, TimeoutError, OSError) as exc:
+        raise HTTPException(status_code=502, detail="NetScaler CLI rollback failed") from exc
+    return {"status": "rolled-back", "signature_object_name": request.signature_object_name, "changes_applied": True, "result": result}
 
 
 @app.delete("/api/adc/writes/appfw-profile-duplicate/{profile_name}")

@@ -25,6 +25,7 @@ from app.rule_catalog import resolve_rule_catalog
 from app.nextgen_correlation import correlate_scope_to_nextgen
 from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
+from app.signature_workflow import ACTION_VALUES, OBJECT_NAME_RE, cli_import_commands, default_object_name, load_upstream_catalog, select_rules_for_detection, workflow_fingerprint
 
 app = FastAPI(title="WAF Intelligence Control API", version="0.1.0")
 jobs: dict[str, dict[str, Any]] = {}
@@ -148,6 +149,34 @@ class CustomSignatureDraftRequest(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list, max_length=50)
     positive_test_cases: list[str] = Field(default_factory=list, max_length=20)
     negative_test_cases: list[str] = Field(default_factory=list, max_length=20)
+
+
+class CustomSignatureSetPrepareRequest(BaseModel):
+    job_id: str = Field(min_length=1, max_length=128)
+    signature_object_name: str | None = Field(default=None, max_length=31)
+    selected_rule_ids: list[str] | None = Field(default=None, max_length=5000)
+    action: str = Field(default="LOG", max_length=16)
+
+
+class CustomSignatureSetEditRequest(BaseModel):
+    signature_object_name: str = Field(min_length=1, max_length=31)
+    selected_rule_ids: list[str] = Field(default_factory=list, max_length=5000)
+    action: str = Field(default="LOG", max_length=16)
+
+
+class CustomSignatureSetApprovalRequest(BaseModel):
+    plan_fingerprint: str = Field(min_length=64, max_length=128)
+    approval_phrase: str = Field(min_length=1, max_length=64)
+
+
+class CustomSignatureSetPreflightRequest(BaseModel):
+    approval_id: str = Field(min_length=1, max_length=128)
+    plan_fingerprint: str = Field(min_length=64, max_length=128)
+
+
+class CustomSignatureSetExportRequest(CustomSignatureSetPreflightRequest):
+    preview_id: str = Field(min_length=1, max_length=128)
+    confirmation_phrase: str = Field(min_length=1, max_length=64)
 
 
 def provider_records(payload: Any, key: str) -> list[dict[str, Any]]:
@@ -509,6 +538,8 @@ def init_db_sync() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_netscaler_signature_sets_job ON netscaler_signature_sets (job_id, updated_at DESC)")
         conn.execute("""CREATE TABLE IF NOT EXISTS netscaler_custom_signature_drafts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, signature_object_name TEXT NOT NULL, rule_id INTEGER NOT NULL, status TEXT NOT NULL, spec JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_netscaler_custom_signature_drafts_job ON netscaler_custom_signature_drafts (job_id, updated_at DESC)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS netscaler_custom_signature_sets (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, hostname TEXT NOT NULL, nsip TEXT NOT NULL, signature_object_name TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL, plan_fingerprint TEXT NOT NULL, catalog_fingerprint TEXT, selected_rules JSONB NOT NULL, technology_context JSONB NOT NULL, approval_id TEXT, approved_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, preview_id TEXT, preflight_status TEXT, changes_applied BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_netscaler_custom_signature_sets_job ON netscaler_custom_signature_sets (job_id, updated_at DESC)")
         conn.commit()
 
 
@@ -711,6 +742,57 @@ def list_custom_signature_rule_ids_sync() -> set[int]:
     with db_connect() as conn:
         rows = conn.execute("SELECT rule_id FROM netscaler_custom_signature_drafts").fetchall()
     return {int(row[0]) for row in rows}
+
+
+def save_custom_signature_set_sync(plan: dict[str, Any]) -> str:
+    set_id = str(uuid4())
+    now = datetime.now(timezone.utc)
+    with db_connect() as conn:
+        conn.execute(
+            """INSERT INTO netscaler_custom_signature_sets (id, job_id, hostname, nsip, signature_object_name, action, status, plan_fingerprint, catalog_fingerprint, selected_rules, technology_context, changes_applied, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s)""",
+            (set_id, plan["job_id"], plan["hostname"], plan["nsip"], plan["signature_object_name"], plan["action"], plan["status"], plan["plan_fingerprint"], plan.get("catalog_fingerprint"), Jsonb(plan["selected_rules"]), Jsonb(plan["technology_context"]), now, now),
+        )
+        conn.commit()
+    return set_id
+
+
+def load_custom_signature_set_sync(set_id: str) -> dict[str, Any] | None:
+    with db_connect() as conn:
+        row = conn.execute("SELECT id, job_id, hostname, nsip, signature_object_name, action, status, plan_fingerprint, catalog_fingerprint, selected_rules, technology_context, approval_id, approved_at, expires_at, preview_id, preflight_status, changes_applied, created_at, updated_at FROM netscaler_custom_signature_sets WHERE id = %s", (set_id,)).fetchone()
+    if not row:
+        return None
+    columns = ["id", "job_id", "hostname", "nsip", "signature_object_name", "action", "status", "plan_fingerprint", "catalog_fingerprint", "selected_rules", "technology_context", "approval_id", "approved_at", "expires_at", "preview_id", "preflight_status", "changes_applied", "created_at", "updated_at"]
+    value = dict(zip(columns, row))
+    value["custom_signature_set_id"] = value.pop("id")
+    return value
+
+
+def list_custom_signature_sets_sync(job_id: str | None = None) -> list[dict[str, Any]]:
+    with db_connect() as conn:
+        if job_id:
+            rows = conn.execute("SELECT id, job_id, hostname, nsip, signature_object_name, action, status, plan_fingerprint, catalog_fingerprint, approval_id, expires_at, preflight_status, changes_applied, created_at, updated_at FROM netscaler_custom_signature_sets WHERE job_id = %s ORDER BY updated_at DESC", (job_id,)).fetchall()
+        else:
+            rows = conn.execute("SELECT id, job_id, hostname, nsip, signature_object_name, action, status, plan_fingerprint, catalog_fingerprint, approval_id, expires_at, preflight_status, changes_applied, created_at, updated_at FROM netscaler_custom_signature_sets ORDER BY updated_at DESC LIMIT 100").fetchall()
+    columns = ["custom_signature_set_id", "job_id", "hostname", "nsip", "signature_object_name", "action", "status", "plan_fingerprint", "catalog_fingerprint", "approval_id", "expires_at", "preflight_status", "changes_applied", "created_at", "updated_at"]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def update_custom_signature_set_sync(set_id: str, values: dict[str, Any]) -> None:
+    allowed = {"signature_object_name", "action", "status", "plan_fingerprint", "selected_rules", "approval_id", "approved_at", "expires_at", "preview_id", "preflight_status", "changes_applied"}
+    fields = [key for key in values if key in allowed]
+    if not fields:
+        return
+    assignments = ", ".join(f"{key} = %s" for key in fields) + ", updated_at = %s"
+    params: list[Any] = []
+    for key in fields:
+        value = values[key]
+        if key == "selected_rules":
+            value = Jsonb(value)
+        params.append(value)
+    params.extend([datetime.now(timezone.utc), set_id])
+    with db_connect() as conn:
+        conn.execute(f"UPDATE netscaler_custom_signature_sets SET {assignments} WHERE id = %s", params)
+        conn.commit()
 
 
 def save_csp_report_sync(report: dict[str, Any]) -> str:
@@ -1914,6 +1996,218 @@ async def get_custom_signature_draft(draft_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Custom signature draft was not found")
     spec = record.get("spec") or {}
     return {"draft_id": draft_id, **spec, "created_at": record.get("created_at"), "updated_at": record.get("updated_at")}
+
+
+def custom_signature_set_response(record: dict[str, Any]) -> dict[str, Any]:
+    selected = record.get("selected_rules") or []
+    rule_ids = [str(item.get("rule_id")) for item in selected if isinstance(item, dict) and item.get("rule_id") is not None]
+    return {
+        "custom_signature_set_id": record.get("custom_signature_set_id"),
+        "job_id": record.get("job_id"),
+        "hostname": record.get("hostname"),
+        "nsip": record.get("nsip"),
+        "signature_object_name": record.get("signature_object_name"),
+        "action": record.get("action"),
+        "status": record.get("status"),
+        "plan_fingerprint": record.get("plan_fingerprint"),
+        "catalog_fingerprint": record.get("catalog_fingerprint"),
+        "selected_rule_ids": rule_ids,
+        "selected_rule_count": len(rule_ids),
+        "selected_rules": selected,
+        "technology_context": record.get("technology_context"),
+        "approval_id": record.get("approval_id"),
+        "approved_at": record.get("approved_at"),
+        "expires_at": record.get("expires_at"),
+        "preview_id": record.get("preview_id"),
+        "preflight_status": record.get("preflight_status"),
+        "changes_applied": record.get("changes_applied", False),
+        "write_enabled": os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() == "true",
+        "commands": cli_import_commands(record.get("signature_object_name", ""), rule_ids, record.get("action", "LOG")) if rule_ids else [],
+    }
+
+
+async def build_custom_signature_set_plan(job_id: str, signature_object_name: str | None = None, selected_rule_ids: list[str] | None = None, action: str = "LOG") -> dict[str, Any]:
+    action = str(action or "LOG").upper()
+    if action not in ACTION_VALUES:
+        raise HTTPException(status_code=422, detail="action must be LOG or BLOCK")
+    job = await get_discovery_job(job_id)
+    if job.get("status") != "completed":
+        raise HTTPException(status_code=409, detail="Signature proposal requires a completed discovery job")
+    profile = await get_discovery_profile(job_id)
+    analysis = await get_discovery_analysis(job_id)
+    scope = job.get("scope") or {}
+    hostname = str(scope.get("hostname") or "app")[:253]
+    name = (signature_object_name or default_object_name(hostname, job_id)).strip()
+    if not OBJECT_NAME_RE.fullmatch(name):
+        raise HTTPException(status_code=422, detail="signature_object_name contains unsupported NetScaler characters or exceeds 31 characters")
+    catalog = await asyncio.to_thread(load_upstream_catalog)
+    selection = select_rules_for_detection(profile, analysis, catalog, selected_rule_ids)
+    status = "draft"
+    if selection.get("catalog_status") != "ready":
+        status = "blocked-upstream-catalog"
+    elif selection.get("missing_requested_rule_ids"):
+        status = "blocked-invalid-rule-selection"
+    elif not selection.get("selected_rules"):
+        status = "blocked-no-applicable-rules"
+    target_payload = await adapter_read("/api/adc/target")
+    nsip = str(target_payload.get("host", "unknown"))[:64] if isinstance(target_payload, dict) else "unknown"
+    technology_context = {
+        "technologies": profile.get("technologies") or [],
+        "signature_technology_context": profile.get("signature_technology_context") or {},
+        "generic_protection_intents": analysis.get("generic_protection_intents") or [],
+        "route_count": len(profile.get("route_inventory") or []),
+        "field_count": len(profile.get("field_formats") or []),
+        "evidence_count": len(profile.get("evidence") or []),
+        "catalog_source": catalog.get("path"),
+        "catalog_version": catalog.get("version"),
+        "catalog_release": catalog.get("release"),
+        "catalog_integrity_status": catalog.get("integrity_status"),
+        "selection": {key: value for key, value in selection.items() if key != "selected_rules"},
+    }
+    plan = {
+        "job_id": job_id,
+        "hostname": hostname,
+        "nsip": nsip,
+        "signature_object_name": name,
+        "action": action,
+        "status": status,
+        "catalog_fingerprint": selection.get("catalog_fingerprint"),
+        "selected_rules": selection.get("selected_rules") or [],
+        "technology_context": technology_context,
+        "approval_required": True,
+        "write_enabled": False,
+        "changes_applied": False,
+        "proposal_only": True,
+        "export_provider": "netscaler-cli-over-ssh",
+        "commands": cli_import_commands(name, [str(item.get("rule_id")) for item in (selection.get("selected_rules") or [])], action) if selection.get("selected_rules") else [],
+        "note": "The selection is derived from the latest verified upstream catalog and completed passive detection. The administrator must review exact rule IDs, object name, and LOG/BLOCK mode before export.",
+    }
+    plan["plan_fingerprint"] = workflow_fingerprint(plan)
+    return plan
+
+
+@app.post("/api/custom-signature-sets/prepare", status_code=201)
+async def prepare_custom_signature_set(request: CustomSignatureSetPrepareRequest) -> dict[str, Any]:
+    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action)
+    try:
+        set_id = await asyncio.to_thread(save_custom_signature_set_sync, plan)
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Custom signature-set database unavailable") from exc
+    return {**plan, "custom_signature_set_id": set_id, "selected_rule_ids": [str(item.get("rule_id")) for item in plan["selected_rules"]]}
+
+
+@app.get("/api/custom-signature-sets")
+async def list_custom_signature_sets(job_id: str | None = Query(default=None, max_length=128)) -> list[dict[str, Any]]:
+    try:
+        return await asyncio.to_thread(list_custom_signature_sets_sync, job_id)
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Custom signature-set database unavailable") from exc
+
+
+@app.get("/api/custom-signature-sets/{set_id}")
+async def get_custom_signature_set(set_id: str) -> dict[str, Any]:
+    try:
+        record = await asyncio.to_thread(load_custom_signature_set_sync, set_id)
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Custom signature-set database unavailable") from exc
+    if not record:
+        raise HTTPException(status_code=404, detail="Custom signature set was not found")
+    return custom_signature_set_response(record)
+
+
+@app.patch("/api/custom-signature-sets/{set_id}")
+async def edit_custom_signature_set(set_id: str, request: CustomSignatureSetEditRequest) -> dict[str, Any]:
+    record = await asyncio.to_thread(load_custom_signature_set_sync, set_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Custom signature set was not found")
+    if record.get("status") in {"exported", "rolled-back"}:
+        raise HTTPException(status_code=409, detail="Exported custom signature sets cannot be edited")
+    name = request.signature_object_name.strip()
+    action = request.action.upper()
+    if not OBJECT_NAME_RE.fullmatch(name):
+        raise HTTPException(status_code=422, detail="signature_object_name contains unsupported NetScaler characters or exceeds 31 characters")
+    if action not in ACTION_VALUES:
+        raise HTTPException(status_code=422, detail="action must be LOG or BLOCK")
+    plan = await build_custom_signature_set_plan(record["job_id"], name, request.selected_rule_ids, action)
+    if plan.get("status") != "draft":
+        raise HTTPException(status_code=409, detail={"message": "Edited selection is not exportable", "status": plan.get("status"), "selection": plan.get("technology_context", {}).get("selection")})
+    values = {"signature_object_name": name, "action": action, "status": "edited", "plan_fingerprint": plan["plan_fingerprint"], "selected_rules": plan["selected_rules"], "approval_id": None, "approved_at": None, "expires_at": None, "preview_id": None, "preflight_status": None}
+    await asyncio.to_thread(update_custom_signature_set_sync, set_id, values)
+    updated = await asyncio.to_thread(load_custom_signature_set_sync, set_id)
+    return custom_signature_set_response(updated or record)
+
+
+@app.post("/api/custom-signature-sets/{set_id}/approve")
+async def approve_custom_signature_set(set_id: str, request: CustomSignatureSetApprovalRequest) -> dict[str, Any]:
+    if request.approval_phrase != "APPROVE CUSTOM SIGNATURE SET":
+        raise HTTPException(status_code=400, detail="Exact approval phrase APPROVE CUSTOM SIGNATURE SET is required")
+    record = await asyncio.to_thread(load_custom_signature_set_sync, set_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Custom signature set was not found")
+    if record.get("plan_fingerprint") != request.plan_fingerprint:
+        raise HTTPException(status_code=409, detail="Custom signature set changed; regenerate the approval view")
+    approval_id = str(uuid4())
+    approved_at = datetime.now(timezone.utc)
+    expires_at = approved_at + timedelta(minutes=30)
+    await asyncio.to_thread(update_custom_signature_set_sync, set_id, {"status": "approved", "approval_id": approval_id, "approved_at": approved_at, "expires_at": expires_at})
+    return {"custom_signature_set_id": set_id, "approval_id": approval_id, "status": "approved", "plan_fingerprint": request.plan_fingerprint, "approved_at": approved_at, "expires_at": expires_at, "write_enabled": False, "changes_applied": False}
+
+
+@app.post("/api/custom-signature-sets/{set_id}/preflight")
+async def preflight_custom_signature_set(set_id: str, request: CustomSignatureSetPreflightRequest) -> dict[str, Any]:
+    record = await asyncio.to_thread(load_custom_signature_set_sync, set_id)
+    if not record or record.get("status") != "approved" or record.get("approval_id") != request.approval_id:
+        raise HTTPException(status_code=403, detail="Approved custom signature set not found")
+    if record.get("expires_at") and record["expires_at"] <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=403, detail="Custom signature-set approval has expired")
+    if record.get("plan_fingerprint") != request.plan_fingerprint:
+        raise HTTPException(status_code=409, detail="Approval does not match the custom signature set")
+    current = await build_custom_signature_set_plan(record["job_id"], record["signature_object_name"], [str(item.get("rule_id")) for item in (record.get("selected_rules") or [])], record["action"])
+    signatures_payload = await adapter_read("/api/adc/signatures")
+    inventory = parse_signature_catalog(signatures_payload)
+    existing_names = {str(item.get("name", "")) for item in inventory.get("entries", [])}
+    checks = [
+        {"name": "Approval validity", "status": "passed", "detail": "Approval exists and has not expired."},
+        {"name": "Plan fingerprint", "status": "passed" if current.get("plan_fingerprint") == request.plan_fingerprint else "failed", "detail": "The latest verified catalog and discovery evidence match the approved plan." if current.get("plan_fingerprint") == request.plan_fingerprint else "The catalog or discovery evidence changed since approval."},
+        {"name": "Catalog integrity", "status": "passed" if current.get("status") == "draft" and current.get("catalog_fingerprint") == record.get("catalog_fingerprint") else "failed", "detail": "Latest upstream catalog is available and unchanged." if current.get("status") == "draft" and current.get("catalog_fingerprint") == record.get("catalog_fingerprint") else "Upstream catalog is missing, invalid, or changed."},
+        {"name": "Rule selection", "status": "passed" if current.get("selected_rules") else "failed", "detail": f"{len(current.get('selected_rules') or [])} exact rule IDs are available for export."},
+        {"name": "Object name", "status": "passed" if record["signature_object_name"] not in existing_names else "failed", "detail": "Destination signature object name is not present in the current ADC inventory." if record["signature_object_name"] not in existing_names else "Destination signature object name already exists on the ADC."},
+        {"name": "Enforcement mode", "status": "passed" if record.get("action") in ACTION_VALUES else "failed", "detail": f"Administrator selected {record.get('action')} for enabled rules."},
+        {"name": "Write safety", "status": "blocked", "detail": "ADC export remains disabled until the explicit ENABLE WRITE confirmation and write-mode toggle are present."},
+    ]
+    status = "drift-detected" if any(item["status"] == "failed" for item in checks) else "blocked-write-disabled"
+    expected = hashlib.sha256(json.dumps({"catalog": current.get("catalog_fingerprint"), "name": record["signature_object_name"], "action": record["action"], "rules": [item.get("rule_id") for item in current.get("selected_rules", [])]}, sort_keys=True).encode()).hexdigest()
+    rollback = {"status": "ready", "object_name": record["signature_object_name"], "action": "rm appfw signatures <object-name> after reference check", "verification": ["Confirm the object is not bound to an AppFW profile or policy.", "Re-read the ADC signature inventory after rollback."]}
+    preview_id = await asyncio.to_thread(save_change_preview_sync, request.approval_id, set_id, request.plan_fingerprint, status, expected, expected, checks, rollback)
+    await asyncio.to_thread(update_custom_signature_set_sync, set_id, {"preflight_status": status, "preview_id": preview_id})
+    return {"custom_signature_set_id": set_id, "preview_id": preview_id, "status": status, "checks": checks, "rollback_snapshot": rollback, "commands": current.get("commands"), "write_enabled": False, "changes_applied": False}
+
+
+@app.post("/api/custom-signature-sets/{set_id}/export")
+async def export_custom_signature_set(set_id: str, request: CustomSignatureSetExportRequest) -> dict[str, Any]:
+    if request.confirmation_phrase != "ENABLE WRITE":
+        raise HTTPException(status_code=400, detail="Exact confirmation phrase ENABLE WRITE is required")
+    if os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() != "true":
+        raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
+    record = await asyncio.to_thread(load_custom_signature_set_sync, set_id)
+    preview = await asyncio.to_thread(load_change_preview_sync, request.preview_id)
+    if not record or record.get("status") != "approved" or record.get("approval_id") != request.approval_id or record.get("plan_fingerprint") != request.plan_fingerprint or not preview or preview.get("status") != "ready-for-apply":
+        raise HTTPException(status_code=403, detail="Approved custom signature set and successful preflight are required")
+    current = await build_custom_signature_set_plan(record["job_id"], record["signature_object_name"], [str(item.get("rule_id")) for item in (record.get("selected_rules") or [])], record["action"])
+    if current.get("plan_fingerprint") != request.plan_fingerprint or current.get("status") != "draft":
+        raise HTTPException(status_code=409, detail="Custom signature set drifted; regenerate and re-approve before export")
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(f"{ADAPTER_URL}/api/adc/writes/custom-signature-set", json={"signature_object_name": record["signature_object_name"], "rule_ids": [str(item.get("rule_id")) for item in (record.get("selected_rules") or [])], "action": record["action"]})
+            response.raise_for_status()
+            result = response.json()
+        await asyncio.to_thread(save_write_audit_sync, "custom-signature-set-export", record["nsip"], record["signature_object_name"], record["signature_object_name"], "applied", {"action": record["action"], "rule_count": len(record.get("selected_rules") or []), "changes_applied": True})
+        await asyncio.to_thread(update_custom_signature_set_sync, set_id, {"status": "exported", "changes_applied": True})
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail="NetScaler custom signature export failed") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="NetScaler adapter unavailable") from exc
+    return {"custom_signature_set_id": set_id, "signature_object_name": record["signature_object_name"], "action": record["action"], "rule_count": len(record.get("selected_rules") or []), "changes_applied": True, "adapter_result": result}
 
 
 @app.post("/api/adc/writes/appfw-profile-signature")

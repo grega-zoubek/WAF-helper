@@ -8,6 +8,7 @@ services:
       DATABASE_URL: postgresql://waf:${WAF_DB_PASSWORD:?Set WAF_DB_PASSWORD in the deployment environment}@postgres:5432/waf
       CREDENTIAL_KEY_FILE: /run/secrets/credential_encryption_key
       NETSCALER_WRITE_ENABLED: "false"
+      SIGNATURE_UPSTREAM_INDEX_FILE: /run/upstream-signatures/latest.json
     ports:
       - "8110:8090"
     depends_on:
@@ -19,15 +20,18 @@ services:
         condition: service_started
     secrets:
       - credential_encryption_key
+    volumes:
+      - ./signature-cache/upstream/index:/run/upstream-signatures:ro
 
   discovery-worker:
     build: ./services/discovery-worker
     environment:
       CONTROL_API_URL: http://control-api:8090
       DATABASE_URL: postgresql://waf:${WAF_DB_PASSWORD:?Set WAF_DB_PASSWORD in the deployment environment}@postgres:5432/waf
-      SIGNATURE_TECHNOLOGY_INDEX_FILE: /run/signature-index/WAF_Default.json
+      SIGNATURE_TECHNOLOGY_INDEX_FILE: /run/upstream-signatures/latest.json
     volumes:
       - ./signature-cache/index:/run/signature-index:ro
+      - ./signature-cache/upstream/index:/run/upstream-signatures:ro
     expose:
       - "8091"
     depends_on:

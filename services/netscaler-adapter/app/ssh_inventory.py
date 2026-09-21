@@ -49,6 +49,51 @@ def _read_until_prompt(channel: paramiko.Channel, timeout: float) -> str:
     raise TimeoutError("Timed out waiting for the NetScaler CLI prompt")
 
 
+def execute_cli_commands(commands: list[str]) -> dict[str, object]:
+    """Execute server-generated, allow-listed CLI commands over SSH.
+
+    The caller must construct commands from validated object names, rule IDs,
+    and action values. Raw CLI input is never accepted from the HTTP request.
+    """
+    if os.getenv("NETSCALER_SSH_ENABLED", "false").strip().lower() != "true":
+        raise RuntimeError("SSH CLI integration is disabled")
+    if os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() != "true":
+        raise PermissionError("NetScaler write mode is disabled")
+    host = os.getenv("NETSCALER_SSH_HOST", os.getenv("NETSCALER_HOST", ""))
+    username = os.getenv("NETSCALER_SSH_USERNAME", os.getenv("NETSCALER_USERNAME", ""))
+    password = _read_secret()
+    if not host or not username or not password:
+        raise RuntimeError("SSH CLI host, username, or password file is not configured")
+    if not commands or len(commands) > 100:
+        raise ValueError("one to one hundred generated CLI commands are required")
+    port = int(os.getenv("NETSCALER_SSH_PORT", "22"))
+    timeout = float(os.getenv("NETSCALER_SSH_TIMEOUT_SECONDS", "30"))
+    client = paramiko.SSHClient()
+    known_hosts = os.getenv("NETSCALER_SSH_KNOWN_HOSTS_FILE", "")
+    if known_hosts and Path(known_hosts).is_file():
+        client.load_host_keys(known_hosts)
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    elif os.getenv("NETSCALER_SSH_STRICT_HOST_KEY", "true").strip().lower() == "true":
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    else:
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    outputs: list[dict[str, object]] = []
+    try:
+        client.connect(host, port=port, username=username, password=password, look_for_keys=False, allow_agent=False, timeout=timeout, banner_timeout=timeout, auth_timeout=timeout)
+        channel = client.invoke_shell(width=240, height=2000)
+        _read_until_prompt(channel, timeout)
+        for command in commands:
+            channel.send(command + "\n")
+            output = _read_until_prompt(channel, timeout)
+            if re.search(r"(?im)^\s*(?:ERROR|Invalid|Failed)\b", output):
+                raise RuntimeError(f"NetScaler rejected generated command {len(outputs) + 1}")
+            outputs.append({"index": len(outputs) + 1, "completed": True})
+        channel.send("exit\n")
+        return {"status": "applied", "host": host, "command_count": len(outputs), "commands": outputs}
+    finally:
+        client.close()
+
+
 def collect_waf_inventory() -> dict[str, Any]:
     if os.getenv("NETSCALER_SSH_ENABLED", "false").strip().lower() != "true":
         return {"provider": "netscaler-cli-over-ssh", "status": "not-configured", "automatic_apply_allowed": False, "reason": "SSH CLI inventory is disabled by configuration."}
