@@ -500,7 +500,7 @@ def profile_sync(job_id: str) -> dict[str, Any]:
     search_surfaces = []
     field_formats = []
     auth_surfaces = []
-    api_endpoints = []
+    api_endpoint_map = {}
     runtime_security = []
     for row in evidence:
         if row["evidence_type"] in {"interaction", "runtime_inspection"} and row["metadata"].get("search_surface_count", 0):
@@ -517,9 +517,10 @@ def profile_sync(job_id: str) -> dict[str, Any]:
                     "network_requests": metadata.get("api_requests", [])[:100],
                 })
             for endpoint in metadata.get("api_requests", []):
-                item = {"source_url": row["source_url"], **endpoint}
-                if item not in api_endpoints:
-                    api_endpoints.append(item)
+                key = (endpoint.get("method"), endpoint.get("url"), endpoint.get("resource_type"), endpoint.get("status_code"))
+                item = api_endpoint_map.setdefault(key, {**endpoint, "source_urls": []})
+                if row["source_url"] not in item["source_urls"]:
+                    item["source_urls"].append(row["source_url"])
             if metadata.get("security_headers"):
                 runtime_security.append({"source_url": row["source_url"], "headers": metadata.get("security_headers", {})})
             for control in row["metadata"].get("controls", []):
@@ -596,7 +597,7 @@ def profile_sync(job_id: str) -> dict[str, Any]:
         "search_surfaces": search_surfaces,
         "field_formats": field_formats,
         "auth_surfaces": auth_surfaces,
-        "api_endpoints": api_endpoints,
+        "api_endpoints": list(api_endpoint_map.values()),
         "runtime_security": runtime_security,
         "evidence": evidence,
     }

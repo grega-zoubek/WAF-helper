@@ -40,14 +40,19 @@ def classify_auth_surface(source_url: str, final_url: str, controls: list[dict[s
         f"{item.get('type', '')} {item.get('name', '')} {item.get('id', '')} {item.get('aria_label', '')} {item.get('placeholder', '')} {item.get('autocomplete', '')}"
         for item in controls
     ).casefold()
-    text = " ".join(headings + markers + buttons).casefold()
+    text = " ".join(headings).casefold()
     password_count = sum(1 for item in controls if str(item.get("type", "")).casefold() == "password")
     identifier_count = sum(
         1 for item in controls
-        if any(token in " ".join(str(item.get(key, "")) for key in ("type", "name", "id", "aria_label", "placeholder", "autocomplete")).casefold() for token in ("username", "user-name", "email", "e-mail", "login"))
+        if str(item.get("tag", "")).casefold() in {"input", "textarea", "select"}
+        and any(token in " ".join(str(item.get(key, "")) for key in ("type", "name", "id", "aria_label", "placeholder", "autocomplete")).casefold() for token in ("username", "user-name", "email", "e-mail", "login"))
     )
-    auth_markers = sorted({token for token in ("login", "sign in", "signin", "password", "username", "register", "forgot password", "two-factor", "authentication") if token in f"{route_text} {control_text} {text}"})
-    is_auth_route = bool(re.search(r"(?:#|/)(?:login|signin|sign-in|register|forgot-password|change-password|auth|account)", route_text))
+    auth_tokens = ("login", "sign in", "signin", "password", "username", "register", "forgot password", "two-factor", "authentication")
+    auth_text = f"{route_text} {control_text} {text}"
+    auth_markers = sorted({token for token in auth_tokens if re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", auth_text)})
+    route_paths = [urlparse(source_url).fragment, urlparse(source_url).path, urlparse(final_url).fragment, urlparse(final_url).path]
+    route_segments = {segment for path in route_paths for segment in re.split(r"[/#?&=]", path.casefold()) if segment}
+    is_auth_route = bool(route_segments.intersection({"login", "signin", "sign-in", "register", "forgot-password", "change-password", "auth", "2fa", "two-factor-authentication"}))
     detected = bool(auth_markers or password_count or is_auth_route)
     classification = "login" if detected and (is_auth_route or password_count or "login" in auth_markers or "sign in" in auth_markers or "signin" in auth_markers) else "authentication-related"
     return {
