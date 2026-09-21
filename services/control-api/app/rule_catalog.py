@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 
-RULE_CATALOG_SCHEMA_VERSION = "1.0.0"
+RULE_CATALOG_SCHEMA_VERSION = "1.1.0"
 
 
 INTENT_ATTACK_CLASSES: dict[str, set[str]] = {
