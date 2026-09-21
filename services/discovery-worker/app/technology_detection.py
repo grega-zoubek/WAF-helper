@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 
-DETECTOR_VERSION = "1.0.0"
+DETECTOR_VERSION = "1.1.0"
 
 
 def _slug(value: str) -> str:

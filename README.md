@@ -45,6 +45,12 @@ cookie-based login. The supplied contract does not expose AppFW profiles or
 signature catalogs, so those resources remain explicitly unavailable and the
 adapter never falls back to an older API. WAF changes are not applied automatically.
 
+Technology profiles also expose `signature_technology_context` from the reviewed
+normalized signature index. It correlates already-detected web-application and
+server/runtime technologies with matching NetScaler signature tags, categories,
+rule counts, and example IDs. This is catalog applicability context only; a WAF
+signature category cannot independently confirm that a target runs that technology.
+
 ## Deployment
 
 1. Create `secrets/netscaler_password` with the ADC password and restrict it to
