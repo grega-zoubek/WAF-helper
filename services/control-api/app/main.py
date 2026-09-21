@@ -244,8 +244,10 @@ def match_protection_plan_to_adc(protection_plan: dict[str, Any], profiles_paylo
     profile_view = []
     for item in profiles:
         name = str(item.get("name", ""))
-        types = item.get("type", [])
+        types = item.get("type") or []
         if isinstance(types, str):
+            types = [types]
+        elif not isinstance(types, list):
             types = [types]
         signature_binding = str(item.get("signatures", "")).strip()
         profile_view.append({
