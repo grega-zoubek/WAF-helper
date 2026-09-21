@@ -35,6 +35,24 @@ class GenericProtectionTests(unittest.TestCase):
         self.assertIn("injection-and-input-signatures", ids)
         self.assertIn("session-and-authentication-protection", ids)
 
+    def test_static_runtime_surfaces_raise_generic_applicability_scores(self):
+        intents = build_generic_protection_intents({
+            "technologies": [{"technology": "Angular", "technology_key": "angular", "category": "framework"}],
+            "route_inventory": [{"source_url": "/"}],
+            "field_formats": [],
+            "auth_endpoint_candidates": [
+                {"metadata": {"endpoint_class": "authentication"}},
+                {"metadata": {"endpoint_class": "api"}},
+            ],
+            "auth_surfaces": [{"source_url": "/login"}],
+            "api_endpoints": [{"url": "/api/items"}],
+            "evidence": [],
+        })
+        by_id = {item["intent_id"]: item for item in intents}
+        self.assertEqual(by_id["session-and-authentication-protection"]["applicability_confidence"], "high")
+        self.assertGreaterEqual(by_id["injection-and-input-signatures"]["applicability_score"], 0.9)
+        self.assertIn("static_auth_candidates=1", by_id["session-and-authentication-protection"]["scoring_evidence"])
+
     def test_automation_is_fail_closed_and_ai_advisory_only(self):
         policy = automation_policy()
         self.assertEqual(policy["mode"], "proposal-only")
