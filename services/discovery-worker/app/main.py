@@ -228,6 +228,36 @@ def static_route_candidates(asset_url: str, content: bytes, seed: str, prefixes:
     return sorted(candidates)
 
 
+def static_auth_endpoint_candidates(asset_url: str, content: bytes, seed: str, prefixes: list[str]) -> list[dict[str, str]]:
+    """Find likely auth/API URL literals without executing or requesting them.
+
+    This is intentionally conservative: only URL-like string literals containing
+    an authentication/API marker are retained, and normalization enforces the
+    existing same-host/scope boundary. Query values are redacted before storage.
+    """
+    text = content.decode("utf-8", errors="ignore")[:2_000_000]
+    literal_pattern = r"[`'\"]((?:https?://|/|\./|\.\./)[^`'\"]{1,240})[`'\"]"
+    markers = {
+        "api": ("/api", "/rest", "/graphql", "/v1", "/v2"),
+        "authentication": ("/auth", "/login", "/signin", "/sign-in", "/oauth", "/token", "/logout", "/register", "/2fa", "/forgot-password", "/change-password"),
+    }
+    candidates: dict[str, dict[str, str]] = {}
+    for match in re.finditer(literal_pattern, text, flags=re.IGNORECASE):
+        value = match.group(1).strip()
+        if any(token in value for token in ("{", "}", "${", "\\n", "\\r")):
+            continue
+        lowered = value.casefold()
+        endpoint_class = next((name for name, tokens in markers.items() if any(token in lowered for token in tokens)), None)
+        if not endpoint_class:
+            continue
+        normalized = normalize_url(value, asset_url, seed, prefixes)
+        if not normalized:
+            continue
+        redacted = redact_url(normalized)
+        candidates[redacted] = {"url": redacted, "endpoint_class": endpoint_class}
+    return sorted(candidates.values(), key=lambda item: (item["endpoint_class"], item["url"]))
+
+
 def static_page_candidates(source_url: str, content: bytes | str, seed: str, prefixes: list[str]) -> list[str]:
     text = content if isinstance(content, str) else content.decode("utf-8", errors="ignore")
     text = text[:2_000_000]
@@ -496,6 +526,7 @@ def profile_sync(job_id: str) -> dict[str, Any]:
     evidence = evidence_sync(job_id)
     technology_rows = [row for row in evidence if row["evidence_type"] == "technology" and row["technology"]]
     route_candidates = [row for row in evidence if row["evidence_type"] == "route_candidate"]
+    auth_endpoint_candidates = [row for row in evidence if row["evidence_type"] == "auth_endpoint_candidate"]
     route_inventory = [row for row in evidence if row["evidence_type"] in {"route", "route_discovered", "redirect"}]
     search_surfaces = []
     field_formats = []
@@ -593,6 +624,7 @@ def profile_sync(job_id: str) -> dict[str, Any]:
         "confidence_counts": confidence_counts,
         "technologies": technologies,
         "route_candidates": route_candidates,
+        "auth_endpoint_candidates": auth_endpoint_candidates,
         "route_inventory": route_inventory,
         "search_surfaces": search_surfaces,
         "field_formats": field_formats,
@@ -616,6 +648,7 @@ async def run_discovery(job: DiscoveryJob) -> None:
     observations: list[dict[str, Any]] = []
     assets_seen: set[str] = set()
     route_candidates_seen: set[str] = set()
+    auth_endpoint_candidates_seen: set[tuple[str, str]] = set()
     page_routes_seen: set[str] = {seed}
     fetched_assets = 0
     pages = 0
@@ -680,6 +713,11 @@ async def run_discovery(job: DiscoveryJob) -> None:
                                         if candidate_route not in route_candidates_seen:
                                             route_candidates_seen.add(candidate_route)
                                             rows.append(evidence_row(job.id, "route_candidate", candidate_route, "GET", None, "API or application route candidate found in JavaScript bundle", {"source_asset": redact_url(candidate), "candidate_only": True, "not_fetched": True}, score=0.65))
+                                    for endpoint in static_auth_endpoint_candidates(candidate, asset_content, seed, scope.allowed_paths):
+                                        endpoint_key = (endpoint["endpoint_class"], endpoint["url"])
+                                        if endpoint_key not in auth_endpoint_candidates_seen:
+                                            auth_endpoint_candidates_seen.add(endpoint_key)
+                                            rows.append(evidence_row(job.id, "auth_endpoint_candidate", endpoint["url"], "GET", None, "Authentication/API endpoint candidate found in JavaScript bundle", {"source_asset": redact_url(candidate), "endpoint_class": endpoint["endpoint_class"], "candidate_only": True, "not_fetched": True, "values_submitted": False}, score=0.70))
                                     for page_route in static_page_candidates(candidate, asset_content, seed, scope.allowed_paths):
                                         if page_route not in page_routes_seen:
                                             page_routes_seen.add(page_route)
