@@ -171,7 +171,7 @@ class CustomSignatureSetPrepareRequest(BaseModel):
     selected_technology_filters: list[str] | None = Field(default=None, max_length=500)
     selected_release_years: list[int] | None = Field(default=None, max_length=100)
     selected_signature_groups: list[str] | None = Field(default=None, max_length=20)
-    cve_view_mode: str = Field(default="number", max_length=16)
+    cve_view_mode: str = Field(default="vendor", max_length=16)
     cve_search_mode: str = Field(default="description", max_length=32)
     cve_search_query: str = Field(default="", max_length=512)
     include_generic_signatures: bool = True
@@ -1922,7 +1922,7 @@ async def signature_technologies(
         children = [item for item in group["children"] if not query or query in f"{group['label']} {item.get('label', '')} {item.get('key', '')}".casefold()]
         if children:
             filtered_groups.append({**group, "children": children, "child_count": len(children)})
-    filtered_groups.sort(key=lambda item: str(item["label"]).casefold())
+    filtered_groups.sort(key=lambda item: (str(item.get("key") or "") == "vendor:other-technologies", str(item["label"]).casefold()))
     return {
         "status": "enumerated",
         "source": "local-signature-repository",
@@ -2333,7 +2333,7 @@ async def build_custom_signature_set_plan(
     selected_technology_filters: list[str] | None = None,
     selected_release_years: list[int] | None = None,
     selected_signature_groups: list[str] | None = None,
-    cve_view_mode: str = "number",
+    cve_view_mode: str = "vendor",
     cve_search_mode: str = "description",
     cve_search_query: str = "",
 ) -> dict[str, Any]:

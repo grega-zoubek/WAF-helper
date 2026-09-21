@@ -377,7 +377,7 @@ def build_cve_signature_group(
     rules_by_id: dict[str, dict[str, Any]],
     selected_rule_ids: set[str],
     product_index: dict[str, Any] | None = None,
-    view_mode: str = "number",
+    view_mode: str = "vendor",
     search_mode: str = "description",
     search_query: str = "",
 ) -> dict[str, Any] | None:

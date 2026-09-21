@@ -76,7 +76,7 @@ def select_rules_for_detection(
     selected_technology_filters: list[str] | None = None,
     selected_release_years: list[int] | None = None,
     selected_signature_groups: list[str] | None = None,
-    cve_view_mode: str = "number",
+    cve_view_mode: str = "vendor",
     cve_search_mode: str = "description",
     cve_search_query: str = "",
 ) -> dict[str, Any]:
