@@ -25,6 +25,9 @@ services:
     environment:
       CONTROL_API_URL: http://control-api:8090
       DATABASE_URL: postgresql://waf:${WAF_DB_PASSWORD:?Set WAF_DB_PASSWORD in the deployment environment}@postgres:5432/waf
+      SIGNATURE_TECHNOLOGY_INDEX_FILE: /run/signature-index/WAF_Default.json
+    volumes:
+      - ./signature-cache/index:/run/signature-index:ro
     expose:
       - "8091"
     depends_on:

@@ -302,6 +302,7 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
     technology_names = names(request.profile)
     observations = request.observations
     route_candidates = request.profile.get("route_candidates", [])
+    signature_technology_context = request.profile.get("signature_technology_context", {})
     architecture: list[str] = []
     protections: list[dict[str, str]] = []
     gaps: list[str] = []
@@ -397,6 +398,15 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
         "generic_protection_intents": build_generic_protection_intents(request.profile),
         "automation_policy": automation_policy(),
         "technology_profile": request.profile.get("technologies", []),
+        "signature_technology_context": signature_technology_context,
+        "signature_web_application_context": [
+            item for item in signature_technology_context.get("technology_matches", [])
+            if item.get("surface") == "web-application"
+        ] if isinstance(signature_technology_context, dict) else [],
+        "signature_server_context": [
+            item for item in signature_technology_context.get("technology_matches", [])
+            if item.get("surface") == "server"
+        ] if isinstance(signature_technology_context, dict) else [],
         "detected_application_platforms": [
             item for item in request.profile.get("technologies", [])
             if item.get("category") in {"application-platform", "cms"}

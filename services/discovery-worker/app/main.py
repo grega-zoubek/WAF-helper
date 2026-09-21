@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
 from app.technology_detection import DETECTOR_VERSION, detect_technology_signals
+from app.signature_technology import build_signature_technology_context
 
 app = FastAPI(title="WAF Discovery Worker", version="0.4.0")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -615,6 +616,7 @@ def profile_sync(job_id: str) -> dict[str, Any]:
         item["version"] = versions[0] if len(versions) == 1 else None
         item["signal_families"] = families
     technologies = sorted(grouped.values(), key=lambda item: (category_rank.get(item.get("category", ""), 8), -item["confidence_score"], item["technology"]))
+    signature_technology_context = build_signature_technology_context(technologies)
     confidence_counts = {label: sum(1 for item in technologies if item["confidence"] == label) for label in ("high", "medium", "low")}
     return {
         "run_id": job_id,
@@ -623,6 +625,7 @@ def profile_sync(job_id: str) -> dict[str, Any]:
         "evidence_count": len(evidence),
         "confidence_counts": confidence_counts,
         "technologies": technologies,
+        "signature_technology_context": signature_technology_context,
         "route_candidates": route_candidates,
         "auth_endpoint_candidates": auth_endpoint_candidates,
         "route_inventory": route_inventory,
