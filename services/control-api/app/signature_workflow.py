@@ -186,10 +186,17 @@ def select_rules_for_detection(
         excluded_unmatched_technology_rules = []
     else:
         missing = []
-    # CVEs are a cross-list of the current signature proposal, not a separate
-    # catalog browser.  This prevents vulnerabilities belonging to an
-    # undetected or unselected technology from appearing in the proposal.
-    cve_candidate_rule_ids = set(selected_ids)
+    # CVEs are a cross-list of technology-linked rules in the current
+    # proposal, not a separate catalog browser.  Generic untagged attack
+    # signatures can remain recommended, but their CVE references must not be
+    # presented as application-specific recommendations without technology
+    # evidence.
+    technology_rule_match_ids = {
+        str(item.get("rule_id"))
+        for item in technology_matches
+        if item.get("rule_id") is not None
+    }
+    cve_candidate_rule_ids = selected_ids.intersection(technology_rule_match_ids)
     technology_scores = technology_detection_scores(profile)
     selected_rules = []
     for rule_id in sorted(selected_ids, key=lambda value: int(value) if value.isdigit() else value):
@@ -241,7 +248,7 @@ def select_rules_for_detection(
         "cve_signature_group": cve_signature_group,
         "cve_rule_count": int(cve_signature_group.get("candidate_rule_count") or 0) if cve_signature_group else 0,
         "cve_count": int(cve_signature_group.get("cve_count") or 0) if cve_signature_group else 0,
-        "cve_candidate_scope": "current-signature-proposal",
+        "cve_candidate_scope": "detected-or-selected-technology-rules",
         "confidence_summary": confidence_summary(selected_rules),
         "generic_signature_group_ids": generic_groups.get("requested_group_ids", []),
         "generic_signature_group_rule_count": generic_group_rule_count,

@@ -506,7 +506,7 @@ def build_cve_signature_group(
         "priority": "P1",
         "decision": "include",
         "applicability_confidence": "high",
-        "rationale": "CVE references are cross-listed only from the current signature proposal, without creating duplicate rule IDs. Use number view for a direct CVE list or vendor view for vendor/product navigation.",
+        "rationale": "CVE references are cross-listed only from detected or explicitly selected technology rules in the current proposal, without creating duplicate rule IDs. Use number view for a direct CVE list or vendor view for vendor/product navigation.",
         "provider_mapping": "normalized catalog CVE references",
         "candidate_rule_count": len(unique_rule_ids),
         "selected_rule_count": len(unique_rule_ids & selected_rule_ids),
