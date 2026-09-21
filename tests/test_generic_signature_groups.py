@@ -6,7 +6,7 @@ import sys
 CONTROL_API = Path(__file__).resolve().parents[1] / "services" / "control-api"
 sys.path.insert(0, str(CONTROL_API))
 
-from app.generic_signature_groups import GROUP_IDS, build_generic_group_subgroups, match_rule_to_group, select_generic_signature_groups  # noqa: E402
+from app.generic_signature_groups import GROUP_IDS, build_cve_signature_group, build_generic_group_subgroups, match_rule_to_group, select_generic_signature_groups  # noqa: E402
 
 
 def rule(rule_id: str, *, classes=None, description="", tags=None, category="web-misc"):
@@ -115,10 +115,24 @@ def test_web_misc_prefers_software_then_protection_family():
     assert any(subgroup["name"] == "Path and directory access protection" for subgroup in path_file["subgroups"])
 
 
+def test_cve_group_cross_lists_rules_without_duplicate_selection_state():
+    rules = {
+        "50": rule("50", classes=["command-injection"], description="WEB-MISC Cisco ISE - RCE (CVE-2025-20281)"),
+        "51": rule("51", classes=["path-traversal"], description="WEB-MISC Ivanti path issue (CVE-2024-9381)"),
+    }
+    group = build_cve_signature_group(set(rules), rules, {"50"})
+    assert group is not None
+    assert group["candidate_rule_count"] == 2
+    assert group["selected_rule_count"] == 1
+    cve_51 = next(item for item in group["subgroups"] if item["name"] == "CVE-2024-9381")
+    assert cve_51["rules"][0]["selected"] is False
+
+
 if __name__ == "__main__":
     test_first_five_are_stable_and_signature_only()
     test_file_upload_rules_require_upload_evidence_but_traversal_does_not()
     test_group_matcher_does_not_select_tagged_product_rules()
     test_subgroups_keep_rule_details_and_selection_state()
     test_web_misc_prefers_software_then_protection_family()
-    print("5 generic signature-group tests passed")
+    test_cve_group_cross_lists_rules_without_duplicate_selection_state()
+    print("6 generic signature-group tests passed")

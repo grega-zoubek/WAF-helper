@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.rule_catalog import catalog_fingerprint, normalize_rule_catalog, resolve_rule_catalog
-from app.generic_signature_groups import build_generic_group_subgroups, select_generic_signature_groups
+from app.generic_signature_groups import build_cve_signature_group, build_generic_group_subgroups, select_generic_signature_groups
 
 
 DEFAULT_UPSTREAM_INDEX_FILE = "/run/upstream-signatures/latest.json"
@@ -161,6 +161,7 @@ def select_rules_for_detection(
     if release_years is not None:
         selected_ids = {rule_id for rule_id in selected_ids if _rule_year(by_id[rule_id]) in release_years}
         technology_matches = [item for item in technology_matches if str(item.get("rule_id")) in selected_ids]
+    candidate_rule_ids = set(selected_ids)
     tag_rule_sets: dict[str, set[str]] = {}
     for tag in technology_tags:
         tag_rule_sets[tag] = {str(rule["rule_id"]) for rule in rules if tag in set(rule.get("technology_tags", []))}
@@ -197,6 +198,7 @@ def select_rules_for_detection(
         selected_ids,
         catalog.get("product_index") if isinstance(catalog, dict) else None,
     )
+    cve_signature_group = build_cve_signature_group(candidate_rule_ids, by_id, selected_ids)
     generic_group_rule_count = sum(int(group.get("selected_rule_count") or 0) for group in generic_groups.get("groups", []))
     filtered_generic = {
         **generic,
@@ -210,6 +212,9 @@ def select_rules_for_detection(
         "catalog_rule_count": len(rules),
         "generic_resolution": filtered_generic,
         "generic_signature_groups": generic_groups.get("groups", []),
+        "cve_signature_group": cve_signature_group,
+        "cve_rule_count": int(cve_signature_group.get("candidate_rule_count") or 0) if cve_signature_group else 0,
+        "cve_count": int(cve_signature_group.get("cve_count") or 0) if cve_signature_group else 0,
         "generic_signature_group_ids": generic_groups.get("requested_group_ids", []),
         "generic_signature_group_rule_count": generic_group_rule_count,
         "unresolved_generic_signature_groups": generic_groups.get("unresolved_group_ids", []),

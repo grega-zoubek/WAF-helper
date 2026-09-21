@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 
 RULE_CATALOG_SCHEMA_VERSION = "1.1.0"
+_CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,8}\b", re.IGNORECASE)
 
 
 INTENT_ATTACK_CLASSES: dict[str, set[str]] = {
@@ -57,6 +59,7 @@ def normalize_rule_catalog(catalog: Any) -> list[dict[str, Any]]:
             "attack_classes": sorted({str(value).strip().casefold() for value in attack_classes if value}),
             "technology_tags": sorted({str(value).strip().casefold() for value in technology_tags if value}),
             "description": str(item.get("description") or item.get("name") or "")[:500],
+            "cve_ids": sorted({value.upper() for value in _CVE_RE.findall(" ".join(str(item.get(field) or "") for field in ("description", "name", "references", "reference")))}),
             "action": str(item.get("action") or "LOG").upper(),
             "enabled": bool(item.get("enabled", True)),
             "locations": sorted({str(value).strip().casefold() for value in locations if value}),

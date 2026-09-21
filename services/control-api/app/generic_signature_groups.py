@@ -46,6 +46,7 @@ GENERIC_SIGNATURE_GROUPS: tuple[dict[str, Any], ...] = (
 )
 
 GROUP_IDS = tuple(item["group_id"] for item in GENERIC_SIGNATURE_GROUPS)
+_CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,8}\b", re.IGNORECASE)
 
 _INJECTION_CLASSES = {
     "sql-injection",
@@ -94,6 +95,12 @@ def _rule_text(rule: dict[str, Any]) -> str:
         str(rule.get(field) or "")
         for field in ("category", "description", "source")
     ).casefold()
+
+
+def extract_cve_ids(rule: dict[str, Any]) -> list[str]:
+    values = list(rule.get("cve_ids") or [])
+    values.extend(_CVE_RE.findall(str(rule.get("description") or "")))
+    return sorted({str(value).upper() for value in values if _CVE_RE.fullmatch(str(value).strip())})
 
 
 def match_rule_to_group(group_id: str, rule: dict[str, Any], profile: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -363,3 +370,61 @@ def build_generic_group_subgroups(
         group["selected_rule_ids"] = [rule_id for rule_id in candidate_ids if rule_id in selected_rule_ids]
         group["subgroups"] = subgroups
     return groups
+
+
+def build_cve_signature_group(
+    candidate_rule_ids: set[str],
+    rules_by_id: dict[str, dict[str, Any]],
+    selected_rule_ids: set[str],
+) -> dict[str, Any] | None:
+    """Build one cross-cutting CVE tree whose rule checkboxes share global IDs."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for rule_id in sorted(candidate_rule_ids):
+        rule = rules_by_id.get(str(rule_id))
+        if not rule:
+            continue
+        cves = extract_cve_ids(rule)
+        for cve_id in cves:
+            grouped.setdefault(cve_id, []).append({
+                "rule_id": str(rule_id),
+                "description": rule.get("description"),
+                "category": rule.get("category"),
+                "attack_classes": rule.get("attack_classes", []),
+                "technology_tags": rule.get("technology_tags", []),
+                "locations": rule.get("locations", []),
+                "match_types": rule.get("match_types", []),
+                "severity": rule.get("severity"),
+                "pattern_count": rule.get("pattern_count", 0),
+                "cve_ids": cves,
+                "selected": str(rule_id) in selected_rule_ids,
+                "match_reasons": [f"CVE reference: {cve_id}"],
+            })
+    if not grouped:
+        return None
+    subgroups = []
+    for cve_id, cve_rules in sorted(grouped.items()):
+        cve_rules.sort(key=lambda item: (str(item.get("category") or ""), str(item.get("rule_id") or "")))
+        subgroups.append({
+            "subgroup_id": f"cve:{cve_id.casefold()}",
+            "name": cve_id,
+            "rule_count": len(cve_rules),
+            "selected_rule_count": sum(1 for item in cve_rules if item["selected"]),
+            "rules": cve_rules,
+        })
+    unique_rule_ids = {str(item["rule_id"]) for rules in grouped.values() for item in rules}
+    return {
+        "group_id": "cve-references",
+        "name": "CVE references",
+        "priority": "P1",
+        "decision": "include",
+        "applicability_confidence": "high",
+        "rationale": "Rules with CVE references are cross-listed here without creating duplicate rule IDs.",
+        "provider_mapping": "normalized catalog CVE references",
+        "candidate_rule_count": len(unique_rule_ids),
+        "selected_rule_count": len(unique_rule_ids & selected_rule_ids),
+        "selected_rule_ids": sorted(unique_rule_ids & selected_rule_ids),
+        "rule_ids": sorted(unique_rule_ids),
+        "cve_count": len(subgroups),
+        "subgroups": subgroups,
+        "proposal_only": True,
+    }
