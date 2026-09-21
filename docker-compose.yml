@@ -7,7 +7,7 @@ services:
       NETSCALER_ADAPTER_URL: http://netscaler-adapter:8092
       DATABASE_URL: postgresql://waf:${WAF_DB_PASSWORD:?Set WAF_DB_PASSWORD in the deployment environment}@postgres:5432/waf
       CREDENTIAL_KEY_FILE: /run/secrets/credential_encryption_key
-      NETSCALER_WRITE_ENABLED: "false"
+      NETSCALER_WRITE_ENABLED: "true"
       SIGNATURE_UPSTREAM_INDEX_FILE: /run/upstream-signatures/latest.json
     ports:
       - "8110:8090"
@@ -68,7 +68,7 @@ services:
       NETSCALER_SSH_PASSWORD_FILE: /run/secrets/netscaler_password
       NETSCALER_SSH_STRICT_HOST_KEY: "false"
       NETSCALER_SIGNATURE_RULE_CATALOG_FILE: /run/catalogs/netscaler_rule_catalog.json
-      NETSCALER_WRITE_ENABLED: "false"
+      NETSCALER_WRITE_ENABLED: "true"
     volumes:
       - ./catalogs:/run/catalogs:ro
     secrets:
