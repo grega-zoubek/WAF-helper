@@ -93,7 +93,8 @@ def execute_cli_commands(commands: list[str], upload_files: list[tuple[str, byte
             channel.send(command + "\n")
             output = _read_until_prompt(channel, timeout)
             if re.search(r"(?im)^\s*(?:ERROR|Invalid|Failed)\b", output):
-                raise RuntimeError(f"NetScaler rejected generated command {len(outputs) + 1}")
+                detail = " ".join(line.strip() for line in output.splitlines() if line.strip())[-1200:]
+                raise RuntimeError(f"NetScaler rejected generated command {len(outputs) + 1}: {detail}")
             outputs.append({"index": len(outputs) + 1, "completed": True})
         channel.send("exit\n")
         return {"status": "applied", "host": host, "command_count": len(outputs), "commands": outputs}
