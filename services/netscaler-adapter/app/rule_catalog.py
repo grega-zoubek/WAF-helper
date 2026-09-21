@@ -146,6 +146,7 @@ def _normalize_rules(value: Any) -> list[dict[str, Any]]:
         if isinstance(technology_tags, str):
             technology_tags = [technology_tags]
         description = str(item.get("description") or item.get("name") or item.get("logstring") or "")[:500]
+        released_year = item.get("released_year", item.get("year"))
         vendor_products = item.get("vendor_products")
         if not isinstance(vendor_products, list):
             vendor_products = extract_vendor_products(description)
@@ -159,6 +160,7 @@ def _normalize_rules(value: Any) -> list[dict[str, Any]]:
             "action": str(item.get("action") or "LOG").upper(),
             "enabled": bool(item.get("enabled", True)),
             "version": str(item.get("version") or "").strip() or None,
+            "released_year": str(released_year).strip() if released_year is not None and str(released_year).strip() else None,
             "severity": str(item.get("severity") or "").strip().casefold() or None,
             "source": str(item.get("source") or "").strip() or None,
             "source_catalog": str(item.get("source_catalog") or "").strip() or None,
@@ -258,6 +260,7 @@ def _xml_rules(text: str) -> list[dict[str, Any]]:
             "action": actions.split(",")[0].strip() or "LOG",
             "enabled": enabled,
             "version": attrs.get("version"),
+            "released_year": attrs.get("year"),
             "severity": attrs.get("severity"),
             "source": attrs.get("source") or attrs.get("vendor"),
             "reference_count": len(references),

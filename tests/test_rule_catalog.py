@@ -52,7 +52,7 @@ class RuleCatalogTests(unittest.TestCase):
         xml = """<?xml version=\"1.0\"?>
         <SignaturesFile schema_version=\"6\">
           <Signatures>
-            <SignatureRule id=\"1001\" enabled=\"ON\" actions=\"log,block\" category=\"sql\" source=\"Snort\" version=\"2\">
+            <SignatureRule id=\"1001\" enabled=\"ON\" actions=\"log,block\" category=\"sql\" source=\"Snort\" version=\"2\" year=\"2021\">
               <PatternList><RequestPatterns><Pattern>
                 <Location area=\"HTTP_POST_BODY\"/>
                 <Match type=\"SQLInjection\">select</Match>
@@ -79,6 +79,7 @@ class RuleCatalogTests(unittest.TestCase):
         self.assertIn("sql-injection", result["rules"][0]["attack_classes"])
         self.assertEqual(result["rules"][0]["locations"], ["http_post_body"])
         self.assertEqual(result["rules"][0]["reference_count"], 1)
+        self.assertEqual(result["rules"][0]["released_year"], "2021")
         self.assertFalse(result["rules"][1]["enabled"])
 
     def test_product_index_groups_vendor_and_product_from_log_string(self):

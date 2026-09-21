@@ -59,6 +59,7 @@ def normalize_rule_catalog(catalog: Any) -> list[dict[str, Any]]:
             "locations": sorted({str(value).strip().casefold() for value in locations if value}),
             "severity": str(item.get("severity") or "").strip().casefold() or None,
             "version": str(item.get("version") or "").strip() or None,
+            "released_year": str(item.get("released_year", item.get("year")) or "").strip() or None,
             "source": str(item.get("source") or "").strip() or None,
             "match_types": sorted({str(value).strip().casefold() for value in (item.get("match_types") or [])} if isinstance(item.get("match_types"), list) else {value.strip().casefold() for value in str(item.get("match_types") or "").split() if value.strip()}),
             "reference_count": int(item.get("reference_count") or 0),

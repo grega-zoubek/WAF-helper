@@ -32,7 +32,7 @@ class SignatureWorkflowTests(unittest.TestCase):
     def test_requested_ids_are_exact_and_missing_ids_are_reported(self):
         result = select_rules_for_detection(
             {"signature_technology_context": {}, "technologies": []},
-            {"generic_protection_intents": []},
+            {"generic_protection_intents": [{"intent_id": "injection-and-input-signatures", "decision": "include"}]},
             {"status": "ready", "rules": [{"rule_id": "42", "category": "web-misc"}]},
             ["42", "99"],
         )
@@ -87,6 +87,20 @@ class SignatureWorkflowTests(unittest.TestCase):
         )
         self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["30"])
         self.assertEqual(result["selected_product_rule_count"], 1)
+
+    def test_release_year_filter_keeps_only_selected_year(self):
+        result = select_rules_for_detection(
+            {"signature_technology_context": {}, "technologies": []},
+            {"generic_protection_intents": [{"intent_id": "injection-and-input-signatures", "decision": "include"}]},
+            {"status": "ready", "rules": [
+                {"rule_id": "40", "released_year": "2020", "attack_classes": ["sql-injection"]},
+                {"rule_id": "41", "released_year": "2021", "attack_classes": ["sql-injection"]},
+                {"rule_id": "42", "released_year": "2022", "attack_classes": ["sql-injection"]},
+            ]},
+            selected_release_years=[2021],
+        )
+        self.assertEqual([item["rule_id"] for item in result["selected_rules"]], [])
+        self.assertEqual(result["release_years"], [2021])
 
     def test_commands_are_chunked_and_save_config_is_last(self):
         commands = cli_import_commands("waf-test", [str(value) for value in range(101)], "BLOCK", chunk_size=50)

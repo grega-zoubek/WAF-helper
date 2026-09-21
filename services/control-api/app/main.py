@@ -169,6 +169,7 @@ class CustomSignatureSetPrepareRequest(BaseModel):
     selected_rule_ids: list[str] | None = Field(default=None, max_length=5000)
     selected_technology_tags: list[str] | None = Field(default=None, max_length=500)
     selected_technology_filters: list[str] | None = Field(default=None, max_length=500)
+    selected_release_years: list[int] | None = Field(default=None, max_length=100)
     include_generic_signatures: bool = True
     action: str = Field(default="LOG", max_length=16)
 
@@ -1816,6 +1817,19 @@ async def signature_technologies(
             "options": [],
             "option_count": 0,
         }
+    years_by_value: dict[int, dict[str, Any]] = {}
+    for rule in rules:
+        try:
+            year = int(str(rule.get("released_year") or "").strip())
+        except (TypeError, ValueError):
+            continue
+        if not 1900 <= year <= 2100:
+            continue
+        item = years_by_value.setdefault(year, {"key": f"year:{year}", "year": year, "rule_count": 0, "example_rule_ids": []})
+        item["rule_count"] += 1
+        if len(item["example_rule_ids"]) < 8:
+            item["example_rule_ids"].append(str(rule.get("rule_id")))
+    years = [years_by_value[year] for year in sorted(years_by_value)]
     by_tag: dict[str, dict[str, Any]] = {}
     for rule in rules:
         rule_id = str(rule.get("rule_id"))
@@ -1894,6 +1908,8 @@ async def signature_technologies(
         "options": options,
         "groups": filtered_groups,
         "total_group_count": len(groups),
+        "years": years,
+        "year_count": len(years),
         "query": q,
     }
 
@@ -2288,6 +2304,7 @@ async def build_custom_signature_set_plan(
     selected_technology_tags: list[str] | None = None,
     include_generic_signatures: bool = True,
     selected_technology_filters: list[str] | None = None,
+    selected_release_years: list[int] | None = None,
 ) -> dict[str, Any]:
     action = str(action or "LOG").upper()
     if action not in ACTION_VALUES:
@@ -2303,7 +2320,7 @@ async def build_custom_signature_set_plan(
     if not OBJECT_NAME_RE.fullmatch(name):
         raise HTTPException(status_code=422, detail="signature_object_name contains unsupported NetScaler characters or exceeds 31 characters")
     catalog = await asyncio.to_thread(load_upstream_catalog)
-    selection = select_rules_for_detection(profile, analysis, catalog, selected_rule_ids, selected_technology_tags, include_generic_signatures, selected_technology_filters)
+    selection = select_rules_for_detection(profile, analysis, catalog, selected_rule_ids, selected_technology_tags, include_generic_signatures, selected_technology_filters, selected_release_years)
     status = "draft"
     if selection.get("catalog_status") != "ready":
         status = "blocked-upstream-catalog"
@@ -2351,7 +2368,7 @@ async def build_custom_signature_set_plan(
 
 @app.post("/api/custom-signature-sets/prepare", status_code=201)
 async def prepare_custom_signature_set(request: CustomSignatureSetPrepareRequest) -> dict[str, Any]:
-    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags, request.include_generic_signatures, request.selected_technology_filters)
+    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags, request.include_generic_signatures, request.selected_technology_filters, request.selected_release_years)
     try:
         set_id = await asyncio.to_thread(save_custom_signature_set_sync, plan)
     except psycopg.Error as exc:
@@ -2362,7 +2379,7 @@ async def prepare_custom_signature_set(request: CustomSignatureSetPrepareRequest
 @app.post("/api/custom-signature-sets/recommendations")
 async def recommend_custom_signature_set(request: CustomSignatureSetPrepareRequest) -> dict[str, Any]:
     """Return exact rule-level recommendations without persisting a draft or writing to the ADC."""
-    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags, request.include_generic_signatures, request.selected_technology_filters)
+    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags, request.include_generic_signatures, request.selected_technology_filters, request.selected_release_years)
     return {**plan, "recommendation_only": True, "selected_rule_ids": [str(item.get("rule_id")) for item in plan["selected_rules"]]}
 
 

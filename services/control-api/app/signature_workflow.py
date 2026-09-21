@@ -56,6 +56,15 @@ def _product_rule_ids(catalog: dict[str, Any]) -> dict[str, set[str]]:
     return result
 
 
+def _rule_year(rule: dict[str, Any]) -> int | None:
+    value = rule.get("released_year", rule.get("year"))
+    try:
+        year = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return year if 1900 <= year <= 2100 else None
+
+
 def select_rules_for_detection(
     profile: dict[str, Any],
     analysis: dict[str, Any],
@@ -64,6 +73,7 @@ def select_rules_for_detection(
     selected_technology_tags: list[str] | None = None,
     include_generic_signatures: bool = True,
     selected_technology_filters: list[str] | None = None,
+    selected_release_years: list[int] | None = None,
 ) -> dict[str, Any]:
     rules = normalize_rule_catalog(catalog)
     by_id = {str(item["rule_id"]): item for item in rules}
@@ -118,6 +128,10 @@ def select_rules_for_detection(
             selected_ids.add(rule_id)
             if not any(item.get("rule_id") == rule_id for item in technology_matches):
                 technology_matches.append({"rule_id": rule_id, "source": "selected-product"})
+    release_years = {int(value) for value in (selected_release_years or []) if str(value).isdigit() and 1900 <= int(value) <= 2100} if selected_release_years is not None else None
+    if release_years is not None:
+        selected_ids = {rule_id for rule_id in selected_ids if _rule_year(by_id[rule_id]) in release_years}
+        technology_matches = [item for item in technology_matches if str(item.get("rule_id")) in selected_ids]
     tag_rule_sets: dict[str, set[str]] = {}
     for tag in technology_tags:
         tag_rule_sets[tag] = {str(rule["rule_id"]) for rule in rules if tag in set(rule.get("technology_tags", []))}
@@ -159,6 +173,8 @@ def select_rules_for_detection(
         "technology_filters": canonical_filters,
         "technology_selection_mode": "explicit" if explicit_filters is not None else "detected",
         "selected_product_rule_count": len(product_rule_ids),
+        "release_years": sorted(release_years) if release_years is not None else [],
+        "release_year_selection_mode": "explicit" if release_years is not None else "none",
         "include_generic_signatures": bool(include_generic_signatures),
         "technology_rule_matches": technology_matches,
         "excluded_unmatched_technology_rules": excluded_unmatched_technology_rules,
