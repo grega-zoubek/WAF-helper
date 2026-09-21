@@ -202,6 +202,9 @@ def _infer_technology_tags(category: str, description: str) -> list[str]:
         "apache", "asp", "asp.net", "coldfusion", "drupal", "exchange", "express", "iis",
         "java", "joomla", "laravel", "microsoft", "nginx", "node", "php", "postgres",
         "tomcat", "wordpress", "owa", "mysql", "oracle", "mongodb", "struts",
+        "perl", "jet", "vba", "visual basic", "lotus", "domino", "websphere",
+        "vcenter", "esx", "esxi", "vmware", "sharepoint", "sap", "ibm", "citrix",
+        "python", "ruby", "rails", "graphql", "soap", "xml",
     )
     return [technology for technology in technologies if technology in haystack]
 

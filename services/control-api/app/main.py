@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
 
-from app.rule_catalog import resolve_rule_catalog
+from app.rule_catalog import normalize_rule_catalog, resolve_rule_catalog
 from app.nextgen_correlation import correlate_scope_to_nextgen
 from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
@@ -167,6 +167,7 @@ class CustomSignatureSetPrepareRequest(BaseModel):
     job_id: str = Field(min_length=1, max_length=128)
     signature_object_name: str | None = Field(default=None, max_length=31)
     selected_rule_ids: list[str] | None = Field(default=None, max_length=5000)
+    selected_technology_tags: list[str] | None = Field(default=None, max_length=500)
     action: str = Field(default="LOG", max_length=16)
 
 
@@ -1798,6 +1799,55 @@ async def signature_products(
     }
 
 
+@app.get("/api/signatures/technologies")
+async def signature_technologies(
+    q: str = Query(default="", max_length=120),
+    limit: int = Query(default=500, ge=1, le=2000),
+) -> dict[str, Any]:
+    """Return searchable technology tags from the normalized local rule catalog."""
+    catalog = await asyncio.to_thread(load_upstream_catalog)
+    rules = normalize_rule_catalog(catalog)
+    if catalog.get("status") != "ready":
+        return {
+            "status": f"catalog-{catalog.get('status', 'unavailable')}",
+            "source": "local-signature-repository",
+            "options": [],
+            "option_count": 0,
+        }
+    by_tag: dict[str, dict[str, Any]] = {}
+    for rule in rules:
+        rule_id = str(rule.get("rule_id"))
+        for tag in rule.get("technology_tags", []):
+            key = str(tag).strip().casefold()
+            if not key:
+                continue
+            item = by_tag.setdefault(key, {"key": key, "label": key.upper() if len(key) <= 4 else key.title(), "rule_count": 0, "rule_ids": [], "example_rule_ids": []})
+            if rule_id not in item["rule_ids"]:
+                item["rule_ids"].append(rule_id)
+                item["rule_count"] += 1
+    query = q.strip().casefold()
+    options = []
+    for item in by_tag.values():
+        if query and query not in f"{item['key']} {item['label']}".casefold():
+            continue
+        item["rule_ids"].sort(key=lambda value: int(value) if str(value).isdigit() else str(value))
+        item["example_rule_ids"] = item["rule_ids"][:8]
+        item.pop("rule_ids", None)
+        options.append(item)
+    options.sort(key=lambda item: str(item["label"]).casefold())
+    options = options[:limit]
+    return {
+        "status": "enumerated",
+        "source": "local-signature-repository",
+        "catalog_schema_version": catalog.get("schema_version"),
+        "catalog_version": catalog.get("version"),
+        "option_count": len(options),
+        "total_option_count": len(by_tag),
+        "options": options,
+        "query": q,
+    }
+
+
 @app.get("/api/adc/signatures/catalog")
 async def adc_signature_catalog() -> dict[str, Any]:
     signatures_payload = await adapter_read("/api/adc/signatures")
@@ -2180,7 +2230,13 @@ def custom_signature_set_response(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def build_custom_signature_set_plan(job_id: str, signature_object_name: str | None = None, selected_rule_ids: list[str] | None = None, action: str = "LOG") -> dict[str, Any]:
+async def build_custom_signature_set_plan(
+    job_id: str,
+    signature_object_name: str | None = None,
+    selected_rule_ids: list[str] | None = None,
+    action: str = "LOG",
+    selected_technology_tags: list[str] | None = None,
+) -> dict[str, Any]:
     action = str(action or "LOG").upper()
     if action not in ACTION_VALUES:
         raise HTTPException(status_code=422, detail="action must be LOG or BLOCK")
@@ -2195,7 +2251,7 @@ async def build_custom_signature_set_plan(job_id: str, signature_object_name: st
     if not OBJECT_NAME_RE.fullmatch(name):
         raise HTTPException(status_code=422, detail="signature_object_name contains unsupported NetScaler characters or exceeds 31 characters")
     catalog = await asyncio.to_thread(load_upstream_catalog)
-    selection = select_rules_for_detection(profile, analysis, catalog, selected_rule_ids)
+    selection = select_rules_for_detection(profile, analysis, catalog, selected_rule_ids, selected_technology_tags)
     status = "draft"
     if selection.get("catalog_status") != "ready":
         status = "blocked-upstream-catalog"
@@ -2243,7 +2299,7 @@ async def build_custom_signature_set_plan(job_id: str, signature_object_name: st
 
 @app.post("/api/custom-signature-sets/prepare", status_code=201)
 async def prepare_custom_signature_set(request: CustomSignatureSetPrepareRequest) -> dict[str, Any]:
-    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action)
+    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags)
     try:
         set_id = await asyncio.to_thread(save_custom_signature_set_sync, plan)
     except psycopg.Error as exc:
@@ -2254,7 +2310,7 @@ async def prepare_custom_signature_set(request: CustomSignatureSetPrepareRequest
 @app.post("/api/custom-signature-sets/recommendations")
 async def recommend_custom_signature_set(request: CustomSignatureSetPrepareRequest) -> dict[str, Any]:
     """Return exact rule-level recommendations without persisting a draft or writing to the ADC."""
-    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action)
+    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags)
     return {**plan, "recommendation_only": True, "selected_rule_ids": [str(item.get("rule_id")) for item in plan["selected_rules"]]}
 
 

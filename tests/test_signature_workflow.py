@@ -39,6 +39,25 @@ class SignatureWorkflowTests(unittest.TestCase):
         self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["42"])
         self.assertEqual(result["missing_requested_rule_ids"], ["99"])
 
+    def test_explicit_technology_filters_replace_detected_tags(self):
+        profile = {
+            "signature_technology_context": {"technology_matches": [{"matched_signature_tags": ["wordpress"]}]},
+            "technologies": [],
+        }
+        result = select_rules_for_detection(
+            profile,
+            {"generic_protection_intents": []},
+            {"status": "ready", "rules": [
+                {"rule_id": "10", "technology_tags": ["wordpress"]},
+                {"rule_id": "11", "technology_tags": ["perl"]},
+                {"rule_id": "12", "technology_tags": ["iis"]},
+            ]},
+            selected_technology_tags=["perl"],
+        )
+        self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["11"])
+        self.assertEqual(result["technology_tags"], ["perl"])
+        self.assertEqual(result["technology_selection_mode"], "explicit")
+
     def test_commands_are_chunked_and_save_config_is_last(self):
         commands = cli_import_commands("waf-test", [str(value) for value in range(101)], "BLOCK", chunk_size=50)
         self.assertEqual(len(commands), 4)
