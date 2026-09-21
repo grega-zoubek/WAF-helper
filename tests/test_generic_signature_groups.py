@@ -80,3 +80,10 @@ def test_group_matcher_does_not_select_tagged_product_rules():
     )
     assert matched is False
     assert reasons == []
+
+
+if __name__ == "__main__":
+    test_first_five_are_stable_and_signature_only()
+    test_file_upload_rules_require_upload_evidence_but_traversal_does_not()
+    test_group_matcher_does_not_select_tagged_product_rules()
+    print("3 generic signature-group tests passed")
