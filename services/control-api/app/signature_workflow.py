@@ -49,18 +49,43 @@ def select_rules_for_detection(profile: dict[str, Any], analysis: dict[str, Any]
     by_id = {str(item["rule_id"]): item for item in rules}
     intents = analysis.get("generic_protection_intents") or []
     generic = resolve_rule_catalog(intents, rules)
-    selected_ids: set[str] = {str(item["rule_id"]) for item in generic.get("selected_rules", [])}
     technology_tags = _technology_tags(profile)
     technology_matches: list[dict[str, Any]] = []
+    excluded_unmatched_technology_rules: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+
+    # Generic attack intents are intentionally broad, but a broad intent must
+    # not pull in product-specific rules for technologies that were not
+    # observed.  An explicit administrator selection remains an override.
+    for item in generic.get("selected_rules", []):
+        rule_id = str(item.get("rule_id"))
+        rule = by_id.get(rule_id)
+        if not rule:
+            continue
+        rule_tags = set(rule.get("technology_tags", []))
+        matched_tags = sorted(technology_tags.intersection(rule_tags))
+        if rule_tags and not matched_tags:
+            excluded_unmatched_technology_rules.append({
+                "rule_id": rule_id,
+                "technology_tags": sorted(rule_tags),
+                "reason": "technology tag was not evidenced by this discovery",
+            })
+            continue
+        selected_ids.add(rule_id)
+        if matched_tags:
+            technology_matches.append({"rule_id": rule_id, "source": "detected-technology", "technology_tags": matched_tags})
+
     if technology_tags:
         for rule in rules:
             if technology_tags.intersection(set(rule.get("technology_tags", []))):
                 selected_ids.add(str(rule["rule_id"]))
-                technology_matches.append({"rule_id": str(rule["rule_id"]), "source": "detected-technology", "technology_tags": sorted(technology_tags.intersection(set(rule.get("technology_tags", []))))})
+                if not any(item.get("rule_id") == str(rule["rule_id"]) for item in technology_matches):
+                    technology_matches.append({"rule_id": str(rule["rule_id"]), "source": "detected-technology", "technology_tags": sorted(technology_tags.intersection(set(rule.get("technology_tags", []))))})
     if requested_rule_ids is not None:
         requested = {str(value) for value in requested_rule_ids}
         missing = sorted(requested - set(by_id))
         selected_ids = requested & set(by_id)
+        excluded_unmatched_technology_rules = []
     else:
         missing = []
     selected_rules = []
@@ -68,14 +93,21 @@ def select_rules_for_detection(profile: dict[str, Any], analysis: dict[str, Any]
         rule = by_id[rule_id]
         sources = sorted({str(item.get("intent_id")) for item in generic.get("selected_rules", []) if str(item.get("rule_id")) == rule_id} | ({"detected-technology"} if any(item.get("rule_id") == rule_id for item in technology_matches) else set()))
         selected_rules.append({**rule, "selection_sources": sources})
+    filtered_generic = {
+        **generic,
+        "selected_rules": [item for item in generic.get("selected_rules", []) if str(item.get("rule_id")) in selected_ids],
+        "excluded_unmatched_technology_rules": excluded_unmatched_technology_rules,
+    }
     return {
         "catalog_status": catalog.get("status"),
         "catalog_path": catalog.get("path"),
         "catalog_fingerprint": catalog_fingerprint(rules) if rules else None,
         "catalog_rule_count": len(rules),
-        "generic_resolution": generic,
+        "generic_resolution": filtered_generic,
         "technology_tags": sorted(technology_tags),
         "technology_rule_matches": technology_matches,
+        "excluded_unmatched_technology_rules": excluded_unmatched_technology_rules,
+        "excluded_unmatched_technology_rule_count": len(excluded_unmatched_technology_rules),
         "selected_rules": selected_rules,
         "missing_requested_rule_ids": missing,
     }
