@@ -1045,8 +1045,8 @@ async def get_adc_plan(job_id: str, selected_catalog_url: list[str] | None = Que
             observations_response.raise_for_status()
             analysis_response = await client.post(f"{ANALYSIS_SERVICE_URL}/analyze", json={"run_id": job_id, "profile": profile_response.json(), "observations": observations_response.json()})
             analysis_response.raise_for_status()
-            lb_response = await client.get(f"{ADAPTER_URL}/api/adc/lbvservers")
-            lb_response.raise_for_status()
+            classic_response = await client.get(f"{ADAPTER_URL}/api/adc/classic-inventory")
+            classic_response.raise_for_status()
             appfw_profiles_response = await client.get(f"{ADAPTER_URL}/api/adc/appfw/profiles")
             appfw_profiles_response.raise_for_status()
             signatures_response = await client.get(f"{ADAPTER_URL}/api/adc/signatures")
@@ -1072,8 +1072,16 @@ async def get_adc_plan(job_id: str, selected_catalog_url: list[str] | None = Que
     except psycopg.Error as exc:
         raise HTTPException(status_code=503, detail="Signature inventory database unavailable") from exc
     seed_host = job.get("scope", {}).get("hostname") or urlparse(job.get("scope", {}).get("seed_url", "")).hostname
-    lb_items = lb_response.json().get("lbvserver", [])
-    matches = [item for item in lb_items if str(item.get("ipv46", item.get("ip", ""))).lower() == str(seed_host).lower()]
+    classic_payload = classic_response.json()
+    classic = classic_payload.get("classic", classic_payload) if isinstance(classic_payload, dict) else {}
+    vserver_section = classic.get("vservers", {}) if isinstance(classic, dict) else {}
+    classic_items = vserver_section.get("records", []) if isinstance(vserver_section, dict) else []
+    matches = [
+        item for item in classic_items
+        if isinstance(item, dict)
+        and str(item.get("host", "")).lower() == str(seed_host).lower()
+        and str(item.get("vserver_type", "lb")).lower() == "lb"
+    ]
     target = matches[0] if matches else None
     observed_headers: set[str] = set()
     for row in profile.get("evidence", []):
