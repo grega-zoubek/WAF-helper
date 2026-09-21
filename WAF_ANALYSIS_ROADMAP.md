@@ -49,6 +49,11 @@ whole group, a subgroup, or individual rule IDs. The exact selection is sent as
 `selected_rule_ids` to recommendation and prepare workflows, and deselected candidates
 remain visible for auditability.
 
+`WEB-MISC` is not treated as one generic software bucket. The catalog product index and
+description parser first create software subgroups; only rules without a reliable product
+name use protection-family subgroups. This keeps Cisco ISE, Infoblox, Ivanti, and similar
+signatures separately reviewable without inventing a positive application model.
+
 The generic policy layer is implemented in
 `services/analysis-service/app/generic_protection.py` and covered by tests. It does
 not yet replace the provider catalog resolver or enable automatic ADC writes.

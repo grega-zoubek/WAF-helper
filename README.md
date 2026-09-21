@@ -42,6 +42,13 @@ contains individual rule checkboxes. The GUI sends the resulting exact `selected
 to both recommendation and prepare endpoints; deselected rules remain visible as
 unchecked candidates and are not exported.
 
+Within `WEB-MISC`, subgrouping prefers a catalog product-index match and otherwise
+extracts a software name from the rule description. Cisco ISE, Infoblox NETMRI, and
+Ivanti products therefore appear as software groups. Rules without a reliable software
+name are grouped by protection family, such as traversal, sensitive-file disclosure,
+command execution, availability, authentication, or reconnaissance, rather than under
+a single undifferentiated `WEB-MISC` bucket.
+
 The `signature-sync` service checks Citrix's published `SignaturesMapping.xml`
 hourly, defaults to the ADC 14.1 build 0 entry, verifies the published SHA-1,
 downloads a changed signature XML atomically, and builds a normalized upstream
