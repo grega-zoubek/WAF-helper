@@ -56,7 +56,7 @@ class CustomSignatureTests(unittest.TestCase):
         self.assertIn("at least one positive and one negative offline test case are required", errors)
 
     def test_rejects_invalid_pcre(self):
-        request = {**BASE_REQUEST, "pattern_type": "pcre", "pattern": "("}
+        request = {**BASE_REQUEST, "pattern_type": "pcre", "pattern": "([a-z"}
         errors = validate_draft_input(request)
         self.assertTrue(any("pcre pattern is not locally compilable" in error for error in errors))
 
