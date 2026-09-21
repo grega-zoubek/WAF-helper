@@ -8,6 +8,121 @@ from pathlib import Path
 from typing import Any
 
 
+def _slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
+
+
+# Explicit product phrases keep generic attack words out of the searchable
+# taxonomy while covering vendor/product names found in NetScaler log strings.
+VENDOR_PRODUCT_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    ("VMware", "vCenter", r"\bvcenter(?:\s+server)?\b"),
+    ("VMware", "ESX / ESXi", r"\besx(?:i)?\b"),
+    ("VMware", "vSphere", r"\bvsphere\b"),
+    ("VMware", "Aria Operations for Networks", r"\bvmware\s+aria\s+operations\s+for\s+networks\b"),
+    ("VMware", "Aria Operations for Logs", r"\bvmware\s+aria\s+operations\s+for\s+logs\b"),
+    ("VMware", "Workspace ONE Access", r"\bworkspace\s+one\s+access\b"),
+    ("VMware", "Carbon Black", r"\bcarbon\s+black\b"),
+    ("VMware", "vRealize Operations Manager", r"\bvrealize\s+operations\s+manager\b"),
+    ("VMware", "Cloud Foundation", r"\bcloud\s+foundation\b"),
+    ("VMware", "SD-WAN Orchestrator", r"\bsd[- ]wan\s+orchestrator\b"),
+    ("IBM", "Lotus Domino", r"\b(?:ibm\s+)?lotus\s+domino\b|\bdomino\b"),
+    ("IBM", "Lotus Notes", r"\b(?:ibm\s+)?lotus\s+notes?\b|\blotusnotes?\b"),
+    ("IBM", "WebSphere", r"\b(?:ibm\s+)?websphere\b"),
+    ("IBM", "Net.Commerce", r"\b(?:ibm\s+)?net[.]commerce\b"),
+    ("IBM", "QRadar", r"\b(?:ibm\s+)?qradar\b"),
+    ("IBM", "BigFix", r"\b(?:ibm\s+)?bigfix\b"),
+    ("IBM", "DataPower", r"\b(?:ibm\s+)?datapower\b"),
+    ("Microsoft", "Exchange / OWA", r"\b(?:microsoft\s+)?exchange\b|\bowa\b"),
+    ("Microsoft", "IIS", r"\biis\b|\bwebdav\b"),
+    ("Microsoft", "SharePoint", r"\bsharepoint\b"),
+    ("Microsoft", "ASP.NET", r"\basp[.]net\b"),
+    ("Microsoft", "Outlook", r"\boutlook\b"),
+    ("Microsoft", "Windows", r"\bmicrosoft\s+windows\b|\bwindows\s+server\b"),
+    ("Apache", "HTTP Server", r"\bapache\s+(?:httpd|http\s+server)\b"),
+    ("Apache", "Tomcat", r"\b(?:apache\s+)?tomcat\b"),
+    ("Apache", "Struts", r"\b(?:apache\s+)?struts\b"),
+    ("Apache", "Solr", r"\bapache\s+solr\b|\bsolr\b"),
+    ("Apache", "OFBiz", r"\bapache\s+ofbiz\b|\bofbiz\b"),
+    ("Oracle", "WebLogic", r"\b(?:oracle\s+)?weblogic\b"),
+    ("Oracle", "MySQL", r"\bmysql\b"),
+    ("Oracle", "Database", r"\boracle\s+(?:database|db)\b"),
+    ("Oracle", "PeopleSoft", r"\bpeoplesoft\b"),
+    ("Citrix", "NetScaler / ADC", r"\b(?:citrix\s+)?(?:netscaler|adc)\b"),
+    ("Citrix", "XenApp / XenDesktop", r"\b(?:xenapp|xendesktop)\b"),
+    ("Citrix", "ShareFile", r"\bsharefile\b"),
+    ("SAP", "NetWeaver", r"\bnetweaver\b"),
+    ("SAP", "HANA", r"\bsap\s+hana\b|\bhana\b"),
+    ("SAP", "BusinessObjects", r"\bbusinessobjects\b"),
+    ("Adobe", "ColdFusion", r"\bcoldfusion\b"),
+    ("Adobe", "Experience Manager", r"\b(?:adobe\s+)?experience\s+manager\b|\baem\b"),
+    ("Red Hat", "JBoss / WildFly", r"\b(?:jboss|wildfly)\b"),
+    ("Red Hat", "OpenShift", r"\bopenshift\b"),
+    ("Atlassian", "Jira", r"\bjira\b"),
+    ("Atlassian", "Confluence", r"\bconfluence\b"),
+    ("Atlassian", "Bitbucket", r"\bbitbucket\b"),
+    ("WordPress", "WordPress", r"\bwordpress\b"),
+    ("Drupal", "Drupal", r"\bdrupal\b"),
+    ("Joomla", "Joomla", r"\bjoomla\b"),
+    ("Magento", "Magento", r"\bmagento\b"),
+    ("Nginx", "Nginx", r"\bnginx\b"),
+    ("Node.js", "Express", r"\bexpress(?:[.]js)?\b"),
+    ("PHP", "PHP", r"\bphp(?:[- ]?nuke)?\b"),
+)
+
+
+def extract_vendor_products(text: str) -> list[dict[str, Any]]:
+    haystack = " ".join(str(text or "").split())
+    entities: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for vendor, product, pattern in VENDOR_PRODUCT_PATTERNS:
+        matches = list(re.finditer(pattern, haystack, flags=re.IGNORECASE))
+        if not matches:
+            continue
+        key = f"{_slug(vendor)}/{_slug(product)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        entities.append({
+            "vendor": vendor,
+            "product": product,
+            "key": key,
+            "label": f"{vendor} / {product}",
+            "source_terms": sorted({match.group(0).strip() for match in matches}, key=str.casefold)[:10],
+        })
+    return entities
+
+
+def build_product_index(rules: list[dict[str, Any]]) -> dict[str, Any]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for rule in rules:
+        for entity in rule.get("vendor_products", []):
+            key = str(entity.get("key") or "")
+            vendor = str(entity.get("vendor") or "").strip()
+            product = str(entity.get("product") or "").strip()
+            if not key or not vendor or not product:
+                continue
+            entry = grouped.setdefault(key, {"key": key, "vendor": vendor, "product": product, "rule_count": 0, "rule_ids": [], "example_rule_ids": [], "source_terms": set()})
+            entry["rule_count"] += 1
+            rule_id = str(rule.get("rule_id") or "")
+            if rule_id and rule_id not in entry["rule_ids"]:
+                entry["rule_ids"].append(rule_id)
+            if rule_id and len(entry["example_rule_ids"]) < 25 and rule_id not in entry["example_rule_ids"]:
+                entry["example_rule_ids"].append(rule_id)
+            entry["source_terms"].update(str(term) for term in entity.get("source_terms", []) if term)
+    vendors: dict[str, dict[str, Any]] = {}
+    for entry in grouped.values():
+        vendor = entry["vendor"]
+        vendor_entry = vendors.setdefault(vendor, {"vendor": vendor, "key": _slug(vendor), "rule_count": 0, "product_count": 0, "products": []})
+        vendor_entry["rule_count"] += entry["rule_count"]
+        vendor_entry["product_count"] += 1
+        vendor_entry["products"].append({**entry, "source_terms": sorted(entry["source_terms"], key=str.casefold)})
+    vendor_list = sorted(vendors.values(), key=lambda item: str(item["vendor"]).casefold())
+    for vendor in vendor_list:
+        vendor["products"].sort(key=lambda item: str(item["product"]).casefold())
+    flat_products = [product for vendor in vendor_list for product in vendor["products"]]
+    return {"schema_version": "1.0.0", "vendor_count": len(vendor_list), "product_count": len(flat_products), "rule_count": len({rule_id for product in flat_products for rule_id in product["rule_ids"]}), "vendors": vendor_list, "products": flat_products}
+
+
 def _normalize_rules(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, dict):
         value = value.get("rules", value.get("entries", []))
@@ -30,12 +145,17 @@ def _normalize_rules(value: Any) -> list[dict[str, Any]]:
             attack_classes = [attack_classes]
         if isinstance(technology_tags, str):
             technology_tags = [technology_tags]
+        description = str(item.get("description") or item.get("name") or item.get("logstring") or "")[:500]
+        vendor_products = item.get("vendor_products")
+        if not isinstance(vendor_products, list):
+            vendor_products = extract_vendor_products(description)
         rules.append({
             "rule_id": key,
             "category": str(item.get("category") or "").strip().casefold() or None,
             "attack_classes": sorted({str(v).strip().casefold() for v in attack_classes if v}),
             "technology_tags": sorted({str(v).strip().casefold() for v in technology_tags if v}),
-            "description": str(item.get("description") or item.get("name") or "")[:500],
+            "description": description,
+            "vendor_products": [entity for entity in vendor_products if isinstance(entity, dict)],
             "action": str(item.get("action") or "LOG").upper(),
             "enabled": bool(item.get("enabled", True)),
             "version": str(item.get("version") or "").strip() or None,
@@ -141,6 +261,7 @@ def _xml_rules(text: str) -> list[dict[str, Any]]:
             "pattern_count": len(matches) + len(locations),
             "match_types": matches,
             "locations": locations,
+            "vendor_products": extract_vendor_products(description),
         })
     return _normalize_rules(rules)
 
@@ -180,6 +301,7 @@ def load_rule_catalog(path_value: str) -> dict[str, Any]:
         "schema_version": str(source_payload.get("schema_version") or "1.1.0") if isinstance(source_payload, dict) else "1.1.0",
         "catalogs": source_payload.get("catalogs", []) if isinstance(source_payload, dict) else [],
         "rules": rules,
+        "product_index": build_product_index(rules),
         "rule_count": len(rules),
         "category_counts": dict(sorted(category_counts.items())),
         "attack_class_counts": dict(sorted(attack_class_counts.items())),

@@ -1738,6 +1738,66 @@ async def adc_signature_rules() -> Any:
     return await adapter_read("/api/adc/signatures/rules")
 
 
+@app.get("/api/signatures/products")
+async def signature_products(
+    q: str = Query(default="", max_length=120),
+    vendor: str = Query(default="", max_length=80),
+    product: str = Query(default="", max_length=120),
+    limit: int = Query(default=500, ge=1, le=2000),
+) -> dict[str, Any]:
+    """Return the local vendor/product taxonomy built from every signature log string."""
+    index_path = Path(os.getenv("SIGNATURE_UPSTREAM_INDEX_FILE", "/run/upstream-signatures/latest.json"))
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"status": "configured-file-missing", "source": "local-signature-repository", "index_file": str(index_path), "vendors": [], "products": [], "vendor_count": 0, "product_count": 0}
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid-index", "source": "local-signature-repository", "index_file": str(index_path), "vendors": [], "products": [], "vendor_count": 0, "product_count": 0}
+    product_index = payload.get("product_index") if isinstance(payload, dict) else None
+    if not isinstance(product_index, dict):
+        return {"status": "product-index-unavailable", "source": "local-signature-repository", "index_file": str(index_path), "vendors": [], "products": [], "vendor_count": 0, "product_count": 0}
+    query = q.strip().casefold()
+    vendor_query = vendor.strip().casefold()
+    product_query = product.strip().casefold()
+    filtered_vendors: list[dict[str, Any]] = []
+    for vendor_entry in product_index.get("vendors", []):
+        if not isinstance(vendor_entry, dict):
+            continue
+        vendor_name = str(vendor_entry.get("vendor") or "")
+        if vendor_query and vendor_query not in vendor_name.casefold():
+            continue
+        products: list[dict[str, Any]] = []
+        for product_entry in vendor_entry.get("products", []):
+            if not isinstance(product_entry, dict):
+                continue
+            product_name = str(product_entry.get("product") or "")
+            haystack = " ".join([vendor_name, product_name, str(product_entry.get("key") or ""), " ".join(str(item) for item in product_entry.get("source_terms", []))]).casefold()
+            if product_query and product_query not in product_name.casefold():
+                continue
+            if query and query not in haystack:
+                continue
+            products.append(product_entry)
+        if products:
+            filtered_vendors.append({**vendor_entry, "products": products, "product_count": len(products), "rule_count": sum(int(item.get("rule_count") or 0) for item in products)})
+    flat_products = [product_entry for vendor_entry in filtered_vendors for product_entry in vendor_entry.get("products", [])]
+    flat_products = flat_products[:limit]
+    return {
+        "status": "enumerated",
+        "source": "local-signature-repository",
+        "index_file": str(index_path),
+        "catalog_schema_version": payload.get("schema_version"),
+        "catalog_version": payload.get("version"),
+        "catalog_fingerprint": (payload.get("catalogs") or [{}])[0].get("catalog_fingerprint") if isinstance(payload.get("catalogs"), list) else None,
+        "vendor_count": len(filtered_vendors),
+        "product_count": len(flat_products),
+        "total_vendor_count": product_index.get("vendor_count", 0),
+        "total_product_count": product_index.get("product_count", 0),
+        "vendors": filtered_vendors,
+        "products": flat_products,
+        "query": q,
+    }
+
+
 @app.get("/api/adc/signatures/catalog")
 async def adc_signature_catalog() -> dict[str, Any]:
     signatures_payload = await adapter_read("/api/adc/signatures")

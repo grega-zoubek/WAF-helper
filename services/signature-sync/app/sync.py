@@ -26,6 +26,7 @@ DEFAULT_INTERVAL_SECONDS = 3600
 MAX_MAPPING_BYTES = 2 * 1024 * 1024
 MAX_SIGNATURE_BYTES = 64 * 1024 * 1024
 DEFAULT_PUBLIC_KEY_FILE = Path("/run/signature-sync/citrix_public.pem")
+INDEX_SCHEMA_VERSION = "1.2.0"
 
 
 def utc_now() -> str:
@@ -225,7 +226,7 @@ def _index_payload(
         raise ValueError(f"signature XML produced no rule metadata: {catalog.get('status')}")
     raw_sha256 = hashlib.sha256(raw_path.read_bytes()).hexdigest()
     index = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "generated_at": utc_now(),
         "source": "citrix-netscaler-signature-mapping",
         "source_url": mapping["file_url"],
@@ -252,6 +253,7 @@ def _index_payload(
         "category_counts": catalog.get("category_counts", {}),
         "attack_class_counts": catalog.get("attack_class_counts", {}),
         "rules": catalog["rules"],
+        "product_index": catalog.get("product_index", {"schema_version": "1.0.0", "vendor_count": 0, "product_count": 0, "rule_count": 0, "vendors": [], "products": []}),
     }
     state = {
         "status": "updated",
@@ -291,6 +293,7 @@ def sync_once(config: SyncConfig, fetcher: Callable[[str, int, int], bytes] = _b
     previous = _read_json(config.state_path)
     raw_path = config.raw_dir / Path(mapping["file_path"]).name
     latest_path = config.index_dir / "latest.json"
+    latest_index = _read_json(latest_path)
     same_source = (
         previous.get("source_file") == mapping["file_path"]
         and previous.get("sha1_file_sha256") == sha1_file_sha256
@@ -298,6 +301,8 @@ def sync_once(config: SyncConfig, fetcher: Callable[[str, int, int], bytes] = _b
         and previous.get("version") == mapping["version"]
         and raw_path.is_file()
         and latest_path.is_file()
+        and latest_index.get("schema_version") == INDEX_SCHEMA_VERSION
+        and isinstance(latest_index.get("product_index"), dict)
     )
     if same_source:
         result = dict(previous)

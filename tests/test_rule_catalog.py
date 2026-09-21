@@ -17,6 +17,8 @@ _adapter_module = importlib.util.module_from_spec(_adapter_spec)
 assert _adapter_spec.loader is not None
 _adapter_spec.loader.exec_module(_adapter_module)
 load_rule_catalog = _adapter_module.load_rule_catalog
+extract_vendor_products = _adapter_module.extract_vendor_products
+build_product_index = _adapter_module.build_product_index
 
 
 class RuleCatalogTests(unittest.TestCase):
@@ -78,6 +80,19 @@ class RuleCatalogTests(unittest.TestCase):
         self.assertEqual(result["rules"][0]["locations"], ["http_post_body"])
         self.assertEqual(result["rules"][0]["reference_count"], 1)
         self.assertFalse(result["rules"][1]["enabled"])
+
+    def test_product_index_groups_vendor_and_product_from_log_string(self):
+        entities = extract_vendor_products("VMware vCenter Server path traversal and IBM Lotus Notes access")
+        keys = {item["key"] for item in entities}
+        self.assertIn("vmware/vcenter", keys)
+        self.assertIn("ibm/lotus-notes", keys)
+        index = build_product_index([
+            {"rule_id": "1", "vendor_products": entities},
+            {"rule_id": "2", "vendor_products": extract_vendor_products("VMware ESXi overflow")},
+        ])
+        vmware = next(item for item in index["vendors"] if item["vendor"] == "VMware")
+        self.assertEqual(vmware["product_count"], 2)
+        self.assertEqual(index["product_count"], 3)
 
 
 if __name__ == "__main__":
