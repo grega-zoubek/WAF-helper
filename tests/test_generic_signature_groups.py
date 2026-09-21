@@ -120,7 +120,7 @@ def test_cve_group_cross_lists_rules_without_duplicate_selection_state():
         "50": rule("50", classes=["command-injection"], description="WEB-MISC Cisco ISE - RCE (CVE-2025-20281)"),
         "51": rule("51", classes=["path-traversal"], description="WEB-MISC Ivanti path issue (CVE-2024-9381)"),
     }
-    group = build_cve_signature_group(set(rules), rules, {"50"})
+    group = build_cve_signature_group(set(rules), rules, {"50"}, view_mode="number")
     assert group is not None
     assert group["candidate_rule_count"] == 2
     assert group["selected_rule_count"] == 1
@@ -133,7 +133,7 @@ def test_cve_vendor_view_adds_product_level_navigation_after_ten_cves():
         str(index): rule(str(index), classes=["command-injection"], description=f"WEB-MISC Cisco ISE - issue (CVE-2020-{index:04d})")
         for index in range(1, 12)
     }
-    group = build_cve_signature_group(set(rules), rules, set(), view_mode="vendor")
+    group = build_cve_signature_group(set(rules), rules, set())
     assert group["view_mode"] == "vendor"
     assert group["cve_count"] == 11
     vendor = next(item for item in group["subgroups"] if item["name"] == "Cisco")
@@ -147,10 +147,10 @@ def test_cve_search_supports_description_and_attack_pattern_modes():
         "60": rule("60", classes=["sql-injection"], description="WEB-MISC Cisco ISE query issue (CVE-2024-6000)"),
         "61": rule("61", classes=["path-traversal"], description="WEB-MISC Ivanti file issue (CVE-2024-6100)"),
     }
-    description_group = build_cve_signature_group(set(rules), rules, {"60"}, search_query="Ivanti")
+    description_group = build_cve_signature_group(set(rules), rules, {"60"}, view_mode="number", search_query="Ivanti")
     assert description_group["cve_count"] == 1
     assert description_group["subgroups"][0]["name"] == "CVE-2024-6100"
-    attack_group = build_cve_signature_group(set(rules), rules, set(), search_mode="attack_pattern", search_query=r"path[- ]traversal")
+    attack_group = build_cve_signature_group(set(rules), rules, set(), view_mode="number", search_mode="attack_pattern", search_query=r"path[- ]traversal")
     assert attack_group["cve_count"] == 1
     assert attack_group["subgroups"][0]["rules"][0]["rule_id"] == "61"
 
@@ -158,7 +158,7 @@ def test_cve_search_supports_description_and_attack_pattern_modes():
 def test_cve_attack_pattern_rejects_invalid_python_regex():
     rules = {"70": rule("70", classes=["sql-injection"], description="Issue (CVE-2024-7000)")}
     try:
-        build_cve_signature_group(set(rules), rules, set(), search_mode="attack_pattern", search_query="[")
+        build_cve_signature_group(set(rules), rules, set(), view_mode="number", search_mode="attack_pattern", search_query="[")
     except ValueError as exc:
         assert "regular expression" in str(exc)
     else:
