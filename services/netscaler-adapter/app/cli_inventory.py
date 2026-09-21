@@ -115,7 +115,8 @@ def parse_policies(text: str, feature_enabled: bool | None) -> list[dict[str, An
     if not blocks and re.search(r"(?m)^\s*Name:\s*", text):
         blocks = [text]
     for block in blocks:
-        name = _value(block, r"^\s*Name:\s*(.+)$")
+        name_line = next((line for line in block.splitlines() if re.search(r"Name:", line, re.IGNORECASE)), "")
+        name = re.sub(r"^.*?Name:\s*", "", name_line, flags=re.IGNORECASE).strip().strip('"')
         if name:
             records.append({
                 "name": name[:200],
