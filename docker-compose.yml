@@ -69,6 +69,24 @@ services:
     expose:
       - "8092"
 
+  signature-sync:
+    build:
+      context: .
+      dockerfile: services/signature-sync/Dockerfile
+    environment:
+      SIGNATURE_SOURCE_URL: https://s3.amazonaws.com/NSAppFwSignatures/SignaturesMapping.xml
+      SIGNATURE_TARGET_RELEASE: "14.1"
+      SIGNATURE_TARGET_BUILD: "0"
+      SIGNATURE_SYNC_INTERVAL_SECONDS: "3600"
+      SIGNATURE_SYNC_RUN_ON_START: "true"
+      SIGNATURE_SYNC_VERIFY_SHA1: "true"
+      SIGNATURE_SYNC_DATA_DIR: /var/lib/signature-sync
+    volumes:
+      - ./signature-cache:/var/lib/signature-sync
+    expose:
+      - "8095"
+    restart: unless-stopped
+
   frontend:
     image: nginx:1.27-alpine
     volumes:

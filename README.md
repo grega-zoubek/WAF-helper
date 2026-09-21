@@ -8,6 +8,7 @@ Initial microservice foundation for the NetScaler WAF intelligence platform.
 - `control-api`: platform API and job coordinator on port 8110
 - `discovery-worker`: isolated discovery job worker
 - `netscaler-adapter`: bounded ADC integration service
+- `signature-sync`: hourly, read-only Citrix signature-source synchronizer and indexer
 - `postgres`: initial persistence layer
 
 Application analysis uses passive, deterministic technology fingerprints. It keeps
@@ -25,6 +26,16 @@ enrichment. A provider adapter must resolve those intents against the installed 
 catalog before selecting rule IDs. Predefined policy rules are authoritative; an optional
 AI advisor may explain or rank evidence but cannot invent unavailable rules or apply ADC
 changes. The default automation mode is proposal-only.
+
+The `signature-sync` service checks Citrix's published `SignaturesMapping.xml`
+hourly, defaults to the ADC 14.1 build 0 entry, verifies the published SHA-1,
+downloads a changed signature XML atomically, and builds a normalized upstream
+index. Its data is kept under the ignored `signature-cache/upstream/` directory;
+it does not overwrite the reviewed `catalogs/netscaler_rule_catalog.json` or
+apply anything to the ADC. The source URL, target release/build, interval, and
+data directory are configurable with `SIGNATURE_*` environment variables. The
+internal service exposes `/healthz`, `/status`, and a manual `POST /run` for
+operations and testing.
 
 The first release is read-only and preview-oriented. NetScaler topology discovery
 uses the supplied NetScaler Next-Gen API contract (`/mgmt/api/nextgen/v1`) with

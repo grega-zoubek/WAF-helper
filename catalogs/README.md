@@ -27,3 +27,18 @@ The generated index can be copied to the server checkout's `catalogs/`
 directory and mounted read-only into the adapter. The adapter then exposes the
 rule count and fingerprint through `/api/adc/signatures/rules` for exact,
 fail-closed applicability matching.
+
+## Upstream signature synchronization
+
+The `signature-sync` Compose service checks Citrix's official
+`SignaturesMapping.xml` every hour. It selects the configured ADC release/build
+(default `14.1`/`0`), downloads the mapped XML and checksum, verifies SHA-1,
+and creates a normalized index under `signature-cache/upstream/`.
+
+This upstream cache is intentionally separate from the reviewed
+`netscaler_rule_catalog.json` used by the adapter. A successful upstream update
+does not promote or apply rules, and a failed check preserves the last good
+index. After a reboot, Compose restarts the service and its startup check
+reconciles the existing state. After connectivity loss, inspect
+`signature-cache/upstream/state.json` and the service `/status` endpoint; do not
+delete the cache while investigating a failed update.
