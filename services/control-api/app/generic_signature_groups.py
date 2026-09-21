@@ -179,3 +179,101 @@ def select_generic_signature_groups(
         "signature_only": True,
         "positive_model": {"enabled": False, "reason": "deferred to a later phase"},
     }
+
+
+def _display_label(value: str) -> str:
+    return str(value or "other").replace("-", " ").replace("_", " ").title()
+
+
+def subgroup_for_rule(group_id: str, rule: dict[str, Any]) -> tuple[str, str]:
+    """Return a stable, useful expandable subgroup for a generic rule."""
+    classes = {str(value).casefold() for value in (rule.get("attack_classes") or [])}
+    if group_id == "injection":
+        priorities = (
+            ("sql-injection", "SQL injection"),
+            ("command-injection", "Command injection"),
+            ("os-command-injection", "OS command injection"),
+            ("ldap-injection", "LDAP injection"),
+            ("nosql-injection", "NoSQL injection"),
+            ("xpath-injection", "XPath injection"),
+            ("template-injection", "Template injection"),
+            ("code-injection", "Code injection"),
+        )
+        for attack_class, label in priorities:
+            if attack_class in classes:
+                return attack_class, label
+        return "other-injection", "Other injection"
+    if group_id == "xss":
+        category = str(rule.get("category") or "other").casefold()
+        return f"catalog:{category}", f"{_display_label(category)} XSS rules"
+    if group_id == "path-file":
+        priorities = (
+            ("path-traversal", "Path traversal"),
+            ("file-upload", "File upload"),
+            ("local-file-inclusion", "Local file inclusion"),
+            ("remote-file-inclusion", "Remote file inclusion"),
+        )
+        for attack_class, label in priorities:
+            if attack_class in classes:
+                return attack_class, label
+        return "file-access", "File and directory access"
+    if group_id == "canonicalization-evasion":
+        description = str(rule.get("description") or "").casefold()
+        if "null byte" in description:
+            return "null-byte", "Null-byte and terminator evasion"
+        if "unicode" in description:
+            return "unicode", "Unicode normalization evasion"
+        if "double" in description or "url encoding" in description:
+            return "url-encoding", "URL and double-encoding evasion"
+        return "other-evasion", "Other canonicalization/evasion"
+    category = str(rule.get("category") or "other").casefold()
+    return f"catalog:{category}", _display_label(category)
+
+
+def build_generic_group_subgroups(
+    groups: list[dict[str, Any]],
+    rules_by_id: dict[str, dict[str, Any]],
+    selected_rule_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Attach compact subgroup/rule details while preserving deselected rules."""
+    for group in groups:
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        candidate_ids = [str(value) for value in (group.get("rule_ids") or [])]
+        match_reasons = {
+            str(item.get("rule_id")): list(item.get("reasons") or [])
+            for item in (group.get("rule_matches") or [])
+            if isinstance(item, dict)
+        }
+        for rule_id in candidate_ids:
+            rule = rules_by_id.get(rule_id)
+            if not rule:
+                continue
+            subgroup_id, subgroup_label = subgroup_for_rule(str(group.get("group_id")), rule)
+            grouped.setdefault((subgroup_id, subgroup_label), []).append({
+                "rule_id": rule_id,
+                "description": rule.get("description"),
+                "category": rule.get("category"),
+                "attack_classes": rule.get("attack_classes", []),
+                "technology_tags": rule.get("technology_tags", []),
+                "locations": rule.get("locations", []),
+                "match_types": rule.get("match_types", []),
+                "severity": rule.get("severity"),
+                "pattern_count": rule.get("pattern_count", 0),
+                "selected": rule_id in selected_rule_ids,
+                "match_reasons": match_reasons.get(rule_id, []),
+            })
+        subgroups = []
+        for (subgroup_id, subgroup_label), subgroup_rules in sorted(grouped.items(), key=lambda item: item[0][1].casefold()):
+            subgroup_rules.sort(key=lambda item: (str(item.get("category") or ""), str(item.get("rule_id") or "")))
+            subgroups.append({
+                "subgroup_id": subgroup_id,
+                "name": subgroup_label,
+                "rule_count": len(subgroup_rules),
+                "selected_rule_count": sum(1 for item in subgroup_rules if item["selected"]),
+                "rules": subgroup_rules,
+            })
+        group["candidate_rule_count"] = len(candidate_ids)
+        group["selected_rule_count"] = sum(1 for rule_id in candidate_ids if rule_id in selected_rule_ids)
+        group["selected_rule_ids"] = [rule_id for rule_id in candidate_ids if rule_id in selected_rule_ids]
+        group["subgroups"] = subgroups
+    return groups

@@ -6,7 +6,7 @@ import sys
 CONTROL_API = Path(__file__).resolve().parents[1] / "services" / "control-api"
 sys.path.insert(0, str(CONTROL_API))
 
-from app.generic_signature_groups import GROUP_IDS, match_rule_to_group, select_generic_signature_groups  # noqa: E402
+from app.generic_signature_groups import GROUP_IDS, build_generic_group_subgroups, match_rule_to_group, select_generic_signature_groups  # noqa: E402
 
 
 def rule(rule_id: str, *, classes=None, description="", tags=None):
@@ -82,8 +82,29 @@ def test_group_matcher_does_not_select_tagged_product_rules():
     assert reasons == []
 
 
+def test_subgroups_keep_rule_details_and_selection_state():
+    groups = select_generic_signature_groups(
+        [
+            rule("30", classes=["sql-injection"], description="SQL test"),
+            rule("31", classes=["command-injection"], description="Command test"),
+        ],
+        {"route_inventory": [{"path": "/"}], "evidence": []},
+    )["groups"]
+    details = build_generic_group_subgroups(
+        groups,
+        {"30": rule("30", classes=["sql-injection"], description="SQL test"), "31": rule("31", classes=["command-injection"], description="Command test")},
+        {"30"},
+    )
+    injection = next(item for item in details if item["group_id"] == "injection")
+    assert injection["candidate_rule_count"] == 2
+    assert injection["selected_rule_count"] == 1
+    assert {item["name"] for item in injection["subgroups"]} == {"SQL injection", "Command injection"}
+    assert any(rule_item["rule_id"] == "31" and not rule_item["selected"] for subgroup in injection["subgroups"] for rule_item in subgroup["rules"])
+
+
 if __name__ == "__main__":
     test_first_five_are_stable_and_signature_only()
     test_file_upload_rules_require_upload_evidence_but_traversal_does_not()
     test_group_matcher_does_not_select_tagged_product_rules()
-    print("3 generic signature-group tests passed")
+    test_subgroups_keep_rule_details_and_selection_state()
+    print("4 generic signature-group tests passed")

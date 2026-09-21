@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.rule_catalog import catalog_fingerprint, normalize_rule_catalog, resolve_rule_catalog
-from app.generic_signature_groups import select_generic_signature_groups
+from app.generic_signature_groups import build_generic_group_subgroups, select_generic_signature_groups
 
 
 DEFAULT_UPSTREAM_INDEX_FILE = "/run/upstream-signatures/latest.json"
@@ -191,10 +191,11 @@ def select_rules_for_detection(
             | ({"detected-technology"} if any(item.get("rule_id") == rule_id for item in technology_matches) else set())
         )
         selected_rules.append({**rule, "selection_sources": sources})
-    for group in generic_groups.get("groups", []):
-        selected_group_ids = [str(value) for value in group.get("rule_ids", []) if str(value) in selected_ids]
-        group["rule_ids"] = selected_group_ids
-        group["selected_rule_count"] = len(selected_group_ids)
+    generic_groups["groups"] = build_generic_group_subgroups(
+        generic_groups.get("groups", []),
+        by_id,
+        selected_ids,
+    )
     generic_group_rule_count = sum(int(group.get("selected_rule_count") or 0) for group in generic_groups.get("groups", []))
     filtered_generic = {
         **generic,
