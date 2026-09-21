@@ -168,6 +168,7 @@ class CustomSignatureSetPrepareRequest(BaseModel):
     signature_object_name: str | None = Field(default=None, max_length=31)
     selected_rule_ids: list[str] | None = Field(default=None, max_length=5000)
     selected_technology_tags: list[str] | None = Field(default=None, max_length=500)
+    include_generic_signatures: bool = True
     action: str = Field(default="LOG", max_length=16)
 
 
@@ -2236,6 +2237,7 @@ async def build_custom_signature_set_plan(
     selected_rule_ids: list[str] | None = None,
     action: str = "LOG",
     selected_technology_tags: list[str] | None = None,
+    include_generic_signatures: bool = True,
 ) -> dict[str, Any]:
     action = str(action or "LOG").upper()
     if action not in ACTION_VALUES:
@@ -2251,7 +2253,7 @@ async def build_custom_signature_set_plan(
     if not OBJECT_NAME_RE.fullmatch(name):
         raise HTTPException(status_code=422, detail="signature_object_name contains unsupported NetScaler characters or exceeds 31 characters")
     catalog = await asyncio.to_thread(load_upstream_catalog)
-    selection = select_rules_for_detection(profile, analysis, catalog, selected_rule_ids, selected_technology_tags)
+    selection = select_rules_for_detection(profile, analysis, catalog, selected_rule_ids, selected_technology_tags, include_generic_signatures)
     status = "draft"
     if selection.get("catalog_status") != "ready":
         status = "blocked-upstream-catalog"
@@ -2299,7 +2301,7 @@ async def build_custom_signature_set_plan(
 
 @app.post("/api/custom-signature-sets/prepare", status_code=201)
 async def prepare_custom_signature_set(request: CustomSignatureSetPrepareRequest) -> dict[str, Any]:
-    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags)
+    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags, request.include_generic_signatures)
     try:
         set_id = await asyncio.to_thread(save_custom_signature_set_sync, plan)
     except psycopg.Error as exc:
@@ -2310,7 +2312,7 @@ async def prepare_custom_signature_set(request: CustomSignatureSetPrepareRequest
 @app.post("/api/custom-signature-sets/recommendations")
 async def recommend_custom_signature_set(request: CustomSignatureSetPrepareRequest) -> dict[str, Any]:
     """Return exact rule-level recommendations without persisting a draft or writing to the ADC."""
-    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags)
+    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags, request.include_generic_signatures)
     return {**plan, "recommendation_only": True, "selected_rule_ids": [str(item.get("rule_id")) for item in plan["selected_rules"]]}
 
 

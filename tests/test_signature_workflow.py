@@ -58,6 +58,20 @@ class SignatureWorkflowTests(unittest.TestCase):
         self.assertEqual(result["technology_tags"], ["perl"])
         self.assertEqual(result["technology_selection_mode"], "explicit")
 
+    def test_explicit_technology_filters_can_exclude_generic_rules(self):
+        result = select_rules_for_detection(
+            {"signature_technology_context": {}, "technologies": []},
+            {"generic_protection_intents": [{"intent_id": "cross-site-scripting-signatures", "decision": "include"}]},
+            {"status": "ready", "rules": [
+                {"rule_id": "20", "attack_classes": ["cross-site-scripting"]},
+                {"rule_id": "21", "technology_tags": ["perl"]},
+            ]},
+            selected_technology_tags=["perl"],
+            include_generic_signatures=False,
+        )
+        self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["21"])
+        self.assertFalse(result["include_generic_signatures"])
+
     def test_commands_are_chunked_and_save_config_is_last(self):
         commands = cli_import_commands("waf-test", [str(value) for value in range(101)], "BLOCK", chunk_size=50)
         self.assertEqual(len(commands), 4)

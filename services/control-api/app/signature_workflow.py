@@ -50,10 +50,11 @@ def select_rules_for_detection(
     catalog: dict[str, Any],
     requested_rule_ids: list[str] | None = None,
     selected_technology_tags: list[str] | None = None,
+    include_generic_signatures: bool = True,
 ) -> dict[str, Any]:
     rules = normalize_rule_catalog(catalog)
     by_id = {str(item["rule_id"]): item for item in rules}
-    intents = analysis.get("generic_protection_intents") or []
+    intents = (analysis.get("generic_protection_intents") or []) if include_generic_signatures else []
     generic = resolve_rule_catalog(intents, rules)
     technology_tags = (
         {str(value).strip().casefold() for value in selected_technology_tags if str(value).strip()}
@@ -116,6 +117,7 @@ def select_rules_for_detection(
         "generic_resolution": filtered_generic,
         "technology_tags": sorted(technology_tags),
         "technology_selection_mode": "explicit" if selected_technology_tags is not None else "detected",
+        "include_generic_signatures": bool(include_generic_signatures),
         "technology_rule_matches": technology_matches,
         "excluded_unmatched_technology_rules": excluded_unmatched_technology_rules,
         "excluded_unmatched_technology_rule_count": len(excluded_unmatched_technology_rules),
