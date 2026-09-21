@@ -9,13 +9,13 @@ sys.path.insert(0, str(CONTROL_API))
 from app.generic_signature_groups import GROUP_IDS, build_generic_group_subgroups, match_rule_to_group, select_generic_signature_groups  # noqa: E402
 
 
-def rule(rule_id: str, *, classes=None, description="", tags=None):
+def rule(rule_id: str, *, classes=None, description="", tags=None, category="web-misc"):
     return {
         "rule_id": rule_id,
         "attack_classes": classes or [],
         "description": description,
         "technology_tags": tags or [],
-        "category": "web-misc",
+        "category": category,
     }
 
 
@@ -85,14 +85,14 @@ def test_group_matcher_does_not_select_tagged_product_rules():
 def test_subgroups_keep_rule_details_and_selection_state():
     groups = select_generic_signature_groups(
         [
-            rule("30", classes=["sql-injection"], description="SQL test"),
-            rule("31", classes=["command-injection"], description="Command test"),
+            rule("30", classes=["sql-injection"], description="SQL test", category="web-client"),
+            rule("31", classes=["command-injection"], description="Command test", category="web-client"),
         ],
         {"route_inventory": [{"path": "/"}], "evidence": []},
     )["groups"]
     details = build_generic_group_subgroups(
         groups,
-        {"30": rule("30", classes=["sql-injection"], description="SQL test"), "31": rule("31", classes=["command-injection"], description="Command test")},
+        {"30": rule("30", classes=["sql-injection"], description="SQL test", category="web-client"), "31": rule("31", classes=["command-injection"], description="Command test", category="web-client")},
         {"30"},
     )
     injection = next(item for item in details if item["group_id"] == "injection")
