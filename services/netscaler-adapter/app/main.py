@@ -172,7 +172,9 @@ def _build_appfw_protection_commands(request: AppFwProfileDuplicateWriteRequest)
     if vserver and not policy:
         raise ValueError("A policy name is required when a vServer binding is requested")
     type_args = " ".join(_profile_types(request.profile_type))
-    command = f"add appfw profile {profile} -defaults advanced -type {type_args}"
+    command = f"add appfw profile {profile} -type {type_args}"
+    if not signature:
+        command += " -defaults advanced"
     if signature:
         command += f" -signatures {signature}"
     commands = [command]

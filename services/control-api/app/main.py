@@ -1511,12 +1511,14 @@ async def duplicate_appfw_profile_plan(request: ProfileDuplicateRequest) -> dict
         raise HTTPException(status_code=422, detail="A vServer is required when an AppFW policy is requested")
     source_snapshot = {key: source.get(key) for key in ("name", "type", "state", "signatures", "builtin") if key in source}
     profile_types = _profile_type_tokens(source.get("type"))
-    cli_commands = [f"add appfw profile {requested_name} -defaults advanced -type {' '.join(profile_types)}"]
+    cli_commands = [f"add appfw profile {requested_name} -type {' '.join(profile_types)}"]
     source_signature = str(source.get("signatures") or "").strip()
     if signature_name:
         cli_commands[0] += f" -signatures {signature_name}"
     elif source_signature:
         cli_commands[0] += f" -signatures {source_signature}"
+    else:
+        cli_commands[0] += " -defaults advanced"
     if policy_name and vserver_name:
         cli_commands.extend([
             f"add appfw policy {policy_name} true {requested_name}",
