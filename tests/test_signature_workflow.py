@@ -88,6 +88,23 @@ class SignatureWorkflowTests(unittest.TestCase):
         self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["30"])
         self.assertEqual(result["selected_product_rule_count"], 1)
 
+    def test_cve_cross_list_is_limited_to_current_proposal(self):
+        profile = {
+            "signature_technology_context": {
+                "technology_matches": [{"matched_signature_tags": ["wordpress"]}],
+            },
+            "technologies": [],
+        }
+        catalog = {"status": "ready", "rules": [
+            {"rule_id": "40", "technology_tags": ["wordpress"], "description": "WordPress issue (CVE-2024-1111)"},
+            {"rule_id": "41", "technology_tags": ["iis"], "description": "IIS issue (CVE-2024-2222)"},
+        ]}
+        result = select_rules_for_detection(profile, {"generic_protection_intents": []}, catalog)
+        self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["40"])
+        self.assertEqual(result["cve_candidate_scope"], "current-signature-proposal")
+        self.assertEqual(result["cve_signature_group"]["cve_count"], 1)
+        self.assertEqual(result["cve_signature_group"]["subgroups"][0]["name"], "WordPress")
+
     def test_release_year_filter_keeps_only_selected_year(self):
         result = select_rules_for_detection(
             {"signature_technology_context": {}, "technologies": []},

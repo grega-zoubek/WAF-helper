@@ -164,11 +164,6 @@ def select_rules_for_detection(
     if release_years is not None:
         selected_ids = {rule_id for rule_id in selected_ids if _rule_year(by_id[rule_id]) in release_years}
         technology_matches = [item for item in technology_matches if str(item.get("rule_id")) in selected_ids]
-    # The CVE menu is a catalog browser, not an applicability-only list.  Keep
-    # every catalog rule with CVE metadata visible so an administrator can
-    # search for and explicitly select a known vulnerability such as Log4j,
-    # while the checkbox state still reflects the scan's current selection.
-    cve_candidate_rule_ids = set(by_id)
     tag_rule_sets: dict[str, set[str]] = {}
     for tag in technology_tags:
         tag_rule_sets[tag] = {str(rule["rule_id"]) for rule in rules if tag in set(rule.get("technology_tags", []))}
@@ -190,6 +185,10 @@ def select_rules_for_detection(
         excluded_unmatched_technology_rules = []
     else:
         missing = []
+    # CVEs are a cross-list of the current signature proposal, not a separate
+    # catalog browser.  This prevents vulnerabilities belonging to an
+    # undetected or unselected technology from appearing in the proposal.
+    cve_candidate_rule_ids = set(selected_ids)
     selected_rules = []
     for rule_id in sorted(selected_ids, key=lambda value: int(value) if value.isdigit() else value):
         rule = by_id[rule_id]
@@ -230,6 +229,7 @@ def select_rules_for_detection(
         "cve_signature_group": cve_signature_group,
         "cve_rule_count": int(cve_signature_group.get("candidate_rule_count") or 0) if cve_signature_group else 0,
         "cve_count": int(cve_signature_group.get("cve_count") or 0) if cve_signature_group else 0,
+        "cve_candidate_scope": "current-signature-proposal",
         "generic_signature_group_ids": generic_groups.get("requested_group_ids", []),
         "generic_signature_group_rule_count": generic_group_rule_count,
         "unresolved_generic_signature_groups": generic_groups.get("unresolved_group_ids", []),
