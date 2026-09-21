@@ -402,7 +402,7 @@ async def write_custom_signature_set(request: CustomSignatureSetWriteRequest) ->
     except (OSError, ET.ParseError, RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"Unable to prepare verified native signature XML: {exc}") from exc
     commands = [
-        f"import appfw signatures local:{remote_path} {request.signature_object_name} -autoEnableNewSignatures OFF",
+        f"import appfw signatures local:{Path(remote_path).name} {request.signature_object_name} -autoEnableNewSignatures OFF",
         "save ns config",
     ]
     try:

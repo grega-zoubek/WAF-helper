@@ -141,7 +141,7 @@ def workflow_fingerprint(plan: dict[str, Any]) -> str:
 
 def cli_import_commands(signature_object_name: str, rule_ids: list[str], action: str, chunk_size: int = 50) -> list[str]:
     safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", signature_object_name)[:31]
-    remote_path = f"/var/tmp/waf-scanner-{safe_name}.xml"
+    remote_path = f"waf-scanner-{safe_name}.xml"
     return [
         f"import appfw signatures local:{remote_path} {signature_object_name} -autoEnableNewSignatures OFF",
         "save ns config",
