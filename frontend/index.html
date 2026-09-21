@@ -31,6 +31,8 @@
     .progress { color: #9a6700; font-weight: 600; }
     .connected-message { color: #087f5b; font-weight: 700; }
     .secondary { background: #fff; color: #17202a; }
+    .job-actions { display: flex; flex-wrap: nowrap; gap: .4rem; align-items: center; white-space: nowrap; }
+    .job-actions button { margin: 0; }
     label { display: flex; gap: .5rem; align-items: center; }
     input[type="checkbox"] { width: 1.1rem; height: 1.1rem; }
     .url-short { display: block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -103,7 +105,7 @@
       const host = document.querySelector('#jobs');
       if (!jobs.length) { host.innerHTML = '<p class="muted">No discovery jobs yet.</p>'; return; }
       host.innerHTML = '<table><thead><tr><th>Status</th><th>Target</th><th>Phase</th><th>Pages</th><th>Assets</th><th>Evidence</th><th>Created</th><th></th></tr></thead><tbody>' + jobs.map(job =>
-        `<tr><td>${job.status === 'queued' || job.status === 'running' ? `<span class="progress">● scanning${job.phase ? ` · ${escapeHtml(job.phase)}` : ''}</span>` : escapeHtml(job.status)}</td><td>${escapeHtml(job.scope?.seed_url || '-')}</td><td>${escapeHtml(job.phase || '-')}</td><td>${job.pages_visited || 0}</td><td>${job.assets_fetched || 0}</td><td>${job.evidence_count || 0}</td><td>${escapeHtml(job.created_at || '-')}</td><td><button class="secondary profile-button" data-job="${escapeHtml(job.id)}">View profile</button>${['completed'].includes(job.status) ? ` <button class="secondary correlation-button" data-job="${escapeHtml(job.id)}">Check ADC path</button>` : ''}${['queued','running'].includes(job.status) ? ` <button class="secondary cancel-button" data-job="${escapeHtml(job.id)}">Cancel</button>` : ''}${['completed','failed','interrupted','rejected','cancelled'].includes(job.status) ? ` <button class="secondary delete-button" data-job="${escapeHtml(job.id)}">Delete</button>` : ''}</td></tr>`
+        `<tr><td>${job.status === 'queued' || job.status === 'running' ? `<span class="progress">● scanning${job.phase ? ` · ${escapeHtml(job.phase)}` : ''}</span>` : escapeHtml(job.status)}</td><td>${escapeHtml(job.scope?.seed_url || '-')}</td><td>${escapeHtml(job.phase || '-')}</td><td>${job.pages_visited || 0}</td><td>${job.assets_fetched || 0}</td><td>${job.evidence_count || 0}</td><td>${escapeHtml(job.created_at || '-')}</td><td><div class="job-actions"><button class="secondary profile-button" data-job="${escapeHtml(job.id)}">View profile</button>${['completed'].includes(job.status) ? `<button class="secondary correlation-button" data-job="${escapeHtml(job.id)}">Check ADC path</button>` : ''}${['queued','running'].includes(job.status) ? `<button class="secondary cancel-button" data-job="${escapeHtml(job.id)}">Cancel</button>` : ''}${['completed','failed','interrupted','rejected','cancelled'].includes(job.status) ? `<button class="secondary delete-button" data-job="${escapeHtml(job.id)}">Delete</button>` : ''}</div></td></tr>`
       ).join('') + '</tbody></table>';
     }
     function renderDuplicateProfilePlan(plan) {
