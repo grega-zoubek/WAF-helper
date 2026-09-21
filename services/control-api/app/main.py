@@ -179,6 +179,10 @@ class CustomSignatureSetExportRequest(CustomSignatureSetPreflightRequest):
     confirmation_phrase: str = Field(min_length=1, max_length=64)
 
 
+class CustomSignatureSetRollbackRequest(CustomSignatureSetExportRequest):
+    pass
+
+
 def provider_records(payload: Any, key: str) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
@@ -2167,6 +2171,7 @@ async def preflight_custom_signature_set(set_id: str, request: CustomSignatureSe
     signatures_payload = await adapter_read("/api/adc/signatures")
     inventory = parse_signature_catalog(signatures_payload)
     existing_names = {str(item.get("name", "")) for item in inventory.get("entries", [])}
+    writes_enabled = os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() == "true"
     checks = [
         {"name": "Approval validity", "status": "passed", "detail": "Approval exists and has not expired."},
         {"name": "Plan fingerprint", "status": "passed" if current.get("plan_fingerprint") == request.plan_fingerprint else "failed", "detail": "The latest verified catalog and discovery evidence match the approved plan." if current.get("plan_fingerprint") == request.plan_fingerprint else "The catalog or discovery evidence changed since approval."},
@@ -2174,14 +2179,14 @@ async def preflight_custom_signature_set(set_id: str, request: CustomSignatureSe
         {"name": "Rule selection", "status": "passed" if current.get("selected_rules") else "failed", "detail": f"{len(current.get('selected_rules') or [])} exact rule IDs are available for export."},
         {"name": "Object name", "status": "passed" if record["signature_object_name"] not in existing_names else "failed", "detail": "Destination signature object name is not present in the current ADC inventory." if record["signature_object_name"] not in existing_names else "Destination signature object name already exists on the ADC."},
         {"name": "Enforcement mode", "status": "passed" if record.get("action") in ACTION_VALUES else "failed", "detail": f"Administrator selected {record.get('action')} for enabled rules."},
-        {"name": "Write safety", "status": "blocked", "detail": "ADC export remains disabled until the explicit ENABLE WRITE confirmation and write-mode toggle are present."},
+        {"name": "Write safety", "status": "passed" if writes_enabled else "blocked", "detail": "Write mode is enabled, but the exact ENABLE WRITE confirmation is still required." if writes_enabled else "ADC export remains disabled until the write-mode toggle is enabled."},
     ]
-    status = "drift-detected" if any(item["status"] == "failed" for item in checks) else "blocked-write-disabled"
+    status = "drift-detected" if any(item["status"] == "failed" for item in checks) else ("ready-for-apply" if writes_enabled else "blocked-write-disabled")
     expected = hashlib.sha256(json.dumps({"catalog": current.get("catalog_fingerprint"), "name": record["signature_object_name"], "action": record["action"], "rules": [item.get("rule_id") for item in current.get("selected_rules", [])]}, sort_keys=True).encode()).hexdigest()
     rollback = {"status": "ready", "object_name": record["signature_object_name"], "action": "rm appfw signatures <object-name> after reference check", "verification": ["Confirm the object is not bound to an AppFW profile or policy.", "Re-read the ADC signature inventory after rollback."]}
     preview_id = await asyncio.to_thread(save_change_preview_sync, request.approval_id, set_id, request.plan_fingerprint, status, expected, expected, checks, rollback)
     await asyncio.to_thread(update_custom_signature_set_sync, set_id, {"preflight_status": status, "preview_id": preview_id})
-    return {"custom_signature_set_id": set_id, "preview_id": preview_id, "status": status, "checks": checks, "rollback_snapshot": rollback, "commands": current.get("commands"), "write_enabled": False, "changes_applied": False}
+    return {"custom_signature_set_id": set_id, "preview_id": preview_id, "status": status, "checks": checks, "rollback_snapshot": rollback, "commands": current.get("commands"), "write_enabled": writes_enabled, "changes_applied": False}
 
 
 @app.post("/api/custom-signature-sets/{set_id}/export")
@@ -2209,6 +2214,35 @@ async def export_custom_signature_set(set_id: str, request: CustomSignatureSetEx
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail="NetScaler adapter unavailable") from exc
     return {"custom_signature_set_id": set_id, "signature_object_name": record["signature_object_name"], "action": record["action"], "rule_count": len(record.get("selected_rules") or []), "changes_applied": True, "adapter_result": result}
+
+
+@app.post("/api/custom-signature-sets/{set_id}/rollback")
+async def rollback_custom_signature_set(set_id: str, request: CustomSignatureSetRollbackRequest) -> dict[str, Any]:
+    if request.confirmation_phrase != "ENABLE WRITE":
+        raise HTTPException(status_code=400, detail="Exact confirmation phrase ENABLE WRITE is required")
+    if os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() != "true":
+        raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
+    record = await asyncio.to_thread(load_custom_signature_set_sync, set_id)
+    preview = await asyncio.to_thread(load_change_preview_sync, request.preview_id)
+    if not record or record.get("status") != "exported" or record.get("approval_id") != request.approval_id or record.get("plan_fingerprint") != request.plan_fingerprint or not preview or preview.get("status") != "ready-for-apply":
+        raise HTTPException(status_code=403, detail="Exported custom signature set and successful preflight are required")
+    profiles = await adapter_read("/api/adc/appfw/profiles")
+    policies = await adapter_read("/api/adc/appfw/policies")
+    referenced = json.dumps({"profiles": profiles, "policies": policies}, sort_keys=True)
+    if record["signature_object_name"] in referenced:
+        raise HTTPException(status_code=409, detail="Rollback blocked because the signature object appears in current AppFW profile or policy inventory")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(f"{ADAPTER_URL}/api/adc/writes/custom-signature-set/rollback", json={"signature_object_name": record["signature_object_name"]})
+            response.raise_for_status()
+            result = response.json()
+        await asyncio.to_thread(save_write_audit_sync, "custom-signature-set-rollback", record["nsip"], record["signature_object_name"], record["signature_object_name"], "rolled-back", {"changes_applied": True})
+        await asyncio.to_thread(update_custom_signature_set_sync, set_id, {"status": "rolled-back", "changes_applied": False})
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail="NetScaler custom signature rollback failed") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="NetScaler adapter unavailable") from exc
+    return {"custom_signature_set_id": set_id, "signature_object_name": record["signature_object_name"], "rolled_back": True, "changes_applied": True, "adapter_result": result}
 
 
 @app.post("/api/adc/writes/appfw-profile-signature")
