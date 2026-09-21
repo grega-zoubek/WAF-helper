@@ -2101,6 +2101,13 @@ async def prepare_custom_signature_set(request: CustomSignatureSetPrepareRequest
     return {**plan, "custom_signature_set_id": set_id, "selected_rule_ids": [str(item.get("rule_id")) for item in plan["selected_rules"]]}
 
 
+@app.post("/api/custom-signature-sets/recommendations")
+async def recommend_custom_signature_set(request: CustomSignatureSetPrepareRequest) -> dict[str, Any]:
+    """Return exact rule-level recommendations without persisting a draft or writing to the ADC."""
+    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action)
+    return {**plan, "recommendation_only": True, "selected_rule_ids": [str(item.get("rule_id")) for item in plan["selected_rules"]]}
+
+
 @app.get("/api/custom-signature-sets")
 async def list_custom_signature_sets(job_id: str | None = Query(default=None, max_length=128)) -> list[dict[str, Any]]:
     try:

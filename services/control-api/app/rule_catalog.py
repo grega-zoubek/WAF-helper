@@ -45,6 +45,9 @@ def normalize_rule_catalog(catalog: Any) -> list[dict[str, Any]]:
         technology_tags = item.get("technology_tags", item.get("technologies", []))
         if isinstance(technology_tags, str):
             technology_tags = [technology_tags]
+        locations = item.get("locations", item.get("location", []))
+        if isinstance(locations, str):
+            locations = [locations]
         normalized.append({
             "rule_id": key,
             "category": str(item.get("category") or "").strip().casefold() or None,
@@ -53,6 +56,13 @@ def normalize_rule_catalog(catalog: Any) -> list[dict[str, Any]]:
             "description": str(item.get("description") or item.get("name") or "")[:500],
             "action": str(item.get("action") or "LOG").upper(),
             "enabled": bool(item.get("enabled", True)),
+            "locations": sorted({str(value).strip().casefold() for value in locations if value}),
+            "severity": str(item.get("severity") or "").strip().casefold() or None,
+            "version": str(item.get("version") or "").strip() or None,
+            "source": str(item.get("source") or "").strip() or None,
+            "match_types": sorted({str(value).strip().casefold() for value in (item.get("match_types") or [])} if isinstance(item.get("match_types"), list) else {value.strip().casefold() for value in str(item.get("match_types") or "").split() if value.strip()}),
+            "reference_count": int(item.get("reference_count") or 0),
+            "pattern_count": int(item.get("pattern_count") or 0),
         })
         seen.add(key)
     return normalized
