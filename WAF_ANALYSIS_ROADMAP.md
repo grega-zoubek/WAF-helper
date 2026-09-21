@@ -510,3 +510,10 @@ If connectivity is lost or a machine reboots:
 - Action: added a direct `Generate analysis` button beside `View profile`, `Check ADC path`, and `Delete` for completed discovery jobs. `View profile` now renders a compact technology summary; `Generate analysis` renders a compact protection summary with architecture, protection areas, intents, and recommended signature groups.
 - Live validation: revision `6a4533c` is deployed. The Juice Shop discovery row displayed all four actions on one line. View profile showed one summary card, and Generate analysis showed `54` sanitized observations with compact protection recommendations. No target-side or ADC configuration change was made.
 - Recovery after connectivity loss or reboot: verify the server checkout is at `6a4533c` or later and reload the GUI. If the old detailed view remains, run `git pull --ff-only origin main`; no container recreation is required for this frontend-only change.
+
+### Findings and signature-recommendation summary checkpoint
+
+- Timestamp: 2026-09-21 UTC
+- Action: expanded View profile into a compact findings summary with metrics, detected technologies, route/form/auth counts, and a parallel Signature applicability panel showing catalog status, rule count, categories, and example rule IDs. Added a same-row `Signature recommendations` button for a focused proposal summary.
+- Live validation: revision `02ffe20` is deployed. Juice Shop View profile showed Angular findings plus the signature applicability context (`3208` catalog rules; no Angular tag match), and the Signature recommendations view showed detected platform context, included protection intents, and recommended groups. No ADC or target-side change was made.
+- Recovery after connectivity loss or reboot: verify the server checkout is at `02ffe20` or later, reload the GUI, reconnect the saved ADC session, and reopen application discovery. If the old single-line or detailed profile remains, run `git pull --ff-only origin main`; no container recreation is required for this frontend-only change.
