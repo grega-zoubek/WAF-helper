@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -15,6 +16,8 @@ from typing import Callable
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 from rule_catalog import load_rule_catalog
 
 
@@ -22,6 +25,7 @@ DEFAULT_SOURCE_URL = "https://s3.amazonaws.com/NSAppFwSignatures/SignaturesMappi
 DEFAULT_INTERVAL_SECONDS = 3600
 MAX_MAPPING_BYTES = 2 * 1024 * 1024
 MAX_SIGNATURE_BYTES = 64 * 1024 * 1024
+DEFAULT_PUBLIC_KEY_FILE = Path("/run/signature-sync/citrix_public.pem")
 
 
 def utc_now() -> str:
@@ -38,6 +42,8 @@ class SyncConfig:
     request_timeout_seconds: int = 60
     run_on_start: bool = True
     verify_sha1: bool = True
+    verify_citrix_signature: bool = True
+    public_key_file: Path = DEFAULT_PUBLIC_KEY_FILE
 
     @classmethod
     def from_env(cls) -> "SyncConfig":
@@ -50,6 +56,8 @@ class SyncConfig:
             request_timeout_seconds=max(5, int(os.getenv("SIGNATURE_SYNC_TIMEOUT_SECONDS", "60"))),
             run_on_start=os.getenv("SIGNATURE_SYNC_RUN_ON_START", "true").strip().lower() == "true",
             verify_sha1=os.getenv("SIGNATURE_SYNC_VERIFY_SHA1", "true").strip().lower() == "true",
+            verify_citrix_signature=os.getenv("SIGNATURE_SYNC_VERIFY_CITRIX_SIGNATURE", "true").strip().lower() == "true",
+            public_key_file=Path(os.getenv("SIGNATURE_PUBLIC_KEY_FILE", str(DEFAULT_PUBLIC_KEY_FILE))),
         )
 
     @property
@@ -110,11 +118,27 @@ def _source_url(mapping_url: str, relative_path: str) -> str:
     return resolved
 
 
-def _extract_sha1(payload: bytes) -> str:
+def _extract_plain_sha1(payload: bytes) -> str | None:
     match = re.search(r"\b[a-fA-F0-9]{40}\b", payload.decode("utf-8", errors="replace"))
-    if not match:
-        raise ValueError("signature source did not provide a valid SHA-1 value")
-    return match.group(0).casefold()
+    return match.group(0).casefold() if match else None
+
+
+def _verify_citrix_signature(signature_payload: bytes, digest_payload: bytes, public_key_file: Path) -> str:
+    try:
+        encoded_signature = b"".join(digest_payload.split())
+        signature = base64.b64decode(encoded_signature, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise ValueError("Citrix signature file is not valid base64") from exc
+    if not signature:
+        raise ValueError("Citrix signature file is empty")
+    try:
+        public_key = serialization.load_pem_public_key(public_key_file.read_bytes())
+        public_key.verify(signature, signature_payload, padding.PKCS1v15(), hashes.SHA1())
+    except FileNotFoundError as exc:
+        raise ValueError(f"Citrix public key is missing: {public_key_file}") from exc
+    except Exception as exc:
+        raise ValueError("signature XML failed Citrix public-key verification") from exc
+    return "citrix-rsa-sha1"
 
 
 def parse_mapping(payload: bytes, *, source_url: str, target_release: str, target_build: str) -> dict[str, str]:
@@ -186,7 +210,15 @@ def _append_history(path: Path, value: dict[str, object]) -> None:
         handle.write(json.dumps(value, sort_keys=True) + "\n")
 
 
-def _index_payload(raw_path: Path, mapping: dict[str, str], source_sha1: str, mapping_sha256: str) -> tuple[dict[str, object], dict[str, object]]:
+def _index_payload(
+    raw_path: Path,
+    mapping: dict[str, str],
+    source_sha1: str,
+    mapping_sha256: str,
+    integrity_status: str,
+    sha1_file_sha256: str,
+    digest_file_sha256: str,
+) -> tuple[dict[str, object], dict[str, object]]:
     catalog = load_rule_catalog(str(raw_path))
     if catalog.get("status") != "enumerated":
         raise ValueError(f"signature XML produced no rule metadata: {catalog.get('status')}")
@@ -205,6 +237,9 @@ def _index_payload(raw_path: Path, mapping: dict[str, str], source_sha1: str, ma
         "source_file": mapping["file_path"],
         "source_sha1": source_sha1,
         "source_sha256": raw_sha256,
+        "sha1_file_sha256": sha1_file_sha256,
+        "digest_file_sha256": digest_file_sha256,
+        "integrity_status": integrity_status,
         "raw_payload_retained": False,
         "catalogs": [{
             "file": Path(mapping["file_path"]).name,
@@ -230,6 +265,9 @@ def _index_payload(raw_path: Path, mapping: dict[str, str], source_sha1: str, ma
         "signature_schema_version": mapping["schema_version"],
         "source_sha1": source_sha1,
         "source_sha256": raw_sha256,
+        "sha1_file_sha256": sha1_file_sha256,
+        "digest_file_sha256": digest_file_sha256,
+        "integrity_status": integrity_status,
         "mapping_sha256": mapping_sha256,
         "rule_count": catalog["rule_count"],
         "catalog_fingerprint": catalog["catalog_fingerprint"],
@@ -243,13 +281,19 @@ def sync_once(config: SyncConfig, fetcher: Callable[[str, int, int], bytes] = _b
     mapping = parse_mapping(mapping_payload, source_url=config.source_url, target_release=config.target_release, target_build=config.target_build)
     mapping["mapping_url"] = config.source_url
     sha1_payload = fetcher(mapping["sha1_url"], config.request_timeout_seconds, 64 * 1024)
-    source_sha1 = _extract_sha1(sha1_payload)
+    digest_payload = b""
+    if mapping.get("digest_url"):
+        digest_payload = fetcher(mapping["digest_url"], config.request_timeout_seconds, 64 * 1024)
+    plain_sha1 = _extract_plain_sha1(sha1_payload)
+    sha1_file_sha256 = hashlib.sha256(sha1_payload).hexdigest()
+    digest_file_sha256 = hashlib.sha256(digest_payload).hexdigest() if digest_payload else ""
     previous = _read_json(config.state_path)
     raw_path = config.raw_dir / Path(mapping["file_path"]).name
     latest_path = config.index_dir / "latest.json"
     same_source = (
         previous.get("source_file") == mapping["file_path"]
-        and previous.get("source_sha1") == source_sha1
+        and previous.get("sha1_file_sha256") == sha1_file_sha256
+        and previous.get("digest_file_sha256", "") == digest_file_sha256
         and previous.get("version") == mapping["version"]
         and raw_path.is_file()
         and latest_path.is_file()
@@ -263,12 +307,23 @@ def sync_once(config: SyncConfig, fetcher: Callable[[str, int, int], bytes] = _b
 
     signature_payload = fetcher(mapping["file_url"], config.request_timeout_seconds, MAX_SIGNATURE_BYTES)
     downloaded_sha1 = hashlib.sha1(signature_payload).hexdigest()
-    if config.verify_sha1 and downloaded_sha1 != source_sha1:
-        raise ValueError("downloaded signature XML failed the published SHA-1 check")
+    integrity_status = "sha1-file-unverified"
+    if plain_sha1:
+        if config.verify_sha1 and downloaded_sha1 != plain_sha1:
+            raise ValueError("downloaded signature XML failed the published SHA-1 check")
+        integrity_status = "plain-sha1"
+    elif digest_payload:
+        if config.verify_citrix_signature:
+            integrity_status = _verify_citrix_signature(signature_payload, digest_payload, config.public_key_file)
+        else:
+            integrity_status = "citrix-rsa-sha1-unverified"
+    elif config.verify_citrix_signature:
+        raise ValueError("signature mapping did not provide a verifiable digest file")
     _atomic_write(raw_path, signature_payload)
-    if mapping.get("digest_url"):
-        _atomic_write(config.raw_dir / f"{raw_path.name}.digest", fetcher(mapping["digest_url"], config.request_timeout_seconds, 64 * 1024))
-    index, state = _index_payload(raw_path, mapping, source_sha1, mapping_sha256)
+    _atomic_write(config.raw_dir / f"{raw_path.name}.sha1", sha1_payload)
+    if digest_payload:
+        _atomic_write(config.raw_dir / f"{raw_path.name}.digest", digest_payload)
+    index, state = _index_payload(raw_path, mapping, downloaded_sha1, mapping_sha256, integrity_status, sha1_file_sha256, digest_file_sha256)
     versioned_index = config.index_dir / f"{raw_path.stem}.json"
     _atomic_json(versioned_index, index)
     _atomic_json(latest_path, index)

@@ -33,7 +33,9 @@ fail-closed applicability matching.
 The `signature-sync` Compose service checks Citrix's official
 `SignaturesMapping.xml` every hour. It selects the configured ADC release/build
 (default `14.1`/`0`), downloads the mapped XML and checksum, verifies SHA-1,
-and creates a normalized index under `signature-cache/upstream/`.
+verifies Citrix's RSA signature from the mapped `.digest` file using the
+provisioned `signature-cache/citrix_public.pem`, and creates a normalized index
+under `signature-cache/upstream/`.
 
 This upstream cache is intentionally separate from the reviewed
 `netscaler_rule_catalog.json` used by the adapter. A successful upstream update
@@ -42,3 +44,7 @@ index. After a reboot, Compose restarts the service and its startup check
 reconciles the existing state. After connectivity loss, inspect
 `signature-cache/upstream/state.json` and the service `/status` endpoint; do not
 delete the cache while investigating a failed update.
+
+The public key is not a credential and is intentionally kept outside Git with
+the cache. Provision it from the ADC's vendor key at
+`/netscaler/public.pem` or from an administrator-approved Citrix key export.

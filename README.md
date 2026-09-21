@@ -32,10 +32,12 @@ hourly, defaults to the ADC 14.1 build 0 entry, verifies the published SHA-1,
 downloads a changed signature XML atomically, and builds a normalized upstream
 index. Its data is kept under the ignored `signature-cache/upstream/` directory;
 it does not overwrite the reviewed `catalogs/netscaler_rule_catalog.json` or
-apply anything to the ADC. The source URL, target release/build, interval, and
-data directory are configurable with `SIGNATURE_*` environment variables. The
-internal service exposes `/healthz`, `/status`, and a manual `POST /run` for
-operations and testing.
+apply anything to the ADC. The Citrix RSA public key is provisioned separately
+as `signature-cache/citrix_public.pem`; the service verifies the published
+`.digest` signature over the XML using that key. The source URL, target
+release/build, interval, and data directory are configurable with `SIGNATURE_*`
+environment variables. The internal service exposes `/healthz`, `/status`, and
+a manual `POST /run` for operations and testing.
 
 The first release is read-only and preview-oriented. NetScaler topology discovery
 uses the supplied NetScaler Next-Gen API contract (`/mgmt/api/nextgen/v1`) with
