@@ -49,6 +49,11 @@ name are grouped by protection family, such as traversal, sensitive-file disclos
 command execution, availability, authentication, or reconnaissance, rather than under
 a single undifferentiated `WEB-MISC` bucket.
 
+Rules containing CVE references are additionally cross-listed under a `CVE references`
+tree. CVE entries reuse the original rule IDs and selection state; deselecting a rule in
+the CVE tree removes it from every other group as well. CVE cross-listing does not create
+duplicate export rules.
+
 The `signature-sync` service checks Citrix's published `SignaturesMapping.xml`
 hourly, defaults to the ADC 14.1 build 0 entry, verifies the published SHA-1,
 downloads a changed signature XML atomically, and builds a normalized upstream
