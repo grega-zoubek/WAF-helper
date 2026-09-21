@@ -499,10 +499,29 @@ def profile_sync(job_id: str) -> dict[str, Any]:
     route_inventory = [row for row in evidence if row["evidence_type"] in {"route", "route_discovered", "redirect"}]
     search_surfaces = []
     field_formats = []
+    auth_surfaces = []
+    api_endpoints = []
+    runtime_security = []
     for row in evidence:
         if row["evidence_type"] in {"interaction", "runtime_inspection"} and row["metadata"].get("search_surface_count", 0):
             search_surfaces.append({"source_url": row["source_url"], "surfaces": row["metadata"].get("search_surfaces", [])})
         if row["evidence_type"] in {"interaction", "runtime_inspection"}:
+            metadata = row.get("metadata") or {}
+            if metadata.get("auth_surface", {}).get("detected"):
+                auth_surfaces.append({
+                    "source_url": row["source_url"],
+                    "final_url": metadata.get("final_url", ""),
+                    **metadata.get("auth_surface", {}),
+                    "headings": metadata.get("headings", [])[:20],
+                    "button_labels": metadata.get("button_labels", [])[:50],
+                    "network_requests": metadata.get("api_requests", [])[:100],
+                })
+            for endpoint in metadata.get("api_requests", []):
+                item = {"source_url": row["source_url"], **endpoint}
+                if item not in api_endpoints:
+                    api_endpoints.append(item)
+            if metadata.get("security_headers"):
+                runtime_security.append({"source_url": row["source_url"], "headers": metadata.get("security_headers", {})})
             for control in row["metadata"].get("controls", []):
                 field_formats.append({
                     "source_url": row["source_url"],
@@ -576,6 +595,9 @@ def profile_sync(job_id: str) -> dict[str, Any]:
         "route_inventory": route_inventory,
         "search_surfaces": search_surfaces,
         "field_formats": field_formats,
+        "auth_surfaces": auth_surfaces,
+        "api_endpoints": api_endpoints,
+        "runtime_security": runtime_security,
         "evidence": evidence,
     }
 
