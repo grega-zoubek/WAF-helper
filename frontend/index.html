@@ -339,7 +339,15 @@
       const plan = analysis.protection_plan || {};
       const recommendations = plan.signature_recommendations || [];
       const technologyContext = analysis.signature_technology_context || {};
-      const detectedPlatforms = [...(Array.isArray(analysis.detected_application_platforms) ? analysis.detected_application_platforms : []), ...(analysis.technology_profile ? [analysis.technology_profile] : [])].map(item => item.technology || item.name || item).filter(Boolean);
+      const detectedPlatformItems = [
+        ...(Array.isArray(analysis.detected_application_platforms) ? analysis.detected_application_platforms : []),
+        ...(Array.isArray(analysis.technology_profile) ? analysis.technology_profile : (analysis.technology_profile ? [analysis.technology_profile] : [])),
+      ].flatMap(item => Array.isArray(item) ? item : [item]);
+      const detectedPlatforms = [...new Set(detectedPlatformItems.map(item => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return '';
+        return item.technology || item.name || item.label || item.technology_key || '';
+      }).filter(Boolean))];
       const recommendationRows = recommendations.map(item => `<tr><td>${escapeHtml(item.name || item.catalog_key || '-')}</td><td class="${item.priority === 'high' ? 'high' : item.priority === 'medium' ? 'medium' : 'low'}">${escapeHtml(item.priority || '-')}</td><td>${escapeHtml(item.deployment_mode || '-')}</td><td>${escapeHtml(item.status || '-')}</td><td>${escapeHtml(item.reason || '-')}</td></tr>`).join('');
       const intents = (analysis.generic_protection_intents || []).filter(item => item.decision === 'include').map(item => `<li>${escapeHtml(item.name || item.intent_id || '-')} · ${escapeHtml(item.applicability_confidence || '-')}</li>`).join('');
       const exactRules = exactPlan?.selected_rules || [];
