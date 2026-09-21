@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.rule_catalog import catalog_fingerprint, normalize_rule_catalog, resolve_rule_catalog
+from app.generic_signature_groups import select_generic_signature_groups
 
 
 DEFAULT_UPSTREAM_INDEX_FILE = "/run/upstream-signatures/latest.json"
@@ -74,11 +75,26 @@ def select_rules_for_detection(
     include_generic_signatures: bool = True,
     selected_technology_filters: list[str] | None = None,
     selected_release_years: list[int] | None = None,
+    selected_signature_groups: list[str] | None = None,
 ) -> dict[str, Any]:
     rules = normalize_rule_catalog(catalog)
     by_id = {str(item["rule_id"]): item for item in rules}
     intents = (analysis.get("generic_protection_intents") or []) if include_generic_signatures else []
     generic = resolve_rule_catalog(intents, rules)
+    generic_groups = select_generic_signature_groups(
+        rules,
+        profile,
+        selected_signature_groups,
+    ) if include_generic_signatures else {
+        "groups": [],
+        "requested_group_ids": [],
+        "rule_sources": {},
+        "selected_rule_ids": [],
+        "selected_rule_count": 0,
+        "unresolved_group_ids": [],
+        "signature_only": True,
+        "positive_model": {"enabled": False, "reason": "deferred to a later phase"},
+    }
     explicit_filters = selected_technology_filters if selected_technology_filters is not None else selected_technology_tags
     product_rule_map = _product_rule_ids(catalog)
     product_rule_ids: set[str] = set()
@@ -93,6 +109,10 @@ def select_rules_for_detection(
     technology_matches: list[dict[str, Any]] = []
     excluded_unmatched_technology_rules: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
+    generic_group_sources = {
+        str(rule_id): set(sources)
+        for rule_id, sources in (generic_groups.get("rule_sources") or {}).items()
+    }
 
     # Generic attack intents are intentionally broad, but a broad intent must
     # not pull in product-specific rules for technologies that were not
@@ -114,6 +134,15 @@ def select_rules_for_detection(
         selected_ids.add(rule_id)
         if matched_tags:
             technology_matches.append({"rule_id": rule_id, "source": "detected-technology", "technology_tags": matched_tags})
+
+    # The first protection phase is signature-only and provider-neutral.  Add
+    # exact untagged catalog rules from the five generic groups; technology-
+    # tagged rules remain controlled by the technology/product selectors above.
+    if include_generic_signatures:
+        selected_ids.update(
+            rule_id for rule_id in generic_group_sources
+            if rule_id in by_id
+        )
 
     if technology_tags:
         for rule in rules:
@@ -156,8 +185,17 @@ def select_rules_for_detection(
     selected_rules = []
     for rule_id in sorted(selected_ids, key=lambda value: int(value) if value.isdigit() else value):
         rule = by_id[rule_id]
-        sources = sorted({str(item.get("intent_id")) for item in generic.get("selected_rules", []) if str(item.get("rule_id")) == rule_id} | ({"detected-technology"} if any(item.get("rule_id") == rule_id for item in technology_matches) else set()))
+        sources = sorted(
+            {str(item.get("intent_id")) for item in generic.get("selected_rules", []) if str(item.get("rule_id")) == rule_id}
+            | generic_group_sources.get(rule_id, set())
+            | ({"detected-technology"} if any(item.get("rule_id") == rule_id for item in technology_matches) else set())
+        )
         selected_rules.append({**rule, "selection_sources": sources})
+    for group in generic_groups.get("groups", []):
+        selected_group_ids = [str(value) for value in group.get("rule_ids", []) if str(value) in selected_ids]
+        group["rule_ids"] = selected_group_ids
+        group["selected_rule_count"] = len(selected_group_ids)
+    generic_group_rule_count = sum(int(group.get("selected_rule_count") or 0) for group in generic_groups.get("groups", []))
     filtered_generic = {
         **generic,
         "selected_rules": [item for item in generic.get("selected_rules", []) if str(item.get("rule_id")) in selected_ids],
@@ -169,6 +207,12 @@ def select_rules_for_detection(
         "catalog_fingerprint": catalog_fingerprint(rules) if rules else None,
         "catalog_rule_count": len(rules),
         "generic_resolution": filtered_generic,
+        "generic_signature_groups": generic_groups.get("groups", []),
+        "generic_signature_group_ids": generic_groups.get("requested_group_ids", []),
+        "generic_signature_group_rule_count": generic_group_rule_count,
+        "unresolved_generic_signature_groups": generic_groups.get("unresolved_group_ids", []),
+        "signature_only": True,
+        "positive_model": {"enabled": False, "reason": "deferred to a later phase"},
         "technology_tags": sorted(technology_tags),
         "technology_filters": canonical_filters,
         "technology_selection_mode": "explicit" if explicit_filters is not None else "detected",

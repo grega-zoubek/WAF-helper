@@ -28,6 +28,22 @@ a separate later workstream.
 - Change layer: proposal, approval, drift check, preflight, guarded apply, verification,
   audit, and rollback. Default mode remains proposal-only.
 
+## Current signature-only phase
+
+The first five generic recommendations are now explicit and resolve against the local
+normalized catalog:
+
+1. HTTP protocol compliance
+2. Canonicalization and evasion
+3. Injection attacks
+4. Cross-site scripting
+5. Path and file attacks
+
+The resolver selects exact untagged rule IDs, preserves match reasons, excludes
+technology-tagged rules from generic groups, and requires upload evidence before adding
+file-upload rules. Positive-model, schema, allowlist, behavioral, bot, and rate-limit
+controls remain deferred. Every proposal remains LOG/BLOCK reviewable and proposal-only.
+
 The generic policy layer is implemented in
 `services/analysis-service/app/generic_protection.py` and covered by tests. It does
 not yet replace the provider catalog resolver or enable automatic ADC writes.

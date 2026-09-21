@@ -27,6 +27,14 @@ catalog before selecting rule IDs. Predefined policy rules are authoritative; an
 AI advisor may explain or rank evidence but cannot invent unavailable rules or apply ADC
 changes. The default automation mode is proposal-only.
 
+The current signature-only phase resolves five generic groups to exact untagged catalog
+rules: HTTP protocol compliance, canonicalization/evasion, injection, XSS, and path/file
+attacks. Product- and runtime-tagged rules remain controlled by the detected technology
+selectors. File-upload rules require upload evidence; path-traversal rules do not. The
+selection response reports group confidence, exact rule counts, match reasons, and a
+`positive_model.enabled=false` marker. Positive security, allowlisting, schema,
+behavioral, bot, and rate-limit controls are deliberately deferred.
+
 The `signature-sync` service checks Citrix's published `SignaturesMapping.xml`
 hourly, defaults to the ADC 14.1 build 0 entry, verifies the published SHA-1,
 downloads a changed signature XML atomically, and builds a normalized upstream
