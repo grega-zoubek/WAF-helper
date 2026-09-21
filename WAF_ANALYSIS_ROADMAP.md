@@ -489,6 +489,15 @@ If connectivity is lost or a machine reboots:
 - Workflow result: the GUI prepared draft object `waf-www-ess-gov-si-bdac3c4c` with catalog version `183`, Citrix RSA-SHA1 integrity, current catalog fingerprint `5ebcbc9f8233d9333c702f762322666488b5ae1bae9ac945bc071733f9755c29`, and `963` selected exact rules in `LOG` mode. It remained a draft; no approval, preflight, export, or ADC mutation was performed.
 - Recovery after connectivity loss or reboot: refresh the page, reconnect the saved ADC session, reload WAF inventory, and verify `Guarded write-enabled` only from the live response. If the custom proposal is stale, discard it from the review flow and prepare a new proposal so the current catalog fingerprint is captured before approval.
 
+### Juice Shop end-to-end workflow and GUI refinement checkpoint
+
+- Timestamp: 2026-09-21 UTC
+- Live scan: Juice Shop at `http://192.168.11.91` completed with `53` pages, `265` sanitized evidence rows after passive runtime inspection, `105` routes, and `10` authentication surfaces. Angular was detected with high confidence (`0.94`). ADC correlation matched `lb_vs_juice_shop` on `192.168.11.91:80`; WAF feature enablement was evidenced, but no AppFW policy binding was correlated.
+- Selection safety: the detection-driven selector produced `408` exact rules from catalog version `183` and excluded `546` technology-tagged rules for technologies not evidenced by the scan, including WordPress, PHP, IIS, Exchange, Nginx, and others. The GUI now shows selected-rule metrics, excluded-rule counts, severity mix, and a four-step selection/approval/preflight/export workflow.
+- Export: proposal `bd5636e4-20e1-4425-91c8-69a5c33e6a0a` used object `waf-192-168-11-91-e391fb6c` in `LOG` mode. Approval, stable-fingerprint preflight, catalog integrity, rule selection, object collision, and write-safety checks passed. The object was exported successfully to the lab ADC with `408` enabled rules and configuration saved; the live ADC signature inventory now contains `4` objects.
+- Implementation: revisions `709f197`, `d4982b4`, `2c133ce`, `fb18311`, `9405ad1`, and `f520b6f` add technology-aware exclusion, stable preflight fingerprints, GUI workflow metrics, ADC-supported native XML export over temporary SFTP, and sanitized CLI rejection diagnostics.
+- Recovery after connectivity loss or reboot: verify server revision `f520b6f` or later, confirm all Compose services and Postgres health, query `http://192.168.11.90:8110/healthz`, retrieve proposal `bd5636e4-20e1-4425-91c8-69a5c33e6a0a`, and re-read the ADC signature inventory before retrying any export. Do not resend an export with stale approval or preflight identifiers; rerun preflight against the current catalog first.
+
 ### Simplified GUI landing and on-demand tools checkpoint
 
 - Timestamp: 2026-09-21 UTC
