@@ -44,7 +44,7 @@
 </head>
 <body>
   <h1>WAF Intelligence Platform</h1>
-  <p class="muted">Microservice foundation · read-only MVP</p>
+  <p class="muted">Microservice foundation · approval-gated control</p>
   <div class="grid">
     <div class="card"><h2>Platform</h2><p id="platform" class="status">Loading...</p></div>
     <div class="card"><h2>Connected ADC</h2><p id="connected-adc" class="status">Not connected</p></div>
@@ -68,7 +68,7 @@
   </section>
   <section class="next card" id="waf-section">
     <h2>WAF protection</h2>
-    <p class="small muted">Read-only NetScaler AppFW inventory and prepared protection options. No WAF changes are applied from this view.</p>
+    <p class="small muted">Live NetScaler AppFW inventory and approval-gated protection proposals. Nothing is exported without explicit approval, current-catalog preflight, and confirmation.</p>
     <p id="waf-status" class="small muted">Connect to NetScaler, then load the WAF inventory.</p>
     <button id="load-waf-inventory" class="secondary" type="button">Load WAF inventory</button>
     <span class="small muted">Write mode: <strong id="waf-write-mode" class="progress">unknown</strong> · approval required for future changes</span>
