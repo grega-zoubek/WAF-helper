@@ -105,6 +105,23 @@ class SignatureWorkflowTests(unittest.TestCase):
         self.assertEqual(result["cve_signature_group"]["cve_count"], 1)
         self.assertEqual(result["cve_signature_group"]["subgroups"][0]["name"], "WordPress")
 
+    def test_rule_confidence_keeps_accuracy_risk_and_readiness_separate(self):
+        profile = {
+            "technologies": [{"technology": "WordPress", "technology_key": "wordpress", "confidence": "high", "confidence_score": 0.94}],
+            "signature_technology_context": {"technology_matches": [{"technology": "WordPress", "technology_key": "wordpress", "matched_signature_tags": ["wordpress"]}]},
+        }
+        catalog = {"status": "ready", "rules": [
+            {"rule_id": "42", "technology_tags": ["wordpress"], "accuracy": "high", "risk": "high", "description": "WordPress protection"},
+        ]}
+        result = select_rules_for_detection(profile, {"generic_protection_intents": []}, catalog)
+        confidence = result["selected_rules"][0]["confidence"]
+        self.assertEqual(confidence["applicability"], "high")
+        self.assertEqual(confidence["accuracy"], "high")
+        self.assertEqual(confidence["risk"], "high")
+        self.assertEqual(confidence["enforcement_readiness"], "staged")
+        self.assertFalse(confidence["enforcement_ready"])
+        self.assertFalse(result["confidence_summary"]["automatic_block_allowed"])
+
     def test_release_year_filter_keeps_only_selected_year(self):
         result = select_rules_for_detection(
             {"signature_technology_context": {}, "technologies": []},

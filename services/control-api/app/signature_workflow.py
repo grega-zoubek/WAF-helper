@@ -9,6 +9,7 @@ from typing import Any
 
 from app.rule_catalog import catalog_fingerprint, normalize_rule_catalog, resolve_rule_catalog
 from app.generic_signature_groups import build_cve_signature_group, build_generic_group_subgroups, select_generic_signature_groups
+from app.confidence import confidence_summary, rule_confidence, technology_detection_scores
 
 
 DEFAULT_UPSTREAM_INDEX_FILE = "/run/upstream-signatures/latest.json"
@@ -189,6 +190,7 @@ def select_rules_for_detection(
     # catalog browser.  This prevents vulnerabilities belonging to an
     # undetected or unselected technology from appearing in the proposal.
     cve_candidate_rule_ids = set(selected_ids)
+    technology_scores = technology_detection_scores(profile)
     selected_rules = []
     for rule_id in sorted(selected_ids, key=lambda value: int(value) if value.isdigit() else value):
         rule = by_id[rule_id]
@@ -197,7 +199,17 @@ def select_rules_for_detection(
             | generic_group_sources.get(rule_id, set())
             | ({"detected-technology"} if any(item.get("rule_id") == rule_id for item in technology_matches) else set())
         )
-        selected_rules.append({**rule, "selection_sources": sources})
+        confidence = rule_confidence(
+            rule,
+            technology_tags=technology_tags,
+            technology_scores=technology_scores,
+            explicitly_selected_product=rule_id in product_rule_ids,
+            explicitly_selected_technology=explicit_filters is not None,
+            selection_sources=set(sources),
+        )
+        enriched_rule = {**rule, "selection_sources": sources, "confidence": confidence}
+        by_id[rule_id] = enriched_rule
+        selected_rules.append(enriched_rule)
     generic_groups["groups"] = build_generic_group_subgroups(
         generic_groups.get("groups", []),
         by_id,
@@ -230,6 +242,7 @@ def select_rules_for_detection(
         "cve_rule_count": int(cve_signature_group.get("candidate_rule_count") or 0) if cve_signature_group else 0,
         "cve_count": int(cve_signature_group.get("cve_count") or 0) if cve_signature_group else 0,
         "cve_candidate_scope": "current-signature-proposal",
+        "confidence_summary": confidence_summary(selected_rules),
         "generic_signature_group_ids": generic_groups.get("requested_group_ids", []),
         "generic_signature_group_rule_count": generic_group_rule_count,
         "unresolved_generic_signature_groups": generic_groups.get("unresolved_group_ids", []),

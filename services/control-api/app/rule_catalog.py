@@ -6,8 +6,9 @@ import re
 from typing import Any
 
 
-RULE_CATALOG_SCHEMA_VERSION = "1.1.0"
+RULE_CATALOG_SCHEMA_VERSION = "1.2.0"
 _CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,8}\b", re.IGNORECASE)
+_RATINGS = {"low", "medium", "high"}
 
 
 INTENT_ATTACK_CLASSES: dict[str, set[str]] = {
@@ -25,6 +26,11 @@ INTENT_ATTACK_CLASSES: dict[str, set[str]] = {
 def catalog_fingerprint(rules: list[dict[str, Any]]) -> str:
     canonical = json.dumps(rules, sort_keys=True, separators=(",", ":"), default=str).encode()
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _normalized_rating(value: Any) -> str | None:
+    normalized = str(value or "").strip().casefold()
+    return normalized if normalized in _RATINGS else None
 
 
 def normalize_rule_catalog(catalog: Any) -> list[dict[str, Any]]:
@@ -64,6 +70,8 @@ def normalize_rule_catalog(catalog: Any) -> list[dict[str, Any]]:
             "enabled": bool(item.get("enabled", True)),
             "locations": sorted({str(value).strip().casefold() for value in locations if value}),
             "severity": str(item.get("severity") or "").strip().casefold() or None,
+            "accuracy": _normalized_rating(item.get("accuracy", item.get("signature_accuracy", item.get("f5_accuracy")))),
+            "risk": _normalized_rating(item.get("risk", item.get("signature_risk", item.get("f5_risk")))),
             "version": str(item.get("version") or "").strip() or None,
             "released_year": str(item.get("released_year", item.get("year")) or "").strip() or None,
             "source": str(item.get("source") or "").strip() or None,
