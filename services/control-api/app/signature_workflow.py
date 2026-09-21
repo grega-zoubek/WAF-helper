@@ -44,6 +44,18 @@ def _technology_tags(profile: dict[str, Any]) -> set[str]:
     return tags
 
 
+def _product_rule_ids(catalog: dict[str, Any]) -> dict[str, set[str]]:
+    product_index = catalog.get("product_index") if isinstance(catalog, dict) else None
+    if not isinstance(product_index, dict):
+        return {}
+    result: dict[str, set[str]] = {}
+    for item in product_index.get("products", []):
+        if not isinstance(item, dict) or not item.get("key"):
+            continue
+        result[f"product:{str(item['key']).strip().casefold()}"] = {str(value) for value in (item.get("rule_ids") or []) if value is not None}
+    return result
+
+
 def select_rules_for_detection(
     profile: dict[str, Any],
     analysis: dict[str, Any],
@@ -51,16 +63,23 @@ def select_rules_for_detection(
     requested_rule_ids: list[str] | None = None,
     selected_technology_tags: list[str] | None = None,
     include_generic_signatures: bool = True,
+    selected_technology_filters: list[str] | None = None,
 ) -> dict[str, Any]:
     rules = normalize_rule_catalog(catalog)
     by_id = {str(item["rule_id"]): item for item in rules}
     intents = (analysis.get("generic_protection_intents") or []) if include_generic_signatures else []
     generic = resolve_rule_catalog(intents, rules)
-    technology_tags = (
-        {str(value).strip().casefold() for value in selected_technology_tags if str(value).strip()}
-        if selected_technology_tags is not None
-        else _technology_tags(profile)
-    )
+    explicit_filters = selected_technology_filters if selected_technology_filters is not None else selected_technology_tags
+    product_rule_map = _product_rule_ids(catalog)
+    product_rule_ids: set[str] = set()
+    if explicit_filters is not None:
+        filter_values = {str(value).strip().casefold() for value in explicit_filters if str(value).strip()}
+        technology_tags = {value.removeprefix("tag:") for value in filter_values if not value.startswith("product:")}
+        for value in filter_values:
+            if value.startswith("product:"):
+                product_rule_ids.update(product_rule_map.get(value, set()))
+    else:
+        technology_tags = _technology_tags(profile)
     technology_matches: list[dict[str, Any]] = []
     excluded_unmatched_technology_rules: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
@@ -92,6 +111,13 @@ def select_rules_for_detection(
                 selected_ids.add(str(rule["rule_id"]))
                 if not any(item.get("rule_id") == str(rule["rule_id"]) for item in technology_matches):
                     technology_matches.append({"rule_id": str(rule["rule_id"]), "source": "detected-technology", "technology_tags": sorted(technology_tags.intersection(set(rule.get("technology_tags", []))))})
+    if product_rule_ids:
+        for rule_id in product_rule_ids:
+            if rule_id not in by_id:
+                continue
+            selected_ids.add(rule_id)
+            if not any(item.get("rule_id") == rule_id for item in technology_matches):
+                technology_matches.append({"rule_id": rule_id, "source": "selected-product"})
     if requested_rule_ids is not None:
         requested = {str(value) for value in requested_rule_ids}
         missing = sorted(requested - set(by_id))
@@ -116,7 +142,9 @@ def select_rules_for_detection(
         "catalog_rule_count": len(rules),
         "generic_resolution": filtered_generic,
         "technology_tags": sorted(technology_tags),
-        "technology_selection_mode": "explicit" if selected_technology_tags is not None else "detected",
+        "technology_filters": sorted({str(value).strip().casefold() for value in explicit_filters or []}),
+        "technology_selection_mode": "explicit" if explicit_filters is not None else "detected",
+        "selected_product_rule_count": len(product_rule_ids),
         "include_generic_signatures": bool(include_generic_signatures),
         "technology_rule_matches": technology_matches,
         "excluded_unmatched_technology_rules": excluded_unmatched_technology_rules,

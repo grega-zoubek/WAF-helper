@@ -72,6 +72,22 @@ class SignatureWorkflowTests(unittest.TestCase):
         self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["21"])
         self.assertFalse(result["include_generic_signatures"])
 
+    def test_product_filter_selects_only_rules_in_product_index(self):
+        result = select_rules_for_detection(
+            {"signature_technology_context": {}, "technologies": []},
+            {"generic_protection_intents": []},
+            {"status": "ready", "rules": [
+                {"rule_id": "30", "technology_tags": ["ibm"]},
+                {"rule_id": "31", "technology_tags": ["wordpress"]},
+            ], "product_index": {"products": [
+                {"key": "ibm/lotus-notes", "rule_ids": ["30"]},
+            ]}},
+            selected_technology_filters=["product:ibm/lotus-notes"],
+            include_generic_signatures=False,
+        )
+        self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["30"])
+        self.assertEqual(result["selected_product_rule_count"], 1)
+
     def test_commands_are_chunked_and_save_config_is_last(self):
         commands = cli_import_commands("waf-test", [str(value) for value in range(101)], "BLOCK", chunk_size=50)
         self.assertEqual(len(commands), 4)

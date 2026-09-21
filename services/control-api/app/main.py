@@ -168,6 +168,7 @@ class CustomSignatureSetPrepareRequest(BaseModel):
     signature_object_name: str | None = Field(default=None, max_length=31)
     selected_rule_ids: list[str] | None = Field(default=None, max_length=5000)
     selected_technology_tags: list[str] | None = Field(default=None, max_length=500)
+    selected_technology_filters: list[str] | None = Field(default=None, max_length=500)
     include_generic_signatures: bool = True
     action: str = Field(default="LOG", max_length=16)
 
@@ -1837,6 +1838,41 @@ async def signature_technologies(
         options.append(item)
     options.sort(key=lambda item: str(item["label"]).casefold())
     options = options[:limit]
+    groups: dict[str, dict[str, Any]] = {}
+    product_index = catalog.get("product_index") if isinstance(catalog, dict) else None
+    if isinstance(product_index, dict):
+        for vendor_entry in product_index.get("vendors", []):
+            if not isinstance(vendor_entry, dict) or not vendor_entry.get("vendor"):
+                continue
+            vendor_key = f"vendor:{str(vendor_entry['vendor']).strip().casefold()}"
+            groups[vendor_key] = {"key": vendor_key, "label": str(vendor_entry["vendor"]), "children": []}
+            for product_entry in vendor_entry.get("products", []):
+                if not isinstance(product_entry, dict) or not product_entry.get("key"):
+                    continue
+                groups[vendor_key]["children"].append({
+                    "key": f"product:{str(product_entry['key']).casefold()}",
+                    "label": str(product_entry.get("product") or product_entry["key"]),
+                    "kind": "product",
+                    "rule_count": int(product_entry.get("rule_count") or 0),
+                    "example_rule_ids": [str(value) for value in (product_entry.get("example_rule_ids") or [])[:8]],
+                })
+    represented_products = {child["key"] for group in groups.values() for child in group["children"]}
+    other = {"key": "vendor:other-technologies", "label": "Other technologies", "children": []}
+    for item in options:
+        tag_key = f"tag:{item['key']}"
+        if tag_key not in represented_products:
+            other["children"].append({**item, "key": tag_key, "kind": "technology-tag"})
+    if other["children"]:
+        groups[other["key"]] = other
+    for group in groups.values():
+        group["children"].sort(key=lambda item: str(item.get("label") or "").casefold())
+        group["child_count"] = len(group["children"])
+    filtered_groups = []
+    for group in groups.values():
+        children = [item for item in group["children"] if not query or query in f"{group['label']} {item.get('label', '')} {item.get('key', '')}".casefold()]
+        if children:
+            filtered_groups.append({**group, "children": children, "child_count": len(children)})
+    filtered_groups.sort(key=lambda item: str(item["label"]).casefold())
     return {
         "status": "enumerated",
         "source": "local-signature-repository",
@@ -1845,6 +1881,8 @@ async def signature_technologies(
         "option_count": len(options),
         "total_option_count": len(by_tag),
         "options": options,
+        "groups": filtered_groups,
+        "total_group_count": len(groups),
         "query": q,
     }
 
@@ -2238,6 +2276,7 @@ async def build_custom_signature_set_plan(
     action: str = "LOG",
     selected_technology_tags: list[str] | None = None,
     include_generic_signatures: bool = True,
+    selected_technology_filters: list[str] | None = None,
 ) -> dict[str, Any]:
     action = str(action or "LOG").upper()
     if action not in ACTION_VALUES:
@@ -2253,7 +2292,7 @@ async def build_custom_signature_set_plan(
     if not OBJECT_NAME_RE.fullmatch(name):
         raise HTTPException(status_code=422, detail="signature_object_name contains unsupported NetScaler characters or exceeds 31 characters")
     catalog = await asyncio.to_thread(load_upstream_catalog)
-    selection = select_rules_for_detection(profile, analysis, catalog, selected_rule_ids, selected_technology_tags, include_generic_signatures)
+    selection = select_rules_for_detection(profile, analysis, catalog, selected_rule_ids, selected_technology_tags, include_generic_signatures, selected_technology_filters)
     status = "draft"
     if selection.get("catalog_status") != "ready":
         status = "blocked-upstream-catalog"
@@ -2301,7 +2340,7 @@ async def build_custom_signature_set_plan(
 
 @app.post("/api/custom-signature-sets/prepare", status_code=201)
 async def prepare_custom_signature_set(request: CustomSignatureSetPrepareRequest) -> dict[str, Any]:
-    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags, request.include_generic_signatures)
+    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags, request.include_generic_signatures, request.selected_technology_filters)
     try:
         set_id = await asyncio.to_thread(save_custom_signature_set_sync, plan)
     except psycopg.Error as exc:
@@ -2312,7 +2351,7 @@ async def prepare_custom_signature_set(request: CustomSignatureSetPrepareRequest
 @app.post("/api/custom-signature-sets/recommendations")
 async def recommend_custom_signature_set(request: CustomSignatureSetPrepareRequest) -> dict[str, Any]:
     """Return exact rule-level recommendations without persisting a draft or writing to the ADC."""
-    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags, request.include_generic_signatures)
+    plan = await build_custom_signature_set_plan(request.job_id, request.signature_object_name, request.selected_rule_ids, request.action, request.selected_technology_tags, request.include_generic_signatures, request.selected_technology_filters)
     return {**plan, "recommendation_only": True, "selected_rule_ids": [str(item.get("rule_id")) for item in plan["selected_rules"]]}
 
 
