@@ -1,6 +1,10 @@
 import asyncio
+import copy
+import io
 import os
 import re
+import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -78,6 +82,50 @@ def _unsupported_write(resource: str) -> None:
             "write_enabled": write_enabled(),
         },
     )
+
+
+def _signature_source_file() -> Path:
+    configured = os.getenv("NETSCALER_SIGNATURE_SOURCE_FILE", "").strip()
+    if configured and Path(configured).is_file():
+        return Path(configured)
+    candidates = sorted(Path("/run/upstream-signatures/raw").glob("*.xml"), key=lambda item: item.stat().st_mtime, reverse=True)
+    if not candidates:
+        raise RuntimeError("Verified upstream signature XML is not mounted")
+    return candidates[0]
+
+
+def _filtered_signature_xml(rule_ids: list[str], action: str) -> bytes:
+    root = ET.parse(_signature_source_file()).getroot()
+    selected = set(rule_ids)
+    found: set[str] = set()
+    output_root = ET.Element(root.tag, root.attrib)
+    for child in root:
+        if child.tag.rsplit("}", 1)[-1] != "Signatures":
+            output_root.append(copy.deepcopy(child))
+            continue
+        signatures = ET.SubElement(output_root, child.tag, child.attrib)
+        for rule in child:
+            if rule.tag.rsplit("}", 1)[-1] != "SignatureRule":
+                continue
+            rule_id = str(rule.attrib.get("id", ""))
+            if rule_id not in selected:
+                continue
+            cloned = copy.deepcopy(rule)
+            cloned.set("enabled", "ON")
+            cloned.set("actions", action.lower())
+            signatures.append(cloned)
+            found.add(rule_id)
+    missing = sorted(selected - found, key=lambda value: int(value) if value.isdigit() else value)
+    if missing:
+        raise ValueError(f"Verified upstream signature XML is missing rule IDs: {', '.join(missing[:20])}")
+    buffer = io.BytesIO()
+    ET.ElementTree(output_root).write(buffer, encoding="utf-8", xml_declaration=True)
+    return buffer.getvalue()
+
+
+def _remote_signature_path(signature_object_name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", signature_object_name)[:31]
+    return f"/var/tmp/waf-scanner-{safe}.xml"
 
 
 @app.get("/healthz")
@@ -348,13 +396,17 @@ async def write_custom_signature_set(request: CustomSignatureSetWriteRequest) ->
     rule_ids = [str(int(rule_id)) for rule_id in request.rule_ids]
     if len(set(rule_ids)) != len(rule_ids):
         raise HTTPException(status_code=422, detail="Rule IDs must be unique")
-    commands = [
-        f"import appfw signatures DEFAULT {request.signature_object_name} -ruleID {' '.join(chunk)} -Enabled ON -Action {action.lower()}"
-        for start in range(0, len(rule_ids), 50)
-        for chunk in [rule_ids[start:start + 50]]
-    ] + ["save ns config"]
+    remote_path = _remote_signature_path(request.signature_object_name)
     try:
-        result = await asyncio.to_thread(execute_cli_commands, commands)
+        signature_xml = _filtered_signature_xml(rule_ids, action)
+    except (OSError, ET.ParseError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Unable to prepare verified native signature XML: {exc}") from exc
+    commands = [
+        f"import appfw signatures local:{remote_path} {request.signature_object_name} -autoEnableNewSignatures OFF",
+        "save ns config",
+    ]
+    try:
+        result = await asyncio.to_thread(execute_cli_commands, commands, [(remote_path, signature_xml)])
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (RuntimeError, TimeoutError, OSError) as exc:

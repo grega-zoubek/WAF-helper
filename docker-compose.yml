@@ -68,9 +68,11 @@ services:
       NETSCALER_SSH_PASSWORD_FILE: /run/secrets/netscaler_password
       NETSCALER_SSH_STRICT_HOST_KEY: "false"
       NETSCALER_SIGNATURE_RULE_CATALOG_FILE: /run/catalogs/netscaler_rule_catalog.json
+      NETSCALER_SIGNATURE_SOURCE_FILE: /run/upstream-signatures/raw/latest.xml
       NETSCALER_WRITE_ENABLED: "true"
     volumes:
       - ./catalogs:/run/catalogs:ro
+      - ./signature-cache/upstream/raw:/run/upstream-signatures/raw:ro
     secrets:
       - netscaler_password
     expose:

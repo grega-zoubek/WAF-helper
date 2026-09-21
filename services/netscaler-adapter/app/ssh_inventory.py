@@ -49,7 +49,7 @@ def _read_until_prompt(channel: paramiko.Channel, timeout: float) -> str:
     raise TimeoutError("Timed out waiting for the NetScaler CLI prompt")
 
 
-def execute_cli_commands(commands: list[str]) -> dict[str, object]:
+def execute_cli_commands(commands: list[str], upload_files: list[tuple[str, bytes]] | None = None) -> dict[str, object]:
     """Execute server-generated, allow-listed CLI commands over SSH.
 
     The caller must construct commands from validated object names, rule IDs,
@@ -78,8 +78,15 @@ def execute_cli_commands(commands: list[str]) -> dict[str, object]:
     else:
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     outputs: list[dict[str, object]] = []
+    sftp = None
     try:
         client.connect(host, port=port, username=username, password=password, look_for_keys=False, allow_agent=False, timeout=timeout, banner_timeout=timeout, auth_timeout=timeout)
+        if upload_files:
+            sftp = client.open_sftp()
+            for remote_path, payload in upload_files:
+                with sftp.file(remote_path, "wb") as remote_file:
+                    remote_file.write(payload)
+                    remote_file.flush()
         channel = client.invoke_shell(width=240, height=2000)
         _read_until_prompt(channel, timeout)
         for command in commands:
@@ -91,6 +98,13 @@ def execute_cli_commands(commands: list[str]) -> dict[str, object]:
         channel.send("exit\n")
         return {"status": "applied", "host": host, "command_count": len(outputs), "commands": outputs}
     finally:
+        if sftp and upload_files:
+            for remote_path, _payload in upload_files:
+                try:
+                    sftp.remove(remote_path)
+                except OSError:
+                    pass
+            sftp.close()
         client.close()
 
 
