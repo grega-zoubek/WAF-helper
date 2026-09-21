@@ -114,7 +114,28 @@ def select_rules_for_detection(profile: dict[str, Any], analysis: dict[str, Any]
 
 
 def workflow_fingerprint(plan: dict[str, Any]) -> str:
-    payload = {key: value for key, value in plan.items() if key not in {"plan_fingerprint", "approval", "preview"}}
+    # Fingerprint only the export-relevant state.  Runtime selection metadata
+    # differs between an automatic proposal and its explicit revalidation, so
+    # including that metadata would create false drift during preflight.
+    payload = {
+        "job_id": plan.get("job_id"),
+        "hostname": plan.get("hostname"),
+        "nsip": plan.get("nsip"),
+        "signature_object_name": plan.get("signature_object_name"),
+        "action": plan.get("action"),
+        "catalog_fingerprint": plan.get("catalog_fingerprint"),
+        "selected_rules": [
+            {
+                "rule_id": item.get("rule_id"),
+                "category": item.get("category"),
+                "attack_classes": item.get("attack_classes", []),
+                "technology_tags": item.get("technology_tags", []),
+                "locations": item.get("locations", []),
+            }
+            for item in (plan.get("selected_rules") or [])
+            if isinstance(item, dict)
+        ],
+    }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
 

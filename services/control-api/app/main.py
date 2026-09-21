@@ -2162,7 +2162,7 @@ async def approve_custom_signature_set(set_id: str, request: CustomSignatureSetA
     approved_at = datetime.now(timezone.utc)
     expires_at = approved_at + timedelta(minutes=30)
     await asyncio.to_thread(update_custom_signature_set_sync, set_id, {"status": "approved", "approval_id": approval_id, "approved_at": approved_at, "expires_at": expires_at})
-    return {"custom_signature_set_id": set_id, "approval_id": approval_id, "status": "approved", "plan_fingerprint": request.plan_fingerprint, "approved_at": approved_at, "expires_at": expires_at, "write_enabled": False, "changes_applied": False}
+    return {"custom_signature_set_id": set_id, "approval_id": approval_id, "status": "approved", "plan_fingerprint": request.plan_fingerprint, "approved_at": approved_at, "expires_at": expires_at, "write_enabled": os.getenv("NETSCALER_WRITE_ENABLED", "false").strip().lower() == "true", "changes_applied": False}
 
 
 @app.post("/api/custom-signature-sets/{set_id}/preflight")
