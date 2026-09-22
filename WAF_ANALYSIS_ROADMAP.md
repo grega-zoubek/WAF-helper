@@ -100,8 +100,28 @@ model and bounded source summary, never raw field values or request bodies.
 - Validation: auth middleware tests cover login, signed-session tampering and
   expiry, HTTPS origin checks, CSRF enforcement, and fail-closed configuration.
   Candidate tests prove acceptance cannot set a blocking mode. Browser
-  correlation and candidate-generation regressions also pass. Deployment/live
-  verification is pending in this checkpoint.
+  correlation and candidate-generation regressions also pass. The focused
+  local set passed 28 tests. Deployed-image runs passed 16 control-api tests
+  (auth, candidate generation, and model contract) and 6 runtime-inspector
+  tests. Python compilation, frontend JavaScript syntax, Compose YAML parsing,
+  and `git diff --check` passed; Nginx `-t` passed on the live Compose network.
+- Deployment: implementation commit `10f654e` plus Nginx compatibility fix
+  `d95fa0a` are pushed and deployed at
+  `/home/grega/waf-intelligence-repo`. All eight Compose services are running;
+  Postgres is healthy. API health is `ok`, HTTPS GUI returned 200, HTTP `:8180`
+  returned a 308 redirect to `https://192.168.11.90/`, and anonymous API reads
+  returned 401. Control API host binding is loopback-only on `127.0.0.1:8110`.
+- Live workflow: operator login returned a Secure session cookie; CSRF checks,
+  stale-version conflict handling, logout, draft edit, accept, and audit history
+  passed. An intentionally blocking smoke-model was stored as a draft and
+  accepted; server normalization kept it observe-only/reviewed. The temporary
+  smoke candidate and its audit entries were deleted; both candidate tables
+  are present and empty. No ADC configuration changed.
+- Bootstrap: operator name is `operator`; its randomly generated password is
+  stored only at server path `secrets/waf_operator_password`. The HTTPS
+  certificate is self-signed with IP SAN `192.168.11.90`; browser identity is
+  not CA-verified. The private key, password, and session key are excluded
+  from Git. Do not expose this lab service on an untrusted network.
 - Recovery after connectivity loss or reboot: SSH to `grega@192.168.11.90`,
   enter `/home/grega/waf-intelligence-repo`, run `git pull --ff-only origin
   main` and `docker compose -p waf-intelligence ps`; health-check via
