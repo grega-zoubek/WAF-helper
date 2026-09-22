@@ -876,6 +876,8 @@ async def activate_guided_element(session_id: str, request: GuidedSelectRequest)
         is_role_button = element["role"] == "button" and not element["disabled"] and not element["form_associated"]
         if element["disabled"] or element["target"] and element["target"].casefold() != "_self":
             raise HTTPException(status_code=422, detail="Disabled and new-window controls cannot be activated")
+        if not await items.nth(request.element_index).is_visible():
+            raise HTTPException(status_code=422, detail="This control is hidden; select a visible control instead")
         if not (is_link or is_non_submit_button or is_role_button):
             raise HTTPException(status_code=422, detail="Only in-scope links and explicit non-submit buttons can be activated")
         if is_link:
@@ -884,10 +886,11 @@ async def activate_guided_element(session_id: str, request: GuidedSelectRequest)
                 raise HTTPException(status_code=422, detail="Link is outside the guided session scope")
         event_started = time.monotonic()
         try:
-            await items.nth(request.element_index).click(timeout=3_000, no_wait_after=True)
+            await items.nth(request.element_index).scroll_into_view_if_needed(timeout=3_000)
+            await items.nth(request.element_index).click(timeout=5_000, no_wait_after=True)
             await session["page"].wait_for_timeout(1_200)
         except PlaywrightTimeoutError:
-            raise HTTPException(status_code=422, detail="Control could not be activated")
+            raise HTTPException(status_code=422, detail="The visible control could not be clicked (it may be covered or detached); no successful activation was recorded")
         correlated = correlate_focus_to_requests(element, event_started, session["network_sequence"], session["hostname"], {"document", "xhr", "fetch"})
         click_event = next((item for item in reversed(session["interaction_events"]) if item.get("type") == "click" and item.get("started_at", 0) >= event_started), None)
         if click_event is None:
