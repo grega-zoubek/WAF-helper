@@ -16,6 +16,19 @@
     .action-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .75rem; margin-top: 1rem; }
     .mode-line { margin: .5rem 0 0; }
     .card { border: 1px solid #d9dee3; border-radius: 8px; padding: 1rem; background: #fff; }
+    [hidden] { display: none !important; }
+    .connection-screen { display: grid; gap: 1rem; width: min(100%, 720px); margin: 1.5rem auto; }
+    .connection-panel { margin: 0; }
+    .connection-list { display: grid; gap: .45rem; max-height: 37.5rem; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: .2rem .45rem .2rem 0; }
+    .connection-row { display: flex; align-items: center; justify-content: space-between; gap: .8rem; box-sizing: border-box; height: 4.25rem; padding: .5rem .65rem; border: 1px solid #d9dee3; border-radius: 6px; background: #fafbfc; }
+    .connection-row button { flex: 0 0 auto; }
+    .connection-name { min-width: 0; overflow-wrap: anywhere; }
+    .connection-name strong, .connection-name span { display: block; }
+    .connected-details { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .7rem; margin: .8rem 0; }
+    .connected-detail { min-width: 0; padding: .75rem; border: 1px solid #d9dee3; border-radius: 6px; background: #fafbfc; }
+    .connected-detail span { display: block; overflow-wrap: anywhere; }
+    .connected-detail .muted { font-size: .82rem; }
+    @media (max-width: 720px) { .connected-details { grid-template-columns: 1fr; } }
     .status { color: #087f5b; font-weight: 600; }
     code { background: #f1f3f5; padding: .15rem .3rem; border-radius: 4px; }
     .inventory { margin-top: 2rem; }
@@ -140,10 +153,15 @@
   <p class="muted">Connect a NetScaler ADC, then open only the tools you need.</p>
   <p id="mode-line" class="small muted">Mode: <strong id="platform-mode">approval-gated</strong> · Write mode: <strong id="waf-write-mode" class="progress">unknown</strong></p>
   <button id="operator-logout" class="secondary" type="button">Sign out</button>
-  <section class="next">
-    <div id="connect-menu">
-      <h2>Connect to NetScaler ADC</h2>
-      <p>Enter an NSIP and credentials. The GUI displays only NSIP and version. Saved credentials are encrypted at rest; if saving is disabled, they are not persisted.</p>
+  <section id="connection-screen" class="connection-screen">
+    <div class="card connection-panel">
+      <h2>Saved NetScaler connections</h2>
+      <p class="small muted">Select a saved appliance to reconnect. Scroll this list to see additional connections.</p>
+      <div id="saved-netscalers" class="connection-list" aria-label="Saved NetScaler connections"></div>
+    </div>
+    <div id="connect-menu" class="card connection-panel">
+      <h2>New connection</h2>
+      <p class="small muted">Enter the NSIP and credentials. If you save credentials, they are encrypted at rest.</p>
       <form id="adc-form">
         <input id="nsip" required maxlength="64" placeholder="NSIP, e.g. 192.168.11.101">
         <input id="adc-username" required maxlength="128" autocomplete="username" placeholder="Username">
@@ -153,21 +171,30 @@
       </form>
     </div>
     <p id="adc-status" class="small muted"></p>
-    <div id="saved-netscalers"></div>
-    <button id="disconnect-button" class="secondary" type="button" hidden>DISCONNECT</button>
   </section>
   <main id="workspace" hidden>
     <section class="next card">
-      <h2>Tools</h2>
-      <p class="small muted">Choose an operation to load its data only when needed.</p>
+      <h2>Connected NetScaler</h2>
+      <p id="connection-success-message" class="small connected-message"></p>
+      <div class="connected-details">
+        <div class="connected-detail"><span class="small muted">NSIP</span><span id="connected-nsip"><strong>-</strong></span></div>
+        <div class="connected-detail"><span class="small muted">Hostname</span><span id="connected-hostname">-</span></div>
+        <div class="connected-detail"><span class="small muted">Version</span><span id="connected-version">-</span></div>
+      </div>
+      <button id="disconnect-button" class="secondary" type="button">Disconnect</button>
+    </section>
+    <section class="next card" id="main-actions">
+      <h2>What would you like to do?</h2>
       <div class="action-grid">
-        <button id="load-waf-inventory" class="secondary" type="button">Open WAF inventory</button>
-        <button id="open-discovery" class="secondary" type="button">Open application discovery</button>
+        <button id="analyse-application" class="secondary" type="button">Analyse application</button>
+        <button id="create-signature-profile" class="secondary" type="button">Create new signature profile</button>
+        <button id="open-regex-rulz" class="secondary" type="button">Regex Rulz</button>
       </div>
     </section>
     <section class="next card" id="waf-section" hidden>
       <h2>WAF protection</h2>
       <p class="small muted">Live NetScaler AppFW inventory and approval-gated protection proposals. Nothing is exported without explicit approval, current-catalog preflight, and confirmation.</p>
+      <button id="load-waf-inventory" class="secondary" type="button">Reload WAF inventory</button>
       <p id="waf-status" class="small muted">Select Open WAF inventory to load current data.</p>
       <div id="waf-inventory" class="profile"></div>
     </section>
@@ -185,8 +212,12 @@
       <div id="adc-correlation" class="profile"></div>
       <div id="profile" class="profile"></div>
     </section>
+    <section class="next card" id="regex-rulz-section" hidden>
+      <h2>Regex Rulz</h2>
+      <p class="small muted">This workspace will optimize regular expressions for learned URL paths and cookie names. Run an application analysis first; we’ll wire the optimizer into that workflow next.</p>
+    </section>
   </main>
-  <section class="next card" id="positive-model-workbench">
+  <section class="next card" id="positive-model-workbench" hidden>
     <h2>Positive model workbench</h2>
     <p class="small muted">Guided browser capture is isolated and temporary. It permits same-host in-scope GET/HEAD requests and, only after a separate confirmation on an HTTPS login form, one matching login POST. Other unsafe methods remain blocked. Credentials are cleared after that attempt and never become candidate data. Sessions expire after 15 minutes.</p>
     <form id="browser-lab-start-form">
@@ -348,10 +379,11 @@
        host.innerHTML = `<h3>NetScaler WAF inventory</h3><p class="small">AppFW profiles: <strong>${profiles.length}</strong> · policies: <strong>${policies.length}</strong> · signature catalogs: <strong>${signatures.length}</strong> · status: <strong>${escapeHtml(unsupported ? 'unsupported by supplied OAS' : signatureStatus)}</strong></p>${capabilityMessage}<h4>Available signature catalogs</h4><p class="small muted">Select catalogs for the proposal only. No NetScaler changes are made by selecting them. After selecting catalogs, run a discovery analysis and choose Generate ADC change plan.</p><p id="waf-selection-status" class="small">Selected for proposal: <strong>${window.selectedSignatureCatalogUrls.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Select / name</th><th>File</th><th>Base version</th><th>Encrypted version</th><th>Creation date</th></tr></thead><tbody>${signatureRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'Signature catalogs are not available through the supplied Next-Gen OAS.' : 'No enumerable signature catalogs returned.'}</p>`}${productCard}<div class="card"><h4>Create guarded WAF protection plan</h4><p class="small muted">Choose a baseline profile, an exported custom signature object, and optionally an LB vServer. The plan remains LOG-only and reviewable until approval, preflight, and exact ENABLE WRITE confirmation.</p><label class="small">Base profile <select class="create-profile-source">${sourceOptions}</select></label><label class="small">Custom profile name <input class="create-profile-name" maxlength="128" placeholder="waf-web-custom"></label><label class="small">Signature object <select class="create-signature-object"><option value="">No custom signature object</option>${customSignatureOptions}</select></label><label class="small">Target LB vServer <select class="create-vserver"><option value="">Create profile only</option>${lbVserverOptions}</select></label><label class="small">Policy name (optional) <input class="create-policy-name" maxlength="31" placeholder="auto-generated when vServer is selected"></label><button class="secondary create-profile-plan-button">Prepare guarded protection plan</button></div><h4>AppFW profiles</h4>${profileRows ? `<table><thead><tr><th>Name</th><th>State</th><th>Types</th><th>Origin</th><th>Signatures</th><th>Duplicate</th></tr></thead><tbody>${profileRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'AppFW profiles are not exposed by the supplied Next-Gen OAS.' : 'No AppFW profiles returned.'}</p>`}<div id="profile-duplicate-plan"></div><h4>AppFW policies</h4>${policyRows ? `<table><thead><tr><th>Name</th><th>Action / state</th><th>Rule</th></tr></thead><tbody>${policyRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'AppFW policies are not exposed by the supplied Next-Gen OAS.' : 'No AppFW policies returned or policy inventory is unavailable.'}</p>`}<p class="small muted">The selected catalogs and profile plans remain review-only. Guarded export is available only after approval, preflight, and exact confirmation.</p>`;
        const profileHeading = [...host.querySelectorAll('h4')].find(item => item.textContent.trim() === 'AppFW profiles');
        const profileTable = profileHeading?.nextElementSibling;
-       const profileCreateCard = [...host.querySelectorAll('.card')].find(item => item.querySelector('h4')?.textContent.trim() === 'Create new custom WAF profile');
+      const profileCreateCard = host.querySelector('.create-profile-plan-button')?.closest('.card');
        const duplicatePanel = host.querySelector('#profile-duplicate-plan');
        if (profileHeading) {
          const profileDetails = document.createElement('details');
+         profileDetails.id = 'appfw-profile-actions-panel';
          profileDetails.className = 'on-demand-panel';
          profileDetails.innerHTML = `<summary>Show AppFW profiles and profile actions (${profiles.length})</summary>`;
          [profileCreateCard, profileHeading, profileTable, duplicatePanel].forEach(item => { if (item) profileDetails.append(item); });
@@ -734,7 +766,10 @@
     }
     async function loadSavedNetScalers() {
       const host = document.querySelector('#saved-netscalers');
-      try { const items = await api('/api/netscalers'); host.innerHTML = items.length ? '<h3>Saved connections</h3><table><thead><tr><th>NSIP</th><th>Version</th><th></th></tr></thead><tbody>' + items.map(item => `<tr><td>${escapeHtml(item.nsip)}</td><td>${escapeHtml(item.version)}</td><td><button class="secondary reconnect-button" data-connection="${escapeHtml(item.id)}">Connect</button></td></tr>`).join('') + '</tbody></table>' : '<p class="small muted">No saved connections.</p>'; } catch (error) { host.textContent = 'Saved connections unavailable.'; }
+      try {
+        const items = await api('/api/netscalers');
+        host.innerHTML = items.length ? items.map(item => `<div class="connection-row"><span class="connection-name"><strong>${escapeHtml(item.nsip)}</strong><span class="small muted">Last verified ${escapeHtml(item.last_verified_at || 'unknown')} · software version ${escapeHtml(item.version || 'unknown')}</span></span><button class="secondary reconnect-button" data-connection="${escapeHtml(item.id)}" type="button">Connect</button></div>`).join('') : '<p class="small muted">No saved connections yet.</p>';
+      } catch (error) { host.innerHTML = '<p class="small muted">Saved connections unavailable.</p>'; }
     }
     async function loadWafInventory() {
       const status = document.querySelector('#waf-status');
@@ -748,6 +783,7 @@
         const [inventory, productIndex] = await Promise.all([api('/api/adc/inventory'), api('/api/signatures/products')]);
         inventory.productIndex = productIndex;
         renderWafInventory(inventory);
+        window.wafInventoryLoaded = true;
         const writeEnabled = Boolean(inventory.write_enabled);
         const mode = writeEnabled ? 'Guarded write-enabled' : 'Read-only / preview';
         const modeElement = document.querySelector('#platform-mode');
@@ -756,6 +792,7 @@
         if (writeMode) { writeMode.textContent = writeEnabled ? 'enabled' : 'disabled'; writeMode.className = writeEnabled ? 'high' : 'progress'; }
         status.textContent = `WAF inventory loaded; guarded write mode is ${writeEnabled ? 'enabled' : 'disabled'}.`;
       } catch (error) {
+        window.wafInventoryLoaded = false;
         status.textContent = 'Unable to load WAF inventory. Connect to a reachable NetScaler first.';
         document.querySelector('#waf-inventory').textContent = '';
       } finally {
@@ -1003,10 +1040,50 @@
       try { const result = await api(`/api/netscalers/${encodeURIComponent(button.dataset.connection)}/connect`, {method: 'POST'}); setConnected(result, 'Connected using encrypted saved credentials.'); await loadSavedNetScalers(); }
       catch (error) { status.textContent = 'Unable to reconnect to saved NetScaler.'; }
     });
-    function setConnected(result, message) { window.currentConnectionId = result.connection_id; const status = document.querySelector('#adc-status'); status.textContent = `${message} Choose a tool below.`; status.classList.add('connected-message'); document.querySelector('#connect-menu').hidden = true; document.querySelector('#saved-netscalers').hidden = true; document.querySelector('#disconnect-button').hidden = false; document.querySelector('#workspace').hidden = false; }
-    document.querySelector('#disconnect-button').addEventListener('click', async () => { const status = document.querySelector('#adc-status'); status.classList.remove('connected-message'); status.textContent = 'Disconnecting...'; try { if (window.currentConnectionId) await api(`/api/netscalers/${encodeURIComponent(window.currentConnectionId)}/disconnect`, {method: 'POST'}); } catch (error) {} window.currentConnectionId = null; status.textContent = 'Disconnected.'; document.querySelector('#connect-menu').hidden = false; document.querySelector('#saved-netscalers').hidden = false; document.querySelector('#disconnect-button').hidden = true; document.querySelector('#workspace').hidden = true; document.querySelector('#waf-section').hidden = true; document.querySelector('#discovery-section').hidden = true; document.querySelector('#waf-inventory').textContent = ''; document.querySelector('#profile').textContent = ''; });
+    function setConnected(result, message) {
+      window.currentConnectionId = result.connection_id;
+      document.querySelector('#connection-success-message').textContent = message;
+      document.querySelector('#connected-nsip').innerHTML = `<strong>${escapeHtml(result.nsip || 'unknown')}</strong>`;
+      document.querySelector('#connected-hostname').textContent = result.hostname || 'Not exposed by the supplied Next-Gen API';
+      document.querySelector('#connected-version').textContent = result.version && result.version !== 'unknown' ? result.version : 'Not exposed by the supplied Next-Gen API';
+      document.querySelector('#connection-screen').hidden = true;
+      document.querySelector('#workspace').hidden = false;
+    }
+    document.querySelector('#disconnect-button').addEventListener('click', async () => {
+      const message = document.querySelector('#connection-success-message');
+      message.textContent = 'Disconnecting...';
+      try { if (window.currentConnectionId) await api(`/api/netscalers/${encodeURIComponent(window.currentConnectionId)}/disconnect`, {method: 'POST'}); } catch (error) {}
+      window.currentConnectionId = null;
+      window.wafInventoryLoaded = false;
+      document.querySelector('#connection-screen').hidden = false;
+      document.querySelector('#workspace').hidden = true;
+      document.querySelector('#waf-section').hidden = true;
+      document.querySelector('#discovery-section').hidden = true;
+      document.querySelector('#positive-model-workbench').hidden = true;
+      document.querySelector('#regex-rulz-section').hidden = true;
+      document.querySelector('#waf-inventory').textContent = '';
+      document.querySelector('#profile').textContent = '';
+    });
     document.querySelector('#load-waf-inventory').addEventListener('click', loadWafInventory);
-    document.querySelector('#open-discovery').addEventListener('click', () => { document.querySelector('#discovery-section').hidden = false; document.querySelector('#discovery-section').scrollIntoView({behavior: 'smooth', block: 'start'}); });
+    document.querySelector('#analyse-application').addEventListener('click', () => {
+      document.querySelector('#discovery-section').hidden = false;
+      document.querySelector('#positive-model-workbench').hidden = false;
+      document.querySelector('#discovery-section').scrollIntoView({behavior: 'smooth', block: 'start'});
+    });
+    document.querySelector('#create-signature-profile').addEventListener('click', async () => {
+      const section = document.querySelector('#waf-section');
+      section.hidden = false;
+      if (!window.wafInventoryLoaded) await loadWafInventory();
+      const wizard = document.querySelector('#waf-inventory .create-profile-plan-button')?.closest('.card');
+      const profileActions = document.querySelector('#appfw-profile-actions-panel');
+      if (profileActions) profileActions.open = true;
+      (wizard || section).scrollIntoView({behavior: 'smooth', block: 'start'});
+    });
+    document.querySelector('#open-regex-rulz').addEventListener('click', () => {
+      const section = document.querySelector('#regex-rulz-section');
+      section.hidden = false;
+      section.scrollIntoView({behavior: 'smooth', block: 'start'});
+    });
     document.querySelector('#waf-inventory').addEventListener('change', event => {
       const typeFilter = event.target.closest('#vserver-type-filter');
       const pageSize = event.target.closest('#vserver-page-size');
