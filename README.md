@@ -36,11 +36,17 @@ selection response reports group confidence, exact rule counts, match reasons, a
 behavioral, bot, and rate-limit controls are deliberately deferred.
 
 Positive security phase 1 defines a versioned, value-minimizing application
-model contract in `services/control-api/app/positive_model.py`, with privacy
-and lifecycle rules in `docs/positive-security-model-contract.md`. This is a
-schema foundation only; it does not collect or enforce positive policies. The
-existing Playwright runtime inspector remains headless and read-only; guided
-browser interaction and policy compilation are future phases.
+model contract in `services/control-api/app/positive_model.py`. Phase 2 adds a
+deterministic, metadata-only validator at `POST /api/positive-model/validate`
+and the contract schema at `GET /api/positive-model/schema`; dry runs are
+in-memory and do not persist or enforce a policy. Phase 3 adds an isolated,
+short-lived Guided Browser Lab in the GUI, with same-host/path GET/HEAD-only
+navigation, temporary screenshots, selectable DOM metadata, and redacted
+network metadata. It does not submit forms or capture raw values/bodies.
+Authenticated journeys and arbitrary pointer interaction remain future work.
+The current browser can report a low-confidence DOM name/id-to-query-key match
+for already observed safe GET requests, but full event correlation, candidate
+generation, policy compilation, and persistence remain future work.
 
 Each generic group is also returned as a closed-by-default selection tree. The tree is
 grouped into catalog-derived subgroups (for example SQL/command/LDAP/NoSQL injection,

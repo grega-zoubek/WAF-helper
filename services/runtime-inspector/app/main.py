@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import ipaddress
 import re
+import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from playwright.async_api import Browser, TimeoutError as PlaywrightTimeoutError, async_playwright
@@ -12,6 +15,12 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="WAF Runtime Inspector", version="0.2.0")
 inspection_lock = asyncio.Lock()
+browser_lab_lock = asyncio.Lock()
+browser_sessions: dict[str, dict[str, Any]] = {}
+guided_browser: Browser | None = None
+guided_playwright: Any = None
+GUIDED_SESSION_TTL_SECONDS = 900
+MAX_GUIDED_SESSIONS = 5
 MAX_NETWORK_EVENTS = 200
 INTERESTING_NETWORK_MARKERS = ("/api/", "/auth", "/login", "/signin", "/oauth", "/token", "/graphql", "/rest/", "/user")
 SAFE_RESPONSE_HEADERS = {
@@ -31,7 +40,14 @@ def is_interesting_request(url: str, resource_type: str) -> bool:
 
 
 def safe_headers(headers: dict[str, str] | None) -> dict[str, str]:
-    return {key.lower(): value[:500] for key, value in (headers or {}).items() if key.lower() in SAFE_RESPONSE_HEADERS}
+    result: dict[str, str] = {}
+    for key, value in (headers or {}).items():
+        normalized = key.lower()
+        if normalized not in SAFE_RESPONSE_HEADERS:
+            continue
+        safe_value = redact_url(value) if normalized == "location" else value
+        result[normalized] = safe_value[:500]
+    return result
 
 
 def classify_auth_surface(source_url: str, final_url: str, controls: list[dict[str, Any]], headings: list[str], markers: list[str], buttons: list[str]) -> dict[str, Any]:
@@ -73,6 +89,20 @@ class InspectionRequest(BaseModel):
     allowed_paths: list[str] = Field(default_factory=lambda: ["/"])
 
 
+class GuidedSessionRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+    hostname: str = Field(min_length=1, max_length=253)
+    allowed_paths: list[str] = Field(default_factory=lambda: ["/"], max_length=100)
+
+
+class GuidedNavigateRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+
+
+class GuidedSelectRequest(BaseModel):
+    element_index: int = Field(ge=0, le=999)
+
+
 def allowed_path(path: str, prefixes: list[str]) -> bool:
     normalized = path or "/"
     for prefix in prefixes or ["/"]:
@@ -95,6 +125,23 @@ def redact_url(value: str) -> str:
     return parsed._replace(query="&".join(f"{key}=REDACTED" for key, _ in [part.split("=", 1) if "=" in part else (part, "") for part in parsed.query.split("&")])).geturl()
 
 
+def redacted_route_template(value: str) -> str:
+    parsed = urlparse(value)
+    parts: list[str] = []
+    for segment in parsed.path.split("/"):
+        if segment.isdecimal():
+            parts.append("{id:int}")
+        else:
+            try:
+                import uuid
+                uuid.UUID(segment)
+                parts.append("{id:uuid}")
+            except (ValueError, AttributeError):
+                parts.append(segment)
+    path = "/".join(parts) or "/"
+    return path if path.startswith("/") else "/" + path
+
+
 def validate_request(request: InspectionRequest) -> None:
     try:
         ipaddress.ip_address(request.hostname)
@@ -103,6 +150,63 @@ def validate_request(request: InspectionRequest) -> None:
             raise HTTPException(status_code=422, detail="Runtime inspection hostname is invalid")
     if any(not in_scope(url, request) for url in request.urls):
         raise HTTPException(status_code=422, detail="Runtime inspection URL is outside the selected scope")
+
+
+def validate_guided_request(request: GuidedSessionRequest, url: str | None = None) -> None:
+    try:
+        ipaddress.ip_address(request.hostname)
+    except ValueError:
+        if not request.hostname or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-" for char in request.hostname):
+            raise HTTPException(status_code=422, detail="Guided browser hostname is invalid")
+    target = url or request.url
+    if urlparse(target).username or urlparse(target).password:
+        raise HTTPException(status_code=422, detail="Credentials in browser URLs are not allowed")
+    if not in_scope(target, InspectionRequest(urls=[target], hostname=request.hostname, allowed_paths=request.allowed_paths)):
+        raise HTTPException(status_code=422, detail="Guided browser URL is outside the selected host/path scope")
+
+
+async def guided_snapshot(session: dict[str, Any]) -> dict[str, Any]:
+    page = session["page"]
+    await page.evaluate("""() => {
+      if (document.getElementById('waf-intelligence-redaction-style')) return;
+      const style = document.createElement('style');
+      style.id = 'waf-intelligence-redaction-style';
+      style.textContent = "input, textarea, select, [contenteditable='true'] { color: transparent !important; text-shadow: none !important; caret-color: transparent !important; }";
+      document.head.appendChild(style);
+    }""")
+    dom = await page.evaluate("""() => {
+      const visible = el => { const s = getComputedStyle(el), r = el.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
+      const controls = Array.from(document.querySelectorAll('input,button,select,textarea,[role="button"],[role="textbox"]')).slice(0, 250).map((el, index) => ({
+        index, tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', name: el.getAttribute('name') || '', id: el.id || '',
+        role: el.getAttribute('role') || '', aria_label: el.getAttribute('aria-label') || '', placeholder: el.getAttribute('placeholder') || '',
+        required: el.hasAttribute('required'), disabled: el.hasAttribute('disabled'), autocomplete: el.getAttribute('autocomplete') || '',
+        minlength: el.getAttribute('minlength') || '', maxlength: el.getAttribute('maxlength') || '', pattern: el.getAttribute('pattern') || '',
+        labels: Array.from(el.labels || []).map(x => (x.innerText || x.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 120)),
+        text: (el.innerText || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim().slice(0, 120), visible: visible(el)
+      }));
+      const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: (a.innerText || a.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().slice(0, 120), href: a.href})).slice(0, 200);
+      const forms = Array.from(document.forms).map(f => ({id: f.id || '', name: f.getAttribute('name') || '', action: f.action, method: (f.method || 'get').toUpperCase(), enctype: f.enctype || '', fields: f.elements.length})).slice(0, 50);
+      return {title: document.title.slice(0, 250), headings: Array.from(document.querySelectorAll('h1,h2,h3,[role="heading"]')).map(x => (x.innerText || x.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 180)).filter(Boolean).slice(0, 40), controls, links, forms};
+    }""")
+    requests = list(session["network_events"].values())[-200:]
+    screenshot = await page.screenshot(type="jpeg", quality=55, full_page=False, timeout=5_000)
+    session["touched"] = time.monotonic()
+    return {
+        "session_id": session["id"], "url": redact_url(page.url), "title": dom["title"], "status_code": session.get("status_code"),
+        "headings": dom["headings"], "controls": dom["controls"], "forms": [{**form, "action": redact_url(form["action"])} for form in dom["forms"]],
+        "links": [{**link, "href": redact_url(link["href"])} for link in dom["links"] if is_same_host(link["href"], session["hostname"]) and allowed_path(urlparse(link["href"]).path, session["allowed_paths"])],
+        "network_requests": requests, "screenshot_data_uri": "data:image/jpeg;base64," + base64.b64encode(screenshot).decode("ascii"),
+        "capture_policy": "same-host, in-scope GET/HEAD only; WebSockets and downloads blocked; no form submission; request bodies, cookies, and raw field values are not captured",
+        "values_submitted": False,
+    }
+
+
+async def expire_guided_sessions() -> None:
+    now = time.monotonic()
+    expired = [key for key, item in browser_sessions.items() if now - item.get("touched", now) > GUIDED_SESSION_TTL_SECONDS]
+    for key in expired:
+        item = browser_sessions.pop(key)
+        await item["context"].close()
 
 
 async def inspect_page(browser: Browser, url: str) -> dict[str, Any]:
@@ -242,3 +346,149 @@ async def inspect(request: InspectionRequest) -> dict[str, Any]:
             finally:
                 await browser.close()
     return {"mode": "render-and-inspect-only", "values_submitted": False, "pages": pages}
+
+
+@app.post("/guided/sessions", status_code=201)
+async def start_guided_session(request: GuidedSessionRequest) -> dict[str, Any]:
+    global guided_browser, guided_playwright
+    validate_guided_request(request)
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        if len(browser_sessions) >= MAX_GUIDED_SESSIONS:
+            raise HTTPException(status_code=429, detail="Guided browser session limit reached")
+        if guided_playwright is None:
+            guided_playwright = await async_playwright().start()
+        if guided_browser is None or not guided_browser.is_connected():
+            guided_browser = await guided_playwright.chromium.launch(headless=True, executable_path="/usr/bin/chromium", args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = await guided_browser.new_context(viewport={"width": 1365, "height": 900}, accept_downloads=False, service_workers="block")
+        page = await context.new_page()
+        scope = InspectionRequest(urls=[request.url], hostname=request.hostname, allowed_paths=request.allowed_paths)
+
+        async def guard_route(route: Any) -> None:
+            target = route.request.url
+            if route.request.method.upper() not in {"GET", "HEAD"} or not in_scope(target, scope):
+                await route.abort("blockedbyclient")
+                return
+            await route.continue_()
+
+        async def block_websocket(websocket_route: Any) -> None:
+            await websocket_route.close(code=1008, reason="WebSocket traffic is disabled in read-only browser sessions")
+
+        await page.route("**/*", guard_route)
+        await page.route_web_socket("**/*", block_websocket)
+        session_id = str(uuid4())
+        session: dict[str, Any] = {
+                "id": session_id, "context": context, "page": page, "hostname": request.hostname.lower(),
+                "allowed_paths": request.allowed_paths or ["/"], "network_events": {}, "status_code": None,
+                "created": time.monotonic(), "touched": time.monotonic(),
+        }
+
+        def record_request(browser_request: Any) -> None:
+                if browser_request.method.upper() not in {"GET", "HEAD"} or not in_scope(browser_request.url, scope):
+                    return
+                key = (browser_request.method, redact_url(browser_request.url), browser_request.resource_type)
+                if len(session["network_events"]) < MAX_NETWORK_EVENTS or key in session["network_events"]:
+                    session["network_events"].setdefault(key, {"method": browser_request.method, "url": redact_url(browser_request.url), "resource_type": browser_request.resource_type, "status_code": None})
+
+        def record_response(browser_response: Any) -> None:
+                browser_request = browser_response.request
+                key = (browser_request.method, redact_url(browser_request.url), browser_request.resource_type)
+                if key in session["network_events"]:
+                    session["network_events"][key]["status_code"] = browser_response.status
+                    session["network_events"][key]["response_headers"] = safe_headers(browser_response.headers)
+                if browser_request.is_navigation_request():
+                    session["status_code"] = browser_response.status
+
+        page.on("request", record_request)
+        page.on("response", record_response)
+        browser_sessions[session_id] = session
+        try:
+            await page.goto(request.url, wait_until="domcontentloaded", timeout=20_000)
+            await page.wait_for_timeout(500)
+            return await guided_snapshot(session)
+        except PlaywrightTimeoutError:
+            return await guided_snapshot(session)
+        except Exception as exc:
+            await context.close()
+            browser_sessions.pop(session_id, None)
+            raise HTTPException(status_code=502, detail=f"Guided browser navigation failed: {type(exc).__name__}") from exc
+
+
+@app.get("/guided/sessions/{session_id}")
+async def get_guided_session(session_id: str) -> dict[str, Any]:
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        session = browser_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
+        return await guided_snapshot(session)
+
+
+@app.post("/guided/sessions/{session_id}/navigate")
+async def navigate_guided_session(session_id: str, request: GuidedNavigateRequest) -> dict[str, Any]:
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        session = browser_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
+        scope = InspectionRequest(urls=[request.url], hostname=session["hostname"], allowed_paths=session["allowed_paths"])
+        if not in_scope(request.url, scope) or urlparse(request.url).username or urlparse(request.url).password:
+            raise HTTPException(status_code=422, detail="Navigation is outside the session's host/path scope")
+        session["status_code"] = None
+        try:
+            await session["page"].goto(request.url, wait_until="domcontentloaded", timeout=20_000)
+            await session["page"].wait_for_timeout(300)
+        except PlaywrightTimeoutError:
+            pass
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Guided browser navigation failed: {type(exc).__name__}") from exc
+        return await guided_snapshot(session)
+
+
+@app.post("/guided/sessions/{session_id}/select")
+async def select_guided_element(session_id: str, request: GuidedSelectRequest) -> dict[str, Any]:
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        session = browser_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
+        items = session["page"].locator('input,button,select,textarea,[role="button"],[role="textbox"]')
+        if request.element_index >= await items.count():
+            raise HTTPException(status_code=404, detail="Selectable element is no longer present")
+        selected = await items.nth(request.element_index).evaluate("""el => ({
+          tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', name: el.getAttribute('name') || '', id: el.id || '',
+          role: el.getAttribute('role') || '', aria_label: el.getAttribute('aria-label') || '', placeholder: el.getAttribute('placeholder') || '',
+          required: el.hasAttribute('required'), disabled: el.hasAttribute('disabled'), autocomplete: el.getAttribute('autocomplete') || '',
+          minlength: el.getAttribute('minlength') || '', maxlength: el.getAttribute('maxlength') || '', pattern: el.getAttribute('pattern') || '',
+          labels: Array.from(el.labels || []).map(x => (x.innerText || x.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 120)),
+          form_method: el.form ? (el.form.method || 'get').toUpperCase() : '', form_action: el.form ? el.form.action : '',
+          values_submitted: false
+        })""")
+        selected["form_action"] = redact_url(selected.get("form_action", ""))
+        field_names = {str(selected.get("name", "")).casefold(), str(selected.get("id", "")).casefold()}
+        field_names.discard("")
+        correlated: list[dict[str, Any]] = []
+        if field_names:
+            for item in session["network_events"].values():
+                parsed = urlparse(item["url"])
+                query_names = {name.casefold() for name, _ in parse_qsl(parsed.query, keep_blank_values=True)}
+                matched = sorted(field_names.intersection(query_names))
+                if matched:
+                    correlated.append({
+                        "method": item["method"], "path_template": redacted_route_template(item["url"]),
+                        "matched_parameter_names": matched, "confidence": 0.55,
+                        "reason": "DOM name or id equals a query parameter name on an observed safe request",
+                        "raw_values_captured": False,
+                    })
+        selected["correlated_requests"] = correlated[:20]
+        session["touched"] = time.monotonic()
+        return {"page_url": redact_url(session["page"].url), "element": selected, "evidence_kind": "dom_metadata_only", "raw_value_captured": False}
+
+
+@app.delete("/guided/sessions/{session_id}", status_code=204)
+async def stop_guided_session(session_id: str) -> None:
+    async with browser_lab_lock:
+        session = browser_sessions.pop(session_id, None)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found")
+        await session["context"].close()

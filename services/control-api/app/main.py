@@ -18,7 +18,7 @@ import httpx
 import psycopg
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from psycopg.types.json import Jsonb
 
 from app.rule_catalog import normalize_rule_catalog, resolve_rule_catalog
@@ -26,6 +26,8 @@ from app.nextgen_correlation import correlate_scope_to_nextgen
 from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
 from app.signature_workflow import ACTION_VALUES, OBJECT_NAME_RE, cli_import_commands, default_object_name, load_upstream_catalog, select_rules_for_detection, workflow_fingerprint
+from app.positive_model import PositiveModelDocument, positive_model_json_schema
+from app.positive_validator import TransactionDescriptor, validate_transaction
 
 app = FastAPI(title="WAF Intelligence Control API", version="0.1.0")
 jobs: dict[str, dict[str, Any]] = {}
@@ -43,6 +45,25 @@ class DiscoveryRequest(BaseModel):
     allowed_paths: list[str] = Field(default_factory=lambda: ["/"])
     rate_limit_per_second: float = Field(default=1.0, gt=0, le=10)
     max_pages: int = Field(default=25, gt=0, le=200)
+
+
+class PositiveValidationRequest(BaseModel):
+    model: PositiveModelDocument
+    transaction: TransactionDescriptor
+
+
+class BrowserLabStartRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+    hostname: str = Field(min_length=1, max_length=253)
+    allowed_paths: list[str] = Field(default_factory=lambda: ["/"], max_length=100)
+
+
+class BrowserLabNavigateRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+
+
+class BrowserLabSelectRequest(BaseModel):
+    element_index: int = Field(ge=0, le=999)
 
 
 class NetScalerConnectRequest(BaseModel):
@@ -950,6 +971,97 @@ async def startup() -> None:
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok", "service": "control-api"}
+
+
+@app.get("/api/positive-model/schema")
+async def get_positive_model_schema() -> dict[str, Any]:
+    return positive_model_json_schema()
+
+
+@app.post("/api/positive-model/validate")
+async def dry_run_positive_model_validation(request: Request) -> dict[str, Any]:
+    """Run an in-memory dry run over metadata only; nothing is persisted."""
+    try:
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > 2_000_000:
+            raise HTTPException(status_code=413, detail="Dry-run request is too large")
+        body = await request.body()
+        if len(body) > 2_000_000:
+            raise HTTPException(status_code=413, detail="Dry-run request is too large")
+        payload = json.loads(body.decode("utf-8"))
+        validated = PositiveValidationRequest.model_validate(payload)
+        return validate_transaction(validated.model, validated.transaction)
+    except HTTPException:
+        raise
+    except (ValidationError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if isinstance(exc, ValidationError):
+            errors = [{"field": ".".join(str(part) for part in item.get("loc", ())), "message": item.get("msg", "Invalid input")} for item in exc.errors()]
+            raise HTTPException(status_code=422, detail={"message": "Dry-run input rejected; submitted values were not echoed.", "errors": errors}) from exc
+        raise HTTPException(status_code=422, detail="Dry-run input is invalid; submitted values were not echoed.") from exc
+
+
+@app.post("/api/browser-lab/sessions", status_code=201)
+async def browser_lab_start(request: BrowserLabStartRequest) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.post(f"{RUNTIME_INSPECTOR_URL}/guided/sessions", json=request.model_dump())
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Guided browser session was rejected")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+
+
+@app.get("/api/browser-lab/sessions/{session_id}")
+async def browser_lab_snapshot(session_id: str) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}")
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Guided browser session was not found")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+
+
+@app.post("/api/browser-lab/sessions/{session_id}/navigate")
+async def browser_lab_navigate(session_id: str, request: BrowserLabNavigateRequest) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.post(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}/navigate", json=request.model_dump())
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Guided browser navigation was rejected")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+
+
+@app.post("/api/browser-lab/sessions/{session_id}/select")
+async def browser_lab_select(session_id: str, request: BrowserLabSelectRequest) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}/select", json=request.model_dump())
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Element selection was rejected")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+
+
+@app.delete("/api/browser-lab/sessions/{session_id}", status_code=204)
+async def browser_lab_stop(session_id: str) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.delete(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}")
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Guided browser session was not found")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
 
 
 @app.post("/api/csp/report", status_code=202)

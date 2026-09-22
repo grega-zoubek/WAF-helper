@@ -28,16 +28,52 @@ decision mode. Unknown fields are rejected; raw observed values and request or
 response bodies have no place in this model. New observations default to
 `discovered`/`observe`, and BLOCK is invalid before staging.
 
-This phase is schema-only: no model collection endpoint, persistence, runtime
-policy enforcement, browser interaction, compiler, or NetScaler write was added.
-The existing headless Playwright inspector and guarded profile workflow are
-foundational services, not implementations of these future positive-model
-capabilities.
+## Positive security phase 2: deterministic dry-run validation (implemented)
 
-Next: implement a deterministic dry-run validator for manually authored
-endpoint/field constraints. After it can validate a policy, extend the existing
-Playwright inspector into a guided, interactive browser with redacted network
-capture and DOM-to-request correlation.
+`services/control-api/app/positive_validator.py` compares a model with a
+metadata-only transaction descriptor. `POST /api/positive-model/validate` is
+in-memory and non-persistent; `GET /api/positive-model/schema` exposes the
+versioned contract. It checks route/method, media type, authentication context,
+field presence/type, and length bounds. Raw values are rejected and validation
+errors do not echo submitted values. Format and numeric-content checks are
+reported as not evaluated until a separate, privacy-reviewed design exists.
+
+## Positive security phase 3: guided browser MVP (implemented; correlation pending)
+
+The GUI has an isolated Playwright Browser Lab backed by the runtime inspector.
+Sessions are in-memory, expire after 15 minutes, and are limited to five
+concurrent contexts. The browser is restricted to same-host, configured-path
+GET/HEAD traffic, blocks downloads, redacts query values, and captures request
+metadata only. The GUI shows a temporary screenshot, observed forms/links,
+network metadata, and a selectable DOM control inventory. Selection does not
+activate controls or inspect entered values. Nothing is persisted.
+
+This is not yet the complete pointer-guided learning workflow described in the
+architecture plan: interactive authentication and arbitrary pointer interaction
+remain future work. Selection reports only a low-confidence name/id-to-query-key
+heuristic for already observed safe GETs; full event-based correlation,
+candidate generation, and model persistence remain future work. Do not infer an
+observed POST or a parameter constraint from a DOM form alone. No policy
+compiler, runtime enforcement, or ADC write was added.
+
+### Phase 2/3 verification checkpoint — 2026-09-22
+
+- Local verification: 12 positive-model/validator tests pass; Python compileall,
+  frontend JavaScript syntax validation, and `git diff --check` pass.
+- Network reachability: ordinary GETs to `192.168.11.91`, `www.rtvslo.si`, and
+  `www.ess.gov.si` returned HTTP 200 from this workstation. This confirms basic
+  reachability only, not validation by the newly changed scanner.
+- Deployment/live scanner verification is pending: SSH to `grega@192.168.11.90`
+  returned `Permission denied (publickey,password)`. Docker is unavailable on
+  the Windows workstation, so the new Playwright endpoints could not be run
+  locally.
+- Recovery after connectivity loss or reboot: check local Git status/revision;
+  restore authorized SSH access to the Ubuntu scanner host; verify the actual
+  checkout path and disk space; then update the checkout and rebuild/recreate
+  only `control-api`, `runtime-inspector`, and `frontend`. Check `/healthz`, run
+  the Guided Browser Lab on the three requested targets, and submit captured
+  route metadata to `/api/positive-model/validate`. Do not claim a live scanner
+  test until those API calls pass.
 
 ## Generic scanner architecture
 

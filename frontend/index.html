@@ -96,6 +96,14 @@
     .cve-filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; }
     .cve-search-mode { display: flex; flex-wrap: wrap; gap: .8rem; margin: .7rem 0; padding: .45rem .7rem; border: 1px solid #d9dee3; border-radius: 6px; }
     .cve-search-mode legend { padding: 0 .3rem; }
+    .browser-lab-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr); gap: 1rem; margin-top: 1rem; }
+    .browser-preview { width: 100%; min-height: 240px; max-height: 620px; object-fit: contain; object-position: top left; border: 1px solid #d9dee3; border-radius: 6px; background: #f7f8fa; }
+    .browser-list { max-height: 20rem; overflow: auto; }
+    .browser-item { display: flex; justify-content: space-between; align-items: flex-start; gap: .5rem; padding: .45rem 0; border-bottom: 1px solid #e6e9ec; overflow-wrap: anywhere; }
+    .browser-item button { flex: 0 0 auto; }
+    .json-workbench { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: .8rem; margin-top: .8rem; }
+    .json-workbench textarea { min-height: 12rem; }
+    @media (max-width: 720px) { .browser-lab-layout { grid-template-columns: 1fr; } }
     @media (max-width: 720px) { .signature-product-row { display: grid; gap: .15rem; } }
     @media (max-width: 720px) { .vserver-controls { grid-template-columns: 1fr; } }
     details ul { margin: .5rem 0 0; padding-left: 1.2rem; }
@@ -157,9 +165,52 @@
       <div id="profile" class="profile"></div>
     </section>
   </main>
+  <section class="next card" id="positive-model-workbench">
+    <h2>Positive model workbench</h2>
+    <p class="small muted">Guided browser capture is isolated and temporary. It permits only same-host in-scope GET/HEAD requests; form submissions, downloads, cross-host requests, bodies, cookies, and raw field values are not captured. Sessions expire after 15 minutes.</p>
+    <form id="browser-lab-start-form">
+      <input id="browser-lab-url" required type="url" maxlength="2048" placeholder="Application URL, e.g. http://192.168.11.91/">
+      <input id="browser-lab-paths" value="/" maxlength="1000" placeholder="Allowed paths, comma-separated">
+      <button type="submit">Open guided browser</button>
+    </form>
+    <p id="browser-lab-status" class="small muted"></p>
+    <form id="browser-lab-navigation-form" hidden>
+      <input id="browser-lab-navigation-url" required type="url" maxlength="2048" placeholder="Navigate within the same host and allowed paths">
+      <div class="job-actions"><button type="submit">Navigate (GET)</button><button id="browser-lab-refresh" class="secondary" type="button">Refresh snapshot</button><button id="browser-lab-stop" class="secondary" type="button">Close session</button></div>
+    </form>
+    <div id="browser-lab-snapshot" class="profile"></div>
+    <details class="url-list-panel">
+      <summary>Deterministic positive-model dry run</summary>
+      <p class="small muted">Paste a version 1 model and metadata-only transaction descriptor. Raw values are rejected; format and numeric-content rules are explicitly reported as not evaluated.</p>
+      <form id="positive-model-validation-form">
+        <div class="json-workbench"><label>Positive model JSON<textarea id="positive-model-json" spellcheck="false"></textarea></label><label>Transaction metadata JSON<textarea id="positive-transaction-json" spellcheck="false"></textarea></label></div>
+        <button type="submit">Run dry validation</button>
+      </form>
+      <pre id="positive-validation-result" class="small muted"></pre>
+    </details>
+  </section>
   <script>
     const api = (path, options = {}) => fetch(path, options).then(async r => { if (!r.ok) { let detail = ''; try { const body = await r.json(); detail = body.detail || body.message || ''; } catch (error) { try { detail = await r.text(); } catch (ignored) {} } throw new Error(detail || `${r.status}`); } return r.status === 204 ? null : r.json(); });
     const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    window.browserLabSessionId = null;
+    function renderBrowserLabSnapshot(snapshot) {
+      window.currentBrowserLabSnapshot = snapshot;
+      const controls = snapshot.controls || [];
+      const requests = snapshot.network_requests || [];
+      const links = snapshot.links || [];
+      const controlRows = controls.map(item => `<div class="browser-item"><span><strong>${escapeHtml(item.tag)}${item.type ? ` · ${escapeHtml(item.type)}` : ''}</strong> ${escapeHtml(item.name || item.id || item.aria_label || item.text || '(unnamed control)')}<span class="small muted">${item.required ? ' · required' : ''}${item.disabled ? ' · disabled' : ''}${item.visible ? '' : ' · hidden'}</span></span><button class="secondary browser-select-element" data-index="${Number(item.index)}" type="button">Select</button></div>`).join('');
+      const linkRows = links.map(item => `<div class="browser-item"><span>${escapeHtml(item.text || item.href)}</span><button class="secondary browser-open-link" data-url="${escapeHtml(item.href)}" type="button">Open GET</button></div>`).join('');
+      const requestRows = requests.map(item => `<tr><td>${escapeHtml(item.method)}</td><td>${escapeHtml(item.url)}</td><td>${escapeHtml(item.resource_type)}</td><td>${escapeHtml(item.status_code ?? '-')}</td></tr>`).join('');
+      const formRows = (snapshot.forms || []).map(item => `<tr><td>${escapeHtml(item.id || item.name || '(unnamed)')}</td><td>${escapeHtml(item.method)}</td><td>${escapeHtml(item.action)}</td><td>${Number(item.fields || 0)}</td></tr>`).join('');
+      document.querySelector('#browser-lab-snapshot').innerHTML = `<div class="card"><h3>${escapeHtml(snapshot.title || 'Guided browser')} <span class="small muted">HTTP ${escapeHtml(snapshot.status_code ?? '-')}</span></h3><p class="small"><code>${escapeHtml(snapshot.url)}</code></p><p class="small muted">${escapeHtml(snapshot.capture_policy)}</p><div class="browser-lab-layout"><div><img class="browser-preview" alt="Temporary screenshot of guided browser page" src="${snapshot.screenshot_data_uri}"><h4>Page headings</h4><p class="small">${escapeHtml((snapshot.headings || []).join(' · ') || 'No headings detected')}</p></div><div><h4>Select a DOM field or control</h4><div class="browser-list">${controlRows || '<p class="small muted">No controls found on this page.</p>'}</div><h4>Same-host links</h4><div class="browser-list">${linkRows || '<p class="small muted">No in-scope links found.</p>'}</div></div></div>${formRows ? `<h4>Forms (observed only; not submitted)</h4><table><thead><tr><th>Form</th><th>Method</th><th>Action</th><th>Fields</th></tr></thead><tbody>${formRows}</tbody></table>` : ''}${requestRows ? `<h4>Safe network metadata</h4><div class="browser-list"><table><thead><tr><th>Method</th><th>URL</th><th>Type</th><th>Status</th></tr></thead><tbody>${requestRows}</tbody></table></div>` : ''}<div id="browser-lab-selected" class="notice" hidden></div></div>`;
+      document.querySelector('#browser-lab-navigation-form').hidden = false;
+      document.querySelector('#browser-lab-navigation-url').value = snapshot.url;
+    }
+
+    const samplePositiveModel = {schema_version:'1.0.0',model_id:'dry-run-example',application_id:'example-app',hostname:'example.test',environment:'test',endpoints:[{path_template:'/products/{id:int}',method:'GET',request_content_types:[],response_content_types:[],authentication:'public',fields:[{name:'page',location:'query',sensitivity:'unknown',shape:{},proposed_constraints:{requiredness:'optional',value_type:'integer',min_length:1,max_length:3},evidence:[],confidence:{score:0.5}}],evidence:[],confidence:{score:0.5},lifecycle:'discovered',decision_mode:'observe'}]};
+    const samplePositiveTransaction = {method:'GET',path:'/products/12',authentication:'public',fields:[{name:'page',location:'query',value_type:'integer',length:2,count:1}]};
+    document.querySelector('#positive-model-json').value = JSON.stringify(samplePositiveModel, null, 2);
+    document.querySelector('#positive-transaction-json').value = JSON.stringify(samplePositiveTransaction, null, 2);
     function renderJobs(jobs) {
       const host = document.querySelector('#jobs');
       if (!jobs.length) { host.innerHTML = '<p class="muted">No discovery jobs yet.</p>'; return; }
@@ -662,6 +713,67 @@
       status.textContent = 'Queueing passive discovery...';
       try { await fetch('/api/discovery/jobs', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); }); status.textContent = 'Discovery job queued.'; await loadJobs(); }
       catch (error) { status.textContent = 'Unable to queue discovery job.'; }
+    });
+    document.querySelector('#browser-lab-start-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const status = document.querySelector('#browser-lab-status');
+      const target = document.querySelector('#browser-lab-url').value.trim();
+      let parsed;
+      try { parsed = new URL(target); } catch (error) { status.textContent = 'Enter a valid HTTP or HTTPS application URL.'; return; }
+      if (!['http:', 'https:'].includes(parsed.protocol)) { status.textContent = 'Only HTTP and HTTPS URLs are supported.'; return; }
+      status.textContent = 'Starting isolated browser session...';
+      try {
+        const snapshot = await api('/api/browser-lab/sessions', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:target, hostname:parsed.hostname, allowed_paths:document.querySelector('#browser-lab-paths').value.split(',').map(item => item.trim()).filter(Boolean)})});
+        window.browserLabSessionId = snapshot.session_id;
+        status.textContent = 'Browser session active in memory; it expires after 15 minutes or when closed.';
+        renderBrowserLabSnapshot(snapshot);
+      } catch (error) { status.textContent = `Could not open guided browser: ${error.message}`; }
+    });
+    document.querySelector('#browser-lab-navigation-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!window.browserLabSessionId) return;
+      const status = document.querySelector('#browser-lab-status');
+      try { const snapshot = await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}/navigate`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:document.querySelector('#browser-lab-navigation-url').value.trim()})}); renderBrowserLabSnapshot(snapshot); status.textContent = 'Navigated with a safe GET request.'; }
+      catch (error) { status.textContent = `Navigation blocked or failed: ${error.message}`; }
+    });
+    document.querySelector('#browser-lab-refresh').addEventListener('click', async () => {
+      if (!window.browserLabSessionId) return;
+      try { renderBrowserLabSnapshot(await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}`)); }
+      catch (error) { document.querySelector('#browser-lab-status').textContent = `Session unavailable: ${error.message}`; }
+    });
+    document.querySelector('#browser-lab-stop').addEventListener('click', async () => {
+      if (window.browserLabSessionId) { try { await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}`, {method:'DELETE'}); } catch (error) {} }
+      window.browserLabSessionId = null;
+      document.querySelector('#browser-lab-navigation-form').hidden = true;
+      document.querySelector('#browser-lab-snapshot').innerHTML = '';
+      document.querySelector('#browser-lab-status').textContent = 'Guided browser session closed; temporary browser state discarded.';
+    });
+    document.querySelector('#browser-lab-snapshot').addEventListener('click', async event => {
+      const select = event.target.closest('.browser-select-element');
+      const openLink = event.target.closest('.browser-open-link');
+      if (select && window.browserLabSessionId) {
+        try {
+          const result = await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}/select`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({element_index:Number(select.dataset.index)})});
+          const host = document.querySelector('#browser-lab-selected');
+          host.hidden = false;
+          host.innerHTML = `<strong>Selected DOM metadata</strong><pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre><span class="small">Selection is a candidate observation only. No control is activated and no input value is read.</span>`;
+        } catch (error) { document.querySelector('#browser-lab-status').textContent = `Element selection failed: ${error.message}`; }
+      }
+      if (openLink && window.browserLabSessionId) {
+        document.querySelector('#browser-lab-navigation-url').value = openLink.dataset.url;
+        document.querySelector('#browser-lab-navigation-form').requestSubmit();
+      }
+    });
+    document.querySelector('#positive-model-validation-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const output = document.querySelector('#positive-validation-result');
+      output.textContent = 'Validating metadata-only transaction...';
+      try {
+        const model = JSON.parse(document.querySelector('#positive-model-json').value);
+        const transaction = JSON.parse(document.querySelector('#positive-transaction-json').value);
+        const result = await api('/api/positive-model/validate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model, transaction})});
+        output.textContent = JSON.stringify(result, null, 2);
+      } catch (error) { output.textContent = `Dry run rejected: ${error.message}`; }
     });
     document.querySelector('#adc-form').addEventListener('submit', async event => {
       event.preventDefault();

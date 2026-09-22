@@ -1,7 +1,8 @@
 # Positive Security Model Contract v1
 
-Status: schema foundation only. This contract does not collect traffic, persist
-positive models, enforce requests, or write configuration to NetScaler.
+Status: schema plus metadata-only dry-run validator and guided-browser MVP. The
+workbench does not persist positive models, enforce requests, or write
+configuration to NetScaler.
 
 The canonical typed contract is implemented in
 `services/control-api/app/positive_model.py`. `PositiveModelDocument` rejects
@@ -64,8 +65,27 @@ source.
 
 ## Phase boundary
 
-This phase only establishes the contract and privacy rules. It does not add an
-API endpoint, database tables, browser session behavior, a policy compiler,
-request enforcement, profile synthesis, or ADC writes. Later phases must map
-only to controls supported by the detected NetScaler version; unsupported
-observations remain analytics-only.
+The deterministic dry-run endpoint is `POST /api/positive-model/validate`.
+It compares a typed model to a metadata-only transaction descriptor in memory:
+route and method, media type, authentication context, field presence, declared
+type, and observed length. Unknown routes/methods and constraint mismatches are
+findings; unknown request properties are rejected without echoing their values.
+Format and numeric-content constraints are explicitly marked not evaluated
+because the validator never receives raw values. The schema is also available
+from `GET /api/positive-model/schema`.
+
+The Guided Browser Lab uses isolated Playwright contexts, an in-memory
+15-minute session, a same-host/path scope, GET/HEAD-only network routing,
+download blocking, redacted query values, and metadata-only request capture.
+The GUI shows a temporary page screenshot and a selectable DOM control list.
+Selection reads field metadata only; it does not click or submit a control. No
+browser state or capture is persisted. The current MVP does not yet support
+authenticated user journeys or arbitrary pointer interaction. It reports only
+a low-confidence name/id-to-query-key heuristic when a selected DOM control
+matches an already observed safe GET; event/time/body-based DOM-to-request
+correlation, candidate-model generation, and model persistence are not
+implemented.
+
+No policy compiler, request enforcement, profile synthesis, or ADC writes were
+added. Later phases must map only to controls supported by the detected
+NetScaler version; unsupported observations remain analytics-only.
