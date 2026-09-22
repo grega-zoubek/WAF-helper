@@ -37,6 +37,15 @@ SAFE_RESPONSE_HEADERS = {
 SAFE_RESPONSE_HEADER_NAMES = SAFE_RESPONSE_HEADERS | {"content-security-policy", "content-security-policy-report-only"}
 
 
+@app.middleware("http")
+async def prevent_guided_auth_caching(request: Request, call_next: Any) -> Response:
+    response = await call_next(request)
+    if request.method.upper() == "POST" and request.url.path.startswith("/guided/sessions/") and request.url.path.endswith("/authenticate"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 def is_same_host(value: str, hostname: str) -> bool:
     return (urlparse(value).hostname or "").lower() == hostname.lower()
 

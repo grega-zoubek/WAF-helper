@@ -214,7 +214,8 @@ model and bounded source summary, never raw field values or request bodies.
   compilation, frontend JavaScript parse, and `git diff --check` pass. A live
   successful login was not attempted because the tested Juice Shop endpoint is
   HTTP and no user-provided HTTPS test credentials were in scope. Complete
-  deployed route checks and service-health verification after deployment.
+  service-health and GUI checks after deployment returned healthy/HTTP 200 with
+  the new controls present. No login POST was sent.
 - Safety boundary: no ADC endpoint was called for a write; `NETSCALER_WRITE_ENABLED`
   was not changed. Login observations do not enable a positive policy or alter
   enforcement.

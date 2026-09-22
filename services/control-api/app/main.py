@@ -95,6 +95,15 @@ async def require_operator_session(request: Request, call_next: Any) -> Response
     return await call_next(request)
 
 
+@app.middleware("http")
+async def prevent_guided_auth_caching(request: Request, call_next: Any) -> Response:
+    response = await call_next(request)
+    if request.method.upper() == "POST" and request.url.path.startswith("/api/browser-lab/sessions/") and request.url.path.endswith("/authenticate"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 class BrowserLabStartRequest(BaseModel):
     url: str = Field(min_length=8, max_length=2048)
     hostname: str = Field(min_length=1, max_length=253)
