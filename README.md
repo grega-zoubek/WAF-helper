@@ -35,6 +35,13 @@ selection response reports group confidence, exact rule counts, match reasons, a
 `positive_model.enabled=false` marker. Positive security, allowlisting, schema,
 behavioral, bot, and rate-limit controls are deliberately deferred.
 
+Positive security phase 1 defines a versioned, value-minimizing application
+model contract in `services/control-api/app/positive_model.py`, with privacy
+and lifecycle rules in `docs/positive-security-model-contract.md`. This is a
+schema foundation only; it does not collect or enforce positive policies. The
+existing Playwright runtime inspector remains headless and read-only; guided
+browser interaction and policy compilation are future phases.
+
 Each generic group is also returned as a closed-by-default selection tree. The tree is
 grouped into catalog-derived subgroups (for example SQL/command/LDAP/NoSQL injection,
 path traversal/file upload, XSS catalog categories, and protocol/evasion families) and

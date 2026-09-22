@@ -17,6 +17,28 @@ a separate later workstream.
 - Credentials remain in protected server-side runtime configuration and are
   never copied into this file, Git, the GUI, or chat.
 
+## Positive security phase 1: model contract and privacy (implemented)
+
+The versioned `PositiveModelDocument` contract is in
+`services/control-api/app/positive_model.py`; its privacy and lifecycle rules
+are documented in `docs/positive-security-model-contract.md`. The contract
+captures application/environment identity, endpoint and field structure,
+aggregate-only observations, evidence references, confidence, lifecycle, and
+decision mode. Unknown fields are rejected; raw observed values and request or
+response bodies have no place in this model. New observations default to
+`discovered`/`observe`, and BLOCK is invalid before staging.
+
+This phase is schema-only: no model collection endpoint, persistence, runtime
+policy enforcement, browser interaction, compiler, or NetScaler write was added.
+The existing headless Playwright inspector and guarded profile workflow are
+foundational services, not implementations of these future positive-model
+capabilities.
+
+Next: implement a deterministic dry-run validator for manually authored
+endpoint/field constraints. After it can validate a policy, extend the existing
+Playwright inspector into a guided, interactive browser with redacted network
+capture and DOM-to-request correlation.
+
 ## Generic scanner architecture
 
 - Discovery layer: bounded passive HTTP observations and technology/surface evidence.
