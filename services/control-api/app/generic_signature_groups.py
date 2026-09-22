@@ -173,10 +173,10 @@ def product_specific_rule_ids(rules: list[dict[str, Any]], product_index: dict[s
         text = _rule_text(rule)
         classes = {str(value).casefold() for value in (rule.get("attack_classes") or [])}
         generic_candidate = bool(classes & _GENERIC_CANDIDATE_CLASSES) or bool(_PROTOCOL_RE.search(text) or _EVASION_RE.search(text))
-        if not generic_candidate:
-            continue
-        if _CVE_RE.search(text):
+        if extract_cve_ids(rule) or _CVE_RE.search(text):
             result[rule_id] = "CVE-linked product vulnerability"
+        elif not generic_candidate:
+            continue
         elif rule_id in indexed:
             result[rule_id] = f"indexed product: {indexed[rule_id][1]}"
         elif _KNOWN_PRODUCT_FINGERPRINT_RE.search(text):

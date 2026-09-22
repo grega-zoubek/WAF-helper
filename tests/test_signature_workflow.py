@@ -39,13 +39,14 @@ class SignatureWorkflowTests(unittest.TestCase):
                 {"rule_id": "62", "attack_classes": ["command-injection"], "description": "WEB-MISC Novell eDirectory issue (CVE-2024-6123)"},
                 {"rule_id": "63", "attack_classes": ["sql-injection"], "description": "WEB-MISC Cisco ISE SQL injection"},
                 {"rule_id": "65", "attack_classes": ["sql-injection"], "description": "Acme Widget injection signature"},
+                {"rule_id": "66", "attack_classes": ["web-misc"], "description": "Cisco appliance arbitrary file write (CVE-2024-7777)"},
             ], "product_index": {"vendors": [{"vendor": "Acme", "products": [
                 {"product": "Widget", "key": "acme/widget", "rule_ids": ["65"]},
             ]}]}},
         )
         selected_ids = {item["rule_id"] for item in result["selected_rules"]}
         self.assertEqual(selected_ids, {"60"})
-        self.assertEqual(result["excluded_product_specific_generic_rule_count"], 4)
+        self.assertEqual(result["excluded_product_specific_generic_rule_count"], 5)
         self.assertEqual(result["cve_count"], 0)
 
     def test_explicit_product_selection_can_include_product_specific_rule(self):
