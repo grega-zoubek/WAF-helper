@@ -772,7 +772,8 @@
       try { await api('/api/discovery/jobs', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }); status.textContent = 'Discovery job queued.'; await loadJobs(); }
       catch (error) { status.textContent = 'Unable to queue discovery job.'; }
     });
-    document.querySelector('#browser-lab-start-form').addEventListener('submit', async event => {
+    document.addEventListener('submit', async event => {
+      if (event.target?.id !== 'browser-lab-start-form') return;
       event.preventDefault();
       const status = document.querySelector('#browser-lab-status');
       const target = document.querySelector('#browser-lab-url').value.trim();
@@ -796,8 +797,8 @@
       try { const snapshot = await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}/navigate`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:document.querySelector('#browser-lab-navigation-url').value.trim()})}); renderBrowserLabSnapshot(snapshot); status.textContent = 'Navigated with a safe GET request.'; }
       catch (error) { status.textContent = `Navigation blocked or failed: ${error.message}`; }
     });
-    document.querySelector('#browser-lab-snapshot').addEventListener('submit', async event => {
-      if (event.target.id !== 'browser-lab-auth-form') return;
+    document.addEventListener('submit', async event => {
+      if (event.target?.id !== 'browser-lab-auth-form') return;
       event.preventDefault();
       const status = document.querySelector('#browser-lab-status');
       const button = event.target.querySelector('button[type="submit"]');
