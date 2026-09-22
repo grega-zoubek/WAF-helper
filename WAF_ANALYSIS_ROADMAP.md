@@ -104,6 +104,14 @@ No policy compiler, runtime enforcement, or ADC write was added.
   or ADC change. The result is evidence only, not proof of causation. This is
   one increment of Phase 3; arbitrary pointer/key interaction, authentication,
   candidate generation, and evidence persistence remain pending.
+- Verification: revision `180dc8a` is deployed on `192.168.11.90`; all eight
+  Compose services are running and Postgres is healthy. `/healthz` returned
+  `ok`, the GUI returned HTTP 200 and contains the new action, and all three
+  focused correlation unit tests passed in the deployed runtime image. A live
+  Browser Lab session on ESS rendered 32 controls; focusing the search input
+  returned `no_request_observed`, `raw_value_captured=false`, and zero correlated
+  requests. The session was explicitly closed. No form was submitted and no
+  ADC or application configuration was changed.
 - Recovery after connectivity loss or reboot: verify local and server Git
   revisions, SSH to `grega@192.168.11.90`, run
   `docker compose -p waf-intelligence ps`, and check `/healthz` plus the GUI at
