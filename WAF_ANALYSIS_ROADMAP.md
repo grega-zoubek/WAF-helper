@@ -9,8 +9,10 @@ a separate later workstream.
 
 ## Safety boundaries
 
-- Discovery is passive and bounded: ordinary `GET` requests only, no attack
-  payloads, form submissions, authentication attempts, or state changes.
+- Discovery is passive and bounded: ordinary `GET` requests only. The guided
+  browser adds explicit read-only interactions and fixed synthetic probes on
+  empty non-sensitive fields; it never submits forms or sends non-GET/HEAD
+  traffic. No attack payloads or intentional application state changes.
 - NetScaler inventory and target-path resolution are read-only.
 - A proposal is not an implementation. No signature object, binding, profile,
   action, or policy is changed without explicit approval and preflight.
@@ -38,27 +40,34 @@ field presence/type, and length bounds. Raw values are rejected and validation
 errors do not echo submitted values. Format and numeric-content checks are
 reported as not evaluated until a separate, privacy-reviewed design exists.
 
-## Positive security phase 3: guided browser MVP (implemented; correlation pending)
+## Positive security phase 3: guided browser learning (core implemented; authenticated journeys gated)
 
 The GUI has an isolated Playwright Browser Lab backed by the runtime inspector.
 Sessions are in-memory, expire after 15 minutes, and are limited to five
-concurrent contexts. The browser is restricted to same-host, configured-path
-GET/HEAD traffic, blocks downloads, redacts query values, and captures request
-metadata only. The GUI shows a temporary screenshot, observed forms/links,
-network metadata, and a selectable DOM control inventory. Selection does not
-activate controls or inspect entered values. Nothing is persisted.
+concurrent contexts. Context-wide routing permits only same-host, configured-
+path GET/HEAD traffic, blocks WebSockets and downloads, and applies to popup
+pages too. A screenshot-coordinate selection overlay exposes DOM metadata
+without activating the target element. Explicit focus and non-submit click
+observations, plus a fixed benign synthetic probe for empty, non-sensitive text
+fields, provide bounded interaction events. Form submit events and both native
+form submission APIs are blocked in the isolated page.
 
-This is not yet the complete pointer-guided learning workflow described in the
-architecture plan: interactive authentication, arbitrary pointer interaction,
-typing, and submission remain future work. The explicit `Observe focus` action
-focuses a selected control without clicking or typing, then correlates only
-subsequent same-host, in-scope XHR/fetch GET/HEAD metadata within a two-second
-window. A matching DOM name/id and query key is stronger evidence than timing
-alone; timing-only matches are marked low confidence and never promoted to a
-model. Query values and request bodies are not captured. Do not infer an
-observed POST or a parameter constraint from a DOM form alone. Candidate-model
-generation, persistence, and full interaction correlation remain future work.
-No policy compiler, runtime enforcement, or ADC write was added.
+DOM, interaction, request, header, and cookie evidence is metadata-only. Query
+and fragment values are redacted; request header values and cookie values are
+never returned; CSP response values are excluded. Candidate generation builds
+a typed `PositiveModelDocument` from observed routes, query/header/cookie names,
+response content types, and safe path templates. It is schema-validated,
+single-session/low-confidence, `discovered`/`observe`, and returned in memory
+only. There is no policy persistence or enforcement.
+
+Credential entry and authenticated journeys are not enabled: the current
+control plane is HTTP and has no operator authentication, so forwarding typed
+credentials would not meet the architecture's privacy requirements. Do not use
+the Browser Lab for login until TLS and operator access control are implemented.
+No arbitrary keyboard input, native form submission, request-body capture,
+candidate persistence, policy compiler, runtime enforcement, or ADC write was
+added. Synthetic probes and explicit clicks can trigger application-side GET
+behavior, so use them only on an approved test scope.
 
 ### Phase 2/3 verification checkpoint — 2026-09-22
 
@@ -119,6 +128,29 @@ No policy compiler, runtime enforcement, or ADC write was added.
   `control-api`, and `frontend` from the committed revision; verify the focus
   endpoint and all existing services. Re-run Browser Lab with read-only focus
   checks only. Do not change ADC configuration.
+
+### Guided browser Phase 3 completion checkpoint — 2026-09-22
+
+- Implementation: screenshot-coordinate selection/highlight, DOM metadata,
+  context-wide GET/HEAD routing, blocked WebSockets/downloads/form submits,
+  click/focus/synthetic-input event capture, safe header/cookie metadata, query
+  and fragment redaction, request correlation, and non-persistent typed
+  candidate generation are implemented. Raw request/response bodies and field
+  values are not captured. Candidate fields do not infer tight constraints;
+  lifecycle remains `discovered` with `observe` mode.
+- Boundary: browser-assisted login remains disabled until the GUI/control API
+  has TLS and operator authentication. Never enter credentials into the current
+  HTTP Browser Lab. This is a documented security prerequisite.
+- Verification: local network-guard/correlation tests (6) and candidate
+  generation tests (3) pass; Python and frontend syntax checks pass. Live
+  deployment and Browser Lab smoke tests are pending for this checkpoint.
+- Recovery after connectivity loss or reboot: use
+  `C:\\Users\\G.Zoubek\\.ssh\\id_rsa_waf_scanner` to SSH to
+  `grega@192.168.11.90`; check the repository revision and
+  `docker compose -p waf-intelligence ps`; verify `/healthz` and
+  `http://192.168.11.90:8180/`. Rebuild only `runtime-inspector`, `control-api`,
+  and `frontend` from the committed revision. Confirm the Browser Lab session
+  closes cleanly; do not submit forms, enter credentials, or change ADC state.
 
 ## Generic scanner architecture
 

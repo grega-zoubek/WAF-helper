@@ -5,6 +5,7 @@ import base64
 import ipaddress
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qsl, urlparse
 from uuid import uuid4
@@ -24,12 +25,13 @@ MAX_GUIDED_SESSIONS = 5
 MAX_NETWORK_EVENTS = 200
 MAX_INTERACTION_EVENTS = 100
 GUIDED_CORRELATION_WINDOW_SECONDS = 2.0
+SENSITIVE_FIELD_NAME_RE = re.compile(r"(?:pass(?:word)?|secret|token|credential|authorization|api[_-]?key|session|csrf|xsrf|username|user[_-]?id|email|otp|one[_-]?time)", re.I)
 INTERESTING_NETWORK_MARKERS = ("/api/", "/auth", "/login", "/signin", "/oauth", "/token", "/graphql", "/rest/", "/user")
 SAFE_RESPONSE_HEADERS = {
-    "content-security-policy", "content-security-policy-report-only", "strict-transport-security",
-    "x-content-type-options", "x-frame-options", "referrer-policy", "permissions-policy",
+    "strict-transport-security", "x-content-type-options", "x-frame-options", "referrer-policy", "permissions-policy",
     "cache-control", "content-type", "location", "www-authenticate",
 }
+SAFE_RESPONSE_HEADER_NAMES = SAFE_RESPONSE_HEADERS | {"content-security-policy", "content-security-policy-report-only"}
 
 
 def is_same_host(value: str, hostname: str) -> bool:
@@ -105,6 +107,11 @@ class GuidedSelectRequest(BaseModel):
     element_index: int = Field(ge=0, le=999)
 
 
+class GuidedPointSelectRequest(BaseModel):
+    x: float = Field(ge=0, le=4096)
+    y: float = Field(ge=0, le=4096)
+
+
 def allowed_path(path: str, prefixes: list[str]) -> bool:
     normalized = path or "/"
     for prefix in prefixes or ["/"]:
@@ -122,9 +129,17 @@ def in_scope(value: str, request: InspectionRequest) -> bool:
 
 def redact_url(value: str) -> str:
     parsed = urlparse(value)
-    if not parsed.query:
-        return value
-    return parsed._replace(query="&".join(f"{key}=REDACTED" for key, _ in [part.split("=", 1) if "=" in part else (part, "") for part in parsed.query.split("&")])).geturl()
+    def redact_pairs(query: str) -> str:
+        return "&".join(f"{part.split('=', 1)[0]}=REDACTED" if "=" in part else part for part in query.split("&"))
+
+    query = redact_pairs(parsed.query) if parsed.query else ""
+    fragment = parsed.fragment
+    if "?" in fragment:
+        head, fragment_query = fragment.split("?", 1)
+        fragment = f"{head}?{redact_pairs(fragment_query)}"
+    elif "=" in fragment:
+        fragment = redact_pairs(fragment)
+    return parsed._replace(query=query, fragment=fragment).geturl()
 
 
 def redacted_route_template(value: str) -> str:
@@ -139,13 +154,23 @@ def redacted_route_template(value: str) -> str:
                 uuid.UUID(segment)
                 parts.append("{id:uuid}")
             except (ValueError, AttributeError):
-                parts.append(segment)
+                token_segment = (
+                    len(segment) >= 24 and re.fullmatch(r"[A-Za-z0-9_-]+", segment)
+                    and re.search(r"[A-Z]", segment) and re.search(r"[a-z]", segment) and re.search(r"\d", segment)
+                ) or bool(re.fullmatch(r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", segment))
+                if token_segment:
+                    parts.append("{path_segment}")
+                else:
+                    parts.append(segment)
     path = "/".join(parts) or "/"
     return path if path.startswith("/") else "/" + path
 
 
-def correlate_focus_to_requests(element: dict[str, Any], event_started: float, requests: list[dict[str, Any]], hostname: str) -> list[dict[str, Any]]:
-    """Correlate metadata-only focus events to later safe same-host XHR/fetch requests."""
+def correlate_focus_to_requests(
+    element: dict[str, Any], event_started: float, requests: list[dict[str, Any]], hostname: str,
+    resource_types: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Correlate metadata-only UI events to later safe same-host requests."""
     field_names = {str(element.get(key, "")).casefold() for key in ("name", "id")}
     field_names.discard("")
     correlated: list[dict[str, Any]] = []
@@ -156,7 +181,7 @@ def correlate_focus_to_requests(element: dict[str, Any], event_started: float, r
         delta = started - event_started
         if delta > GUIDED_CORRELATION_WINDOW_SECONDS:
             continue
-        if item.get("resource_type") not in {"xhr", "fetch"} or not is_same_host(str(item.get("url", "")), hostname):
+        if item.get("resource_type") not in (resource_types or {"xhr", "fetch"}) or not is_same_host(str(item.get("url", "")), hostname):
             continue
         parsed = urlparse(str(item.get("url", "")))
         query_names = {name.casefold() for name, _ in parse_qsl(parsed.query, keep_blank_values=True)}
@@ -197,6 +222,18 @@ def validate_guided_request(request: GuidedSessionRequest, url: str | None = Non
         raise HTTPException(status_code=422, detail="Guided browser URL is outside the selected host/path scope")
 
 
+async def guard_guided_route(route: Any, scope: InspectionRequest) -> None:
+    target = route.request.url
+    if route.request.method.upper() not in {"GET", "HEAD"} or not in_scope(target, scope):
+        await route.abort("blockedbyclient")
+        return
+    await route.continue_()
+
+
+async def block_guided_websocket(websocket_route: Any) -> None:
+    await websocket_route.close(code=1008, reason="WebSocket traffic is disabled in read-only browser sessions")
+
+
 async def guided_snapshot(session: dict[str, Any]) -> dict[str, Any]:
     page = session["page"]
     await page.evaluate("""() => {
@@ -208,23 +245,29 @@ async def guided_snapshot(session: dict[str, Any]) -> dict[str, Any]:
     }""")
     dom = await page.evaluate("""() => {
       const visible = el => { const s = getComputedStyle(el), r = el.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
-      const controls = Array.from(document.querySelectorAll('input,button,select,textarea,[role="button"],[role="textbox"]')).slice(0, 250).map((el, index) => ({
+      const controls = Array.from(document.querySelectorAll('input,button,select,textarea,a[href],[role="button"],[role="textbox"]')).slice(0, 250).map((el, index) => ({
         index, tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', name: el.getAttribute('name') || '', id: el.id || '',
+        effective_type: el.type || '',
         role: el.getAttribute('role') || '', aria_label: el.getAttribute('aria-label') || '', placeholder: el.getAttribute('placeholder') || '',
         required: el.hasAttribute('required'), disabled: el.hasAttribute('disabled'), autocomplete: el.getAttribute('autocomplete') || '',
         minlength: el.getAttribute('minlength') || '', maxlength: el.getAttribute('maxlength') || '', pattern: el.getAttribute('pattern') || '',
+        form_id: el.form ? (el.form.id || el.form.getAttribute('name') || '') : '',
+        form_method: el.form ? (el.form.method || 'get').toUpperCase() : '',
+        form_action: el.form ? el.form.action : '',
+        selector: el.id ? `#${CSS.escape(el.id)}` : `${el.tagName.toLowerCase()}${el.getAttribute('name') ? `[name="${CSS.escape(el.getAttribute('name'))}"]` : ''}`,
         labels: Array.from(el.labels || []).map(x => (x.innerText || x.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 120)),
         text: (el.innerText || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim().slice(0, 120), visible: visible(el)
       }));
       const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: (a.innerText || a.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().slice(0, 120), href: a.href})).slice(0, 200);
-      const forms = Array.from(document.forms).map(f => ({id: f.id || '', name: f.getAttribute('name') || '', action: f.action, method: (f.method || 'get').toUpperCase(), enctype: f.enctype || '', fields: f.elements.length})).slice(0, 50);
-      return {title: document.title.slice(0, 250), headings: Array.from(document.querySelectorAll('h1,h2,h3,[role="heading"]')).map(x => (x.innerText || x.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 180)).filter(Boolean).slice(0, 40), controls, links, forms};
+      const forms = Array.from(document.forms).map(f => ({id: f.id || '', name: f.getAttribute('name') || '', action: f.action, method: (f.method || 'get').toUpperCase(), enctype: f.enctype || '', fields: f.elements.length, field_names: Array.from(f.elements).map(el => el.getAttribute('name') || '').filter(Boolean).slice(0, 100)})).slice(0, 50);
+      return {title: document.title.slice(0, 250), viewport: {width: innerWidth, height: innerHeight}, headings: Array.from(document.querySelectorAll('h1,h2,h3,[role="heading"]')).map(x => (x.innerText || x.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 180)).filter(Boolean).slice(0, 40), controls, links, forms};
     }""")
     requests = list(session["network_events"].values())[-200:]
     screenshot = await page.screenshot(type="jpeg", quality=55, full_page=False, timeout=5_000)
     session["touched"] = time.monotonic()
     return {
         "session_id": session["id"], "url": redact_url(page.url), "title": dom["title"], "status_code": session.get("status_code"),
+        "viewport": dom["viewport"],
         "headings": dom["headings"], "controls": dom["controls"], "forms": [{**form, "action": redact_url(form["action"])} for form in dom["forms"]],
         "links": [{**link, "href": redact_url(link["href"])} for link in dom["links"] if is_same_host(link["href"], session["hostname"]) and allowed_path(urlparse(link["href"]).path, session["allowed_paths"])],
         "network_requests": requests, "screenshot_data_uri": "data:image/jpeg;base64," + base64.b64encode(screenshot).decode("ascii"),
@@ -396,23 +439,13 @@ async def start_guided_session(request: GuidedSessionRequest) -> dict[str, Any]:
         page = await context.new_page()
         scope = InspectionRequest(urls=[request.url], hostname=request.hostname, allowed_paths=request.allowed_paths)
 
-        async def guard_route(route: Any) -> None:
-            target = route.request.url
-            if route.request.method.upper() not in {"GET", "HEAD"} or not in_scope(target, scope):
-                await route.abort("blockedbyclient")
-                return
-            await route.continue_()
-
-        async def block_websocket(websocket_route: Any) -> None:
-            await websocket_route.close(code=1008, reason="WebSocket traffic is disabled in read-only browser sessions")
-
-        await page.route("**/*", guard_route)
-        await page.route_web_socket("**/*", block_websocket)
+        await context.route("**/*", lambda route: guard_guided_route(route, scope))
+        await context.route_web_socket("**/*", block_guided_websocket)
         session_id = str(uuid4())
         session: dict[str, Any] = {
                 "id": session_id, "context": context, "page": page, "hostname": request.hostname.lower(),
                 "allowed_paths": request.allowed_paths or ["/"], "network_events": {}, "network_sequence": [],
-                "interaction_events": [], "status_code": None,
+                "interaction_events": [], "selected_elements": [], "status_code": None,
                 "created": time.monotonic(), "touched": time.monotonic(),
         }
         def record_request(browser_request: Any) -> None:
@@ -423,6 +456,9 @@ async def start_guided_session(request: GuidedSessionRequest) -> dict[str, Any]:
                     "id": str(uuid4()), "method": browser_request.method,
                     "url": redact_url(browser_request.url), "resource_type": browser_request.resource_type,
                     "status_code": None, "started_at": time.monotonic(),
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
+                    "request_header_names": sorted(str(name).lower()[:128] for name in browser_request.headers.keys())[:100],
+                    "response_header_names": [],
                 }
                 session["network_sequence"].append(event_item)
                 session["network_sequence"] = session["network_sequence"][-MAX_NETWORK_EVENTS:]
@@ -431,22 +467,70 @@ async def start_guided_session(request: GuidedSessionRequest) -> dict[str, Any]:
 
         def record_response(browser_response: Any) -> None:
                 browser_request = browser_response.request
+                safe_response_headers = safe_headers(browser_response.headers)
+                response_header_names = sorted(str(name).lower()[:128] for name in browser_response.headers.keys() if str(name).lower() in SAFE_RESPONSE_HEADER_NAMES)
                 for sequence_item in reversed(session["network_sequence"]):
                     if (sequence_item["method"] == browser_request.method
                             and sequence_item["url"] == redact_url(browser_request.url)
                             and sequence_item["resource_type"] == browser_request.resource_type
                             and sequence_item["status_code"] is None):
                         sequence_item["status_code"] = browser_response.status
+                        sequence_item["response_content_type"] = safe_response_headers.get("content-type", "").split(";", 1)[0][:128]
+                        sequence_item["response_header_names"] = response_header_names
                         break
                 key = (browser_request.method, redact_url(browser_request.url), browser_request.resource_type)
                 if key in session["network_events"]:
                     session["network_events"][key]["status_code"] = browser_response.status
-                    session["network_events"][key]["response_headers"] = safe_headers(browser_response.headers)
+                    session["network_events"][key]["response_headers"] = safe_response_headers
                 if browser_request.is_navigation_request():
                     session["status_code"] = browser_response.status
 
         page.on("request", record_request)
         page.on("response", record_response)
+        async def record_dom_event(source: Any, event: dict[str, Any]) -> None:
+            allowed_events = {"focus", "click", "input", "change", "submit"}
+            event_type = str(event.get("type", ""))
+            if event_type not in allowed_events:
+                return
+            safe_event = {
+                "id": str(uuid4()),
+                "type": event_type,
+                "tag": str(event.get("tag", ""))[:32].lower(),
+                "input_type": str(event.get("input_type", ""))[:32].lower(),
+                "name": str(event.get("name", ""))[:256],
+                "id_attribute": str(event.get("id", ""))[:256],
+                "role": str(event.get("role", ""))[:64],
+                "form_method": str(event.get("form_method", ""))[:16].upper(),
+                "form_action": redact_url(str(event.get("form_action", ""))[:2048]),
+                "started_at": time.monotonic(),
+            }
+            session["interaction_events"].append(safe_event)
+            session["interaction_events"] = session["interaction_events"][-MAX_INTERACTION_EVENTS:]
+
+        await page.expose_binding("__wafGuidedRecord", record_dom_event)
+        await page.add_init_script("""() => {
+          const selector = el => el.id ? `#${CSS.escape(el.id)}` : `${el.tagName.toLowerCase()}${el.getAttribute('name') ? `[name="${CSS.escape(el.getAttribute('name'))}"]` : ''}`;
+          const emit = (type, el) => {
+            if (!el || typeof window.__wafGuidedRecord !== 'function') return;
+            const form = el.tagName === 'FORM' ? el : el.form;
+            window.__wafGuidedRecord({
+              type,
+              tag: el.tagName.toLowerCase(), input_type: el.type || '', name: el.getAttribute('name') || '',
+              id: el.id || '', role: el.getAttribute('role') || '', selector: selector(el),
+              form_method: form ? (form.method || 'get').toUpperCase() : '', form_action: form ? form.action : ''
+            }).catch(() => {});
+          };
+          const record = event => {
+            const source = event.target;
+            const el = source?.closest?.('input,button,select,textarea,a,form,[role="button"],[role="textbox"]');
+            if (event.type === 'submit') { event.preventDefault(); event.stopImmediatePropagation(); }
+            emit(event.type, el);
+          };
+          const blockedSubmit = function() { emit('submit', this); };
+          try { Object.defineProperty(HTMLFormElement.prototype, 'submit', {configurable: true, value: blockedSubmit}); } catch (_) {}
+          try { Object.defineProperty(HTMLFormElement.prototype, 'requestSubmit', {configurable: true, value: blockedSubmit}); } catch (_) {}
+          for (const type of ['click','input','change','submit']) document.addEventListener(type, record, true);
+        }""")
         browser_sessions[session_id] = session
         try:
             await page.goto(request.url, wait_until="domcontentloaded", timeout=20_000)
@@ -498,7 +582,7 @@ async def select_guided_element(session_id: str, request: GuidedSelectRequest) -
         session = browser_sessions.get(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
-        items = session["page"].locator('input,button,select,textarea,[role="button"],[role="textbox"]')
+        items = session["page"].locator('input,button,select,textarea,a[href],[role="button"],[role="textbox"]')
         if request.element_index >= await items.count():
             raise HTTPException(status_code=404, detail="Selectable element is no longer present")
         selected = await items.nth(request.element_index).evaluate("""el => ({
@@ -527,6 +611,9 @@ async def select_guided_element(session_id: str, request: GuidedSelectRequest) -
                         "raw_values_captured": False,
                     })
         selected["correlated_requests"] = correlated[:20]
+        stored_keys = ("tag", "type", "effective_type", "name", "id", "role", "form_id", "form_method", "form_action")
+        session["selected_elements"].append({key: selected.get(key) for key in stored_keys})
+        session["selected_elements"] = session["selected_elements"][-MAX_INTERACTION_EVENTS:]
         session["touched"] = time.monotonic()
         return {"page_url": redact_url(session["page"].url), "element": selected, "evidence_kind": "dom_metadata_only", "raw_value_captured": False}
 
@@ -539,7 +626,7 @@ async def focus_guided_element(session_id: str, request: GuidedSelectRequest) ->
         session = browser_sessions.get(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
-        items = session["page"].locator('input,button,select,textarea,[role="button"],[role="textbox"]')
+        items = session["page"].locator('input,button,select,textarea,a[href],[role="button"],[role="textbox"]')
         if request.element_index >= await items.count():
             raise HTTPException(status_code=404, detail="Selectable element is no longer present")
         element = await items.nth(request.element_index).evaluate("""el => ({
@@ -553,7 +640,8 @@ async def focus_guided_element(session_id: str, request: GuidedSelectRequest) ->
             raise HTTPException(status_code=422, detail="Disabled controls cannot be focused")
         event_started = time.monotonic()
         interaction = {
-            "id": str(uuid4()), "event": "focus", "element_index": request.element_index,
+            "id": str(uuid4()), "type": "focus", "element_index": request.element_index,
+            "tag": element.get("tag", ""), "input_type": element.get("type", ""),
             "name": element.get("name", ""), "id_attribute": element.get("id", ""),
             "started_at": event_started,
         }
@@ -565,6 +653,8 @@ async def focus_guided_element(session_id: str, request: GuidedSelectRequest) ->
         except PlaywrightTimeoutError:
             raise HTTPException(status_code=422, detail="Control could not be focused")
         correlated = correlate_focus_to_requests(element, event_started, session["network_sequence"], session["hostname"])
+        interaction["correlated_request_ids"] = [item.get("request_id") for item in correlated if item.get("request_id")]
+        interaction["matched_parameter_names"] = sorted({name for item in correlated for name in item.get("matched_parameter_names", [])})
         session["touched"] = time.monotonic()
         return {
             "page_url": redact_url(session["page"].url),
@@ -573,6 +663,203 @@ async def focus_guided_element(session_id: str, request: GuidedSelectRequest) ->
             "correlated_requests": correlated,
             "capture_policy": "metadata-only; focus only; GET/HEAD same-host in-scope requests; no click, typing, form submission, request bodies, or raw field values",
             "raw_value_captured": False,
+        }
+
+
+@app.post("/guided/sessions/{session_id}/activate")
+async def activate_guided_element(session_id: str, request: GuidedSelectRequest) -> dict[str, Any]:
+    """Explicitly click only an in-scope link or a non-submit button; unsafe methods remain blocked."""
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        session = browser_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
+        items = session["page"].locator('input,button,select,textarea,a[href],[role="button"],[role="textbox"]')
+        if request.element_index >= await items.count():
+            raise HTTPException(status_code=404, detail="Selectable element is no longer present")
+        element = await items.nth(request.element_index).evaluate("""el => ({
+          tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', effective_type: el.type || '',
+          name: el.getAttribute('name') || '', id: el.id || '', role: el.getAttribute('role') || '',
+          disabled: el.hasAttribute('disabled'), href: el.href || '', target: el.getAttribute('target') || '',
+          form_associated: Boolean(el.form),
+          form_method: el.form ? (el.form.method || 'get').toUpperCase() : '', form_action: el.form ? el.form.action : ''
+        })""")
+        is_link = element["tag"] == "a" and bool(element["href"])
+        is_non_submit_button = element["tag"] == "button" and element["effective_type"].casefold() == "button"
+        is_role_button = element["role"] == "button" and not element["disabled"] and not element["form_associated"]
+        if element["disabled"] or element["target"] and element["target"].casefold() != "_self":
+            raise HTTPException(status_code=422, detail="Disabled and new-window controls cannot be activated")
+        if not (is_link or is_non_submit_button or is_role_button):
+            raise HTTPException(status_code=422, detail="Only in-scope links and explicit non-submit buttons can be activated")
+        if is_link:
+            scope = InspectionRequest(urls=[element["href"]], hostname=session["hostname"], allowed_paths=session["allowed_paths"])
+            if not in_scope(element["href"], scope):
+                raise HTTPException(status_code=422, detail="Link is outside the guided session scope")
+        event_started = time.monotonic()
+        try:
+            await items.nth(request.element_index).click(timeout=3_000, no_wait_after=True)
+            await session["page"].wait_for_timeout(1_200)
+        except PlaywrightTimeoutError:
+            raise HTTPException(status_code=422, detail="Control could not be activated")
+        correlated = correlate_focus_to_requests(element, event_started, session["network_sequence"], session["hostname"], {"document", "xhr", "fetch"})
+        click_event = next((item for item in reversed(session["interaction_events"]) if item.get("type") == "click" and item.get("started_at", 0) >= event_started), None)
+        if click_event is None:
+            click_event = {"id": str(uuid4()), "type": "click", "tag": element["tag"], "input_type": element.get("effective_type", ""), "name": element.get("name", ""), "id_attribute": element.get("id", ""), "role": element.get("role", ""), "form_method": element.get("form_method", ""), "form_action": redact_url(element.get("form_action", "")), "started_at": event_started}
+            session["interaction_events"].append(click_event)
+            session["interaction_events"] = session["interaction_events"][-MAX_INTERACTION_EVENTS:]
+        click_event["correlated_request_ids"] = [item.get("request_id") for item in correlated if item.get("request_id")]
+        click_event["matched_parameter_names"] = sorted({name for item in correlated for name in item.get("matched_parameter_names", [])})
+        session["touched"] = time.monotonic()
+        safe_element = {**element, "href": redact_url(element.get("href", "")), "form_action": redact_url(element.get("form_action", ""))}
+        return {
+            "page_url": redact_url(session["page"].url),
+            "event": {"type": "click", "element": safe_element},
+            "correlation_status": "matched" if correlated else "no_request_observed",
+            "correlated_requests": correlated,
+            "capture_policy": "explicit click on an in-scope link or non-submit button; only same-host, in-scope GET/HEAD requests are allowed; form submission and request bodies are blocked/not captured",
+            "raw_value_captured": False,
+            "snapshot": await guided_snapshot(session),
+        }
+
+
+@app.post("/guided/sessions/{session_id}/probe-input")
+async def probe_guided_input(session_id: str, request: GuidedSelectRequest) -> dict[str, Any]:
+    """Use a fixed benign value in an eligible empty text field; never submit or return the value."""
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        session = browser_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
+        items = session["page"].locator('input,button,select,textarea,a[href],[role="button"],[role="textbox"]')
+        if request.element_index >= await items.count():
+            raise HTTPException(status_code=404, detail="Selectable input is no longer present")
+        element = await items.nth(request.element_index).evaluate("""el => ({
+          tag: el.tagName.toLowerCase(), type: (el.type || '').toLowerCase(), name: el.getAttribute('name') || '',
+          id: el.id || '', autocomplete: (el.getAttribute('autocomplete') || '').toLowerCase(),
+          disabled: el.hasAttribute('disabled'), read_only: el.hasAttribute('readonly'),
+          has_value: Boolean(el.value), form_method: el.form ? (el.form.method || 'get').toUpperCase() : ''
+        })""")
+        if element["tag"] not in {"input", "textarea"} or element["disabled"] or element["read_only"]:
+            raise HTTPException(status_code=422, detail="Only enabled editable text fields can be probed")
+        if element["type"] not in {"", "text", "search", "email", "url", "tel", "number"}:
+            raise HTTPException(status_code=422, detail="This input type is not eligible for a synthetic probe")
+        if element["has_value"]:
+            raise HTTPException(status_code=422, detail="Non-empty fields are not overwritten by a synthetic probe")
+        if SENSITIVE_FIELD_NAME_RE.search(f"{element['name']} {element['id']} {element['autocomplete']}"):
+            raise HTTPException(status_code=422, detail="Credential and sensitive fields cannot be synthetically probed")
+        probe_value = "1" if element["type"] == "number" else (
+            "https://waf-observation.invalid/" if element["type"] == "url" else (
+                "waf-observation@example.invalid" if element["type"] == "email" else "waf-observation"
+            )
+        )
+        event_started = time.monotonic()
+        try:
+            await items.nth(request.element_index).fill(probe_value, timeout=2_000)
+            await session["page"].wait_for_timeout(1_200)
+        except PlaywrightTimeoutError:
+            raise HTTPException(status_code=422, detail="Input probe could not be applied")
+        correlated = correlate_focus_to_requests(element, event_started, session["network_sequence"], session["hostname"])
+        input_event = next((item for item in reversed(session["interaction_events"]) if item.get("type") == "input" and item.get("started_at", 0) >= event_started), None)
+        if input_event is None:
+            input_event = {"id": str(uuid4()), "type": "input", "tag": element["tag"], "input_type": element["type"], "name": element["name"], "id_attribute": element["id"], "started_at": event_started}
+            session["interaction_events"].append(input_event)
+            session["interaction_events"] = session["interaction_events"][-MAX_INTERACTION_EVENTS:]
+        input_event["correlated_request_ids"] = [item.get("request_id") for item in correlated if item.get("request_id")]
+        input_event["matched_parameter_names"] = sorted({name for item in correlated for name in item.get("matched_parameter_names", [])})
+        session["touched"] = time.monotonic()
+        return {
+            "event": {"type": "input", "element": {key: element[key] for key in ("tag", "type", "name", "id", "autocomplete", "form_method")}},
+            "correlation_status": "matched" if correlated else "no_request_observed",
+            "correlated_requests": correlated,
+            "capture_policy": "fixed synthetic input; not applied to sensitive or non-empty fields; no submit; values and bodies are never returned; unsafe methods are blocked",
+            "synthetic_probe": True,
+            "raw_value_captured": False,
+        }
+
+
+@app.post("/guided/sessions/{session_id}/select-at")
+async def select_guided_point(session_id: str, request: GuidedPointSelectRequest) -> dict[str, Any]:
+    """Select a visible page element from screenshot coordinates without activating it."""
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        session = browser_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
+        selected = await session["page"].evaluate("""({x, y}) => {
+          const hit = document.elementFromPoint(x, y);
+          if (!hit) return null;
+          const el = hit.closest('input,button,select,textarea,a,form,[role="button"],[role="textbox"]') || hit;
+          const form = el.tagName === 'FORM' ? el : el.form;
+          const r = el.getBoundingClientRect();
+          return {
+            tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', effective_type: el.type || '',
+            name: el.getAttribute('name') || '', id: el.id || '', role: el.getAttribute('role') || '',
+            aria_label: el.getAttribute('aria-label') || '', placeholder: el.getAttribute('placeholder') || '',
+            required: el.hasAttribute('required'), disabled: el.hasAttribute('disabled'),
+            selector: el.id ? `#${CSS.escape(el.id)}` : `${el.tagName.toLowerCase()}${el.getAttribute('name') ? `[name="${CSS.escape(el.getAttribute('name'))}"]` : ''}`,
+            labels: Array.from(el.labels || []).map(label => (label.innerText || label.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 120)),
+            form_id: form ? (form.id || form.getAttribute('name') || '') : '',
+            form_method: form ? (form.method || 'get').toUpperCase() : '', form_action: form ? form.action : '',
+            bounds: {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height)}
+          };
+        }""", {"x": request.x, "y": request.y})
+        if selected is None:
+            raise HTTPException(status_code=422, detail="No page element exists at the selected coordinate")
+        selected["form_action"] = redact_url(selected.get("form_action", ""))
+        stored_keys = ("tag", "type", "effective_type", "name", "id", "role", "form_id", "form_method", "form_action")
+        session["selected_elements"].append({key: selected.get(key) for key in stored_keys})
+        session["selected_elements"] = session["selected_elements"][-MAX_INTERACTION_EVENTS:]
+        session["touched"] = time.monotonic()
+        snapshot = await guided_snapshot(session)
+        return {"element": selected, "snapshot": snapshot, "evidence_kind": "screenshot_point_selection", "raw_value_captured": False}
+
+
+@app.get("/guided/sessions/{session_id}/candidate-source")
+async def guided_candidate_source(session_id: str) -> dict[str, Any]:
+    """Return bounded, already-redacted metadata for in-memory candidate generation."""
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        session = browser_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
+        requests: list[dict[str, Any]] = []
+        for item in session["network_sequence"]:
+            parsed = urlparse(item["url"])
+            query_names = sorted({name[:256] for name, _ in parse_qsl(parsed.query, keep_blank_values=False) if name and len(name) <= 256})
+            requests.append({
+                "id": item["id"], "method": item["method"], "path_template": redacted_route_template(item["url"]),
+                "scheme": urlparse(item["url"]).scheme.lower(),
+                "resource_type": item["resource_type"], "status_code": item["status_code"],
+                "query_names": query_names, "request_header_names": item.get("request_header_names", []),
+                "cookie_header_present": "cookie" in item.get("request_header_names", []),
+                "response_header_names": item.get("response_header_names", []),
+                "response_content_type": item.get("response_content_type", ""),
+                "observed_at": item["observed_at"],
+            })
+        cookie_metadata: list[dict[str, Any]] = []
+        for cookie in await session["context"].cookies():
+            domain = str(cookie.get("domain", "")).lstrip(".").lower()
+            cookie_path = str(cookie.get("path", "/")) or "/"
+            if (session["hostname"] == domain or session["hostname"].endswith("." + domain)) and allowed_path(cookie_path, session["allowed_paths"]):
+                cookie_metadata.append({
+                    "name": str(cookie.get("name", ""))[:256], "domain": str(cookie.get("domain", ""))[:253],
+                    "path": cookie_path[:2048], "secure": bool(cookie.get("secure")),
+                    "http_only": bool(cookie.get("httpOnly")), "same_site": str(cookie.get("sameSite", ""))[:32],
+                    "session": float(cookie.get("expires", -1)) <= 0,
+                })
+        safe_interactions = []
+        for item in session["interaction_events"]:
+            safe_interaction = {
+                key: item.get(key)
+                for key in ("id", "type", "tag", "input_type", "name", "id_attribute", "role", "form_method", "correlated_request_ids", "matched_parameter_names")
+            }
+            safe_interaction["form_action"] = redact_url(str(item.get("form_action", "")))
+            safe_interactions.append(safe_interaction)
+        return {
+            "session_id": session["id"], "hostname": session["hostname"],
+            "requests": requests, "selected_elements": session["selected_elements"][-MAX_INTERACTION_EVENTS:],
+            "interaction_events": safe_interactions, "cookie_metadata": cookie_metadata[:200],
+            "privacy": {"raw_values_returned": False, "request_bodies_returned": False, "cookie_values_returned": False},
         }
 
 

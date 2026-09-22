@@ -27,6 +27,7 @@ from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
 from app.signature_workflow import ACTION_VALUES, OBJECT_NAME_RE, cli_import_commands, default_object_name, load_upstream_catalog, select_rules_for_detection, workflow_fingerprint
 from app.positive_model import PositiveModelDocument, positive_model_json_schema
+from app.positive_learning import build_guided_candidate
 from app.positive_validator import TransactionDescriptor, validate_transaction
 
 app = FastAPI(title="WAF Intelligence Control API", version="0.1.0")
@@ -64,6 +65,11 @@ class BrowserLabNavigateRequest(BaseModel):
 
 class BrowserLabSelectRequest(BaseModel):
     element_index: int = Field(ge=0, le=999)
+
+
+class BrowserLabPointSelectRequest(BaseModel):
+    x: float = Field(ge=0, le=4096)
+    y: float = Field(ge=0, le=4096)
 
 
 class NetScalerConnectRequest(BaseModel):
@@ -1063,6 +1069,75 @@ async def browser_lab_focus(session_id: str, request: BrowserLabSelectRequest) -
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Control focus was rejected")) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+
+
+@app.post("/api/browser-lab/sessions/{session_id}/activate")
+async def browser_lab_activate(session_id: str, request: BrowserLabSelectRequest) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=35) as client:
+            response = await client.post(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}/activate", json=request.model_dump())
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Control activation was rejected")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+
+
+@app.post("/api/browser-lab/sessions/{session_id}/probe-input")
+async def browser_lab_probe_input(session_id: str, request: BrowserLabSelectRequest) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            response = await client.post(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}/probe-input", json=request.model_dump())
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Synthetic input probe was rejected")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+
+
+@app.post("/api/browser-lab/sessions/{session_id}/select-at")
+async def browser_lab_select_at(session_id: str, request: BrowserLabPointSelectRequest) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=35) as client:
+            response = await client.post(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}/select-at", json=request.model_dump())
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Screenshot selection was rejected")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+
+
+@app.get("/api/browser-lab/sessions/{session_id}/candidate")
+async def browser_lab_candidate(session_id: str) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}/candidate-source")
+            response.raise_for_status()
+            source = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Guided browser session was not found")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+    try:
+        candidate = build_guided_candidate(source)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Candidate model did not pass schema validation; source values were not returned.") from exc
+    return {
+        "candidate": candidate.model_dump(mode="json"),
+        "persisted": False,
+        "enforcement_mode": "observe",
+        "summary": {
+            "endpoint_count": len(candidate.endpoints),
+            "field_count": sum(len(endpoint.fields) for endpoint in candidate.endpoints),
+            "evidence_sources": ["guided_browser"],
+            "confidence_note": "Conservative single-session evidence; review and enrich with independent sources before promotion.",
+        },
+        "cookie_metadata": source.get("cookie_metadata", []),
+        "privacy": source.get("privacy", {}),
+    }
 
 
 @app.delete("/api/browser-lab/sessions/{session_id}")

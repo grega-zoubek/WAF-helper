@@ -75,16 +75,24 @@ because the validator never receives raw values. The schema is also available
 from `GET /api/positive-model/schema`.
 
 The Guided Browser Lab uses isolated Playwright contexts, an in-memory
-15-minute session, a same-host/path scope, GET/HEAD-only network routing,
-download blocking, redacted query values, and metadata-only request capture.
-The GUI shows a temporary page screenshot and a selectable DOM control list.
-Selection reads field metadata only; it does not click or submit a control. No
-browser state or capture is persisted. The current MVP does not yet support
-authenticated user journeys or arbitrary pointer interaction. It reports only
-a low-confidence name/id-to-query-key heuristic when a selected DOM control
-matches an already observed safe GET; event/time/body-based DOM-to-request
-correlation, candidate-model generation, and model persistence are not
-implemented.
+15-minute session, a same-host/path scope, context-wide GET/HEAD-only network
+routing, WebSocket/download blocking, and metadata-only capture. The GUI shows a
+temporary screenshot with coordinate-based selection and a visual highlight.
+Explicit focus and non-submit click observations, plus a fixed benign synthetic
+probe for empty, non-sensitive text inputs, can produce DOM-to-request
+correlation evidence. Form submit events and native form submission APIs are
+blocked. Query/fragment values are redacted; request header names and safe
+response metadata are recorded without header values; cookie names and
+attributes are exposed without cookie values. Raw request/response bodies and
+field values are never returned or persisted. Candidate generation produces a
+schema-validated, low-confidence `discovered`/`observe` PositiveModelDocument in
+memory only; it does not persist or enforce the candidate.
+
+Credential entry and authenticated journeys remain disabled because the current
+GUI/control API uses HTTP and has no operator authentication. Do not enter
+credentials into the Browser Lab until TLS and operator access control are in
+place. Synthetic inputs and explicit clicks can trigger application-side GET
+behavior, so use them only on an approved test scope.
 
 No policy compiler, request enforcement, profile synthesis, or ADC writes were
 added. Later phases must map only to controls supported by the detected
