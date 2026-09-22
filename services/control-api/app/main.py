@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import asyncio
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -18,6 +19,7 @@ import httpx
 import psycopg
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from psycopg.types.json import Jsonb
 
@@ -26,8 +28,9 @@ from app.nextgen_correlation import correlate_scope_to_nextgen
 from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
 from app.signature_workflow import ACTION_VALUES, OBJECT_NAME_RE, cli_import_commands, default_object_name, load_upstream_catalog, select_rules_for_detection, workflow_fingerprint
-from app.positive_model import PositiveModelDocument, positive_model_json_schema
+from app.positive_model import DecisionMode, Lifecycle, PositiveModelDocument, positive_model_json_schema
 from app.positive_learning import build_guided_candidate
+from app.operator_auth import AuthConfigurationError, COOKIE_NAME, SESSION_TTL_SECONDS, create_session, request_is_secure_same_origin, verify_credentials, verify_session
 from app.positive_validator import TransactionDescriptor, validate_transaction
 
 app = FastAPI(title="WAF Intelligence Control API", version="0.1.0")
@@ -39,6 +42,7 @@ RUNTIME_INSPECTOR_URL = "http://runtime-inspector:8094"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 CREDENTIAL_KEY_FILE = os.getenv("CREDENTIAL_KEY_FILE", "/run/secrets/credential_encryption_key")
 active_connections: dict[str, tuple[str, str, str]] = {}
+login_attempts: dict[str, list[float]] = {}
 
 
 class DiscoveryRequest(BaseModel):
@@ -51,6 +55,44 @@ class DiscoveryRequest(BaseModel):
 class PositiveValidationRequest(BaseModel):
     model: PositiveModelDocument
     transaction: TransactionDescriptor
+
+
+class OperatorLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=512)
+
+
+class PositiveCandidateCreateRequest(BaseModel):
+    model: PositiveModelDocument
+    source_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class PositiveCandidateUpdateRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    model: PositiveModelDocument | None = None
+    status: str | None = Field(default=None, pattern="^(draft|accepted|rejected)$")
+    review_note: str | None = Field(default=None, max_length=2000)
+
+
+@app.middleware("http")
+async def require_operator_session(request: Request, call_next: Any) -> Response:
+    if request.url.path == "/healthz":
+        return await call_next(request)
+    if request.url.path == "/api/auth/login":
+        if not request_is_secure_same_origin(request.headers):
+            return JSONResponse(status_code=403, content={"detail": "HTTPS same-origin access is required"})
+        return await call_next(request)
+    session = verify_session(request.cookies.get(COOKIE_NAME, ""))
+    if not session:
+        return JSONResponse(status_code=401, content={"detail": "Operator authentication required"})
+    request.state.operator = session["sub"]
+    if request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+        if not request_is_secure_same_origin(request.headers):
+            return JSONResponse(status_code=403, content={"detail": "HTTPS same-origin access is required"})
+        supplied_csrf = request.headers.get("x-csrf-token", "")
+        if not hmac.compare_digest(supplied_csrf, session["csrf"]):
+            return JSONResponse(status_code=403, content={"detail": "CSRF token missing or invalid"})
+    return await call_next(request)
 
 
 class BrowserLabStartRequest(BaseModel):
@@ -611,6 +653,10 @@ def init_db_sync() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_netscaler_custom_signature_drafts_job ON netscaler_custom_signature_drafts (job_id, updated_at DESC)")
         conn.execute("""CREATE TABLE IF NOT EXISTS netscaler_custom_signature_sets (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, hostname TEXT NOT NULL, nsip TEXT NOT NULL, signature_object_name TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL, plan_fingerprint TEXT NOT NULL, catalog_fingerprint TEXT, selected_rules JSONB NOT NULL, technology_context JSONB NOT NULL, approval_id TEXT, approved_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, preview_id TEXT, preflight_status TEXT, changes_applied BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_netscaler_custom_signature_sets_job ON netscaler_custom_signature_sets (job_id, updated_at DESC)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS positive_model_candidates (candidate_id TEXT PRIMARY KEY, hostname TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('draft','accepted','rejected')), model JSONB NOT NULL, source_summary JSONB NOT NULL, review_note TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL, reviewed_by TEXT, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_positive_model_candidates_host ON positive_model_candidates (hostname, updated_at DESC)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS positive_model_candidate_audit (audit_id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, prior_status TEXT, new_status TEXT NOT NULL, version INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL)""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_positive_model_candidate_audit_candidate ON positive_model_candidate_audit (candidate_id, created_at DESC)")
         conn.commit()
 
 
@@ -977,6 +1023,155 @@ async def startup() -> None:
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok", "service": "control-api"}
+
+
+@app.post("/api/auth/login")
+async def operator_login(request: Request, body: OperatorLoginRequest, response: Response) -> dict[str, Any]:
+    peer = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+    now = datetime.now(timezone.utc).timestamp()
+    recent = [stamp for stamp in login_attempts.get(peer, []) if now - stamp < 60]
+    if len(recent) >= 5:
+        raise HTTPException(status_code=429, detail="Too many login attempts; wait one minute and try again")
+    recent.append(now)
+    login_attempts[peer] = recent
+    try:
+        valid = verify_credentials(body.username, body.password)
+    except AuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail="Operator authentication is not configured") from exc
+    if not valid:
+        raise HTTPException(status_code=401, detail="Invalid operator credentials")
+    login_attempts.pop(peer, None)
+    token, csrf, expires_at = create_session(body.username)
+    response.set_cookie(
+        COOKIE_NAME, token, max_age=SESSION_TTL_SECONDS, expires=expires_at,
+        httponly=True, secure=True, samesite="strict", path="/",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {"authenticated": True, "username": body.username, "csrf_token": csrf, "expires_at": expires_at}
+
+
+@app.get("/api/auth/session")
+async def operator_session(request: Request) -> dict[str, Any]:
+    session = verify_session(request.cookies.get(COOKIE_NAME, ""))
+    if not session:
+        raise HTTPException(status_code=401, detail="Operator authentication required")
+    return {"authenticated": True, "username": session["sub"], "csrf_token": session["csrf"], "expires_at": session["exp"]}
+
+
+@app.post("/api/auth/logout")
+async def operator_logout(response: Response) -> dict[str, bool]:
+    response.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="strict")
+    response.headers["Cache-Control"] = "no-store"
+    return {"authenticated": False}
+
+
+def _candidate_model_for_status(model: PositiveModelDocument, status: str) -> PositiveModelDocument:
+    lifecycle = Lifecycle.REVIEWED if status == "accepted" else Lifecycle.DISCOVERED
+    endpoints = [
+        endpoint.model_copy(update={"lifecycle": lifecycle, "decision_mode": DecisionMode.OBSERVE})
+        for endpoint in model.endpoints
+    ]
+    return model.model_copy(update={"lifecycle": lifecycle, "endpoints": endpoints})
+
+
+def _candidate_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    keys = ("candidate_id", "hostname", "status", "model", "source_summary", "review_note", "version", "created_by", "reviewed_by", "created_at", "updated_at")
+    value = dict(zip(keys, row))
+    for key in ("created_at", "updated_at"):
+        if value.get(key) is not None:
+            value[key] = value[key].isoformat()
+    return value
+
+
+@app.post("/api/positive-model/candidates", status_code=201)
+async def create_positive_candidate(request: Request, body: PositiveCandidateCreateRequest) -> dict[str, Any]:
+    model = _candidate_model_for_status(body.model, "draft")
+    model_json = model.model_dump(mode="json")
+    if len(json.dumps(model_json, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > 1_500_000:
+        raise HTTPException(status_code=413, detail="Positive-model candidate is too large")
+    summary_keys = {"session_id", "evidence_sources", "endpoint_count", "field_count", "confidence_note"}
+    summary = {key: body.source_summary[key] for key in summary_keys if key in body.source_summary and isinstance(body.source_summary[key], (str, int, float, bool, list))}
+    if len(json.dumps(summary, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > 16_000:
+        raise HTTPException(status_code=413, detail="Candidate evidence summary is too large")
+    candidate_id = str(uuid4())
+    now = datetime.now(timezone.utc)
+    actor = request.state.operator
+    with db_connect() as conn:
+        conn.execute(
+            "INSERT INTO positive_model_candidates (candidate_id, hostname, status, model, source_summary, review_note, version, created_by, reviewed_by, created_at, updated_at) VALUES (%s,%s,'draft',%s,%s,'',1,%s,NULL,%s,%s)",
+            (candidate_id, model.hostname, Jsonb(model_json), Jsonb(summary), actor, now, now),
+        )
+        conn.execute(
+            "INSERT INTO positive_model_candidate_audit (audit_id,candidate_id,actor,action,prior_status,new_status,version,created_at) VALUES (%s,%s,%s,'created',NULL,'draft',1,%s)",
+            (str(uuid4()), candidate_id, actor, now),
+        )
+    return {"candidate_id": candidate_id, "hostname": model.hostname, "status": "draft", "model": model_json, "source_summary": summary, "review_note": "", "version": 1, "created_by": actor, "reviewed_by": None, "created_at": now.isoformat(), "updated_at": now.isoformat(), "persisted": True, "enforcement_mode": "observe"}
+
+
+@app.get("/api/positive-model/candidates")
+async def list_positive_candidates(hostname: str | None = Query(default=None, max_length=253)) -> list[dict[str, Any]]:
+    with db_connect() as conn:
+        if hostname:
+            rows = conn.execute("SELECT candidate_id,hostname,status,model,source_summary,review_note,version,created_by,reviewed_by,created_at,updated_at FROM positive_model_candidates WHERE hostname=%s ORDER BY updated_at DESC LIMIT 100", (hostname,)).fetchall()
+        else:
+            rows = conn.execute("SELECT candidate_id,hostname,status,model,source_summary,review_note,version,created_by,reviewed_by,created_at,updated_at FROM positive_model_candidates ORDER BY updated_at DESC LIMIT 100").fetchall()
+    return [_candidate_row(row) for row in rows]
+
+
+@app.get("/api/positive-model/candidates/{candidate_id}")
+async def get_positive_candidate(candidate_id: str) -> dict[str, Any]:
+    with db_connect() as conn:
+        row = conn.execute("SELECT candidate_id,hostname,status,model,source_summary,review_note,version,created_by,reviewed_by,created_at,updated_at FROM positive_model_candidates WHERE candidate_id=%s", (candidate_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Positive-model candidate not found")
+    return _candidate_row(row)
+
+
+@app.get("/api/positive-model/candidates/{candidate_id}/audit")
+async def get_positive_candidate_audit(candidate_id: str) -> list[dict[str, Any]]:
+    with db_connect() as conn:
+        exists = conn.execute("SELECT 1 FROM positive_model_candidates WHERE candidate_id=%s", (candidate_id,)).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail="Positive-model candidate not found")
+        rows = conn.execute("SELECT actor,action,prior_status,new_status,version,created_at FROM positive_model_candidate_audit WHERE candidate_id=%s ORDER BY created_at DESC LIMIT 100", (candidate_id,)).fetchall()
+    return [
+        {"actor": actor, "action": action, "prior_status": prior_status, "new_status": new_status, "version": version, "created_at": created_at.isoformat()}
+        for actor, action, prior_status, new_status, version, created_at in rows
+    ]
+
+
+@app.patch("/api/positive-model/candidates/{candidate_id}")
+async def update_positive_candidate(candidate_id: str, request: Request, body: PositiveCandidateUpdateRequest) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    actor = request.state.operator
+    with db_connect() as conn:
+        row = conn.execute("SELECT status,model,source_summary,review_note,version FROM positive_model_candidates WHERE candidate_id=%s FOR UPDATE", (candidate_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Positive-model candidate not found")
+        prior_status, current_model, source_summary, review_note, version = row
+        if version != body.expected_version:
+            raise HTTPException(status_code=409, detail="Candidate changed since it was loaded; refresh before saving")
+        new_status = body.status or prior_status
+        if prior_status in {"accepted", "rejected"} and new_status != "draft" and body.model is not None:
+            raise HTTPException(status_code=409, detail="Return the candidate to draft before editing its model")
+        model = body.model or PositiveModelDocument.model_validate(current_model)
+        model = _candidate_model_for_status(model, new_status)
+        model_json = model.model_dump(mode="json")
+        if len(json.dumps(model_json, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > 1_500_000:
+            raise HTTPException(status_code=413, detail="Positive-model candidate is too large")
+        new_note = body.review_note if body.review_note is not None else review_note
+        next_version = version + 1
+        updated = conn.execute(
+            "UPDATE positive_model_candidates SET status=%s,model=%s,review_note=%s,version=%s,reviewed_by=%s,updated_at=%s WHERE candidate_id=%s AND version=%s RETURNING candidate_id,hostname,status,model,source_summary,review_note,version,created_by,reviewed_by,created_at,updated_at",
+            (new_status, Jsonb(model_json), new_note, next_version, actor if new_status in {"accepted", "rejected"} else None, now, candidate_id, version),
+        ).fetchone()
+        if not updated:
+            raise HTTPException(status_code=409, detail="Candidate changed concurrently; refresh before saving")
+        conn.execute(
+            "INSERT INTO positive_model_candidate_audit (audit_id,candidate_id,actor,action,prior_status,new_status,version,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (str(uuid4()), candidate_id, actor, "model_updated" if body.model is not None else "review_status_updated", prior_status, new_status, next_version, now),
+        )
+    return _candidate_row(updated) | {"persisted": True, "enforcement_mode": "observe"}
 
 
 @app.get("/api/positive-model/schema")

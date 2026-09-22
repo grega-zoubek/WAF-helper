@@ -69,6 +69,51 @@ candidate persistence, policy compiler, runtime enforcement, or ADC write was
 added. Synthetic probes and explicit clicks can trigger application-side GET
 behavior, so use them only on an approved test scope.
 
+## Positive security phase 4: operator security and candidate review
+
+The control plane is served through HTTPS on `192.168.11.90:443`; HTTP on
+`:8180` redirects to HTTPS. The lab uses an IP-SAN self-signed certificate,
+so TLS is encrypted but browser identity is not CA-verified. The control API's
+host port is loopback-only (`127.0.0.1:8110`); normal browser/API traffic passes
+through the TLS frontend. The control API requires a signed, eight-hour,
+HttpOnly/Secure/SameSite=Strict operator cookie, HTTPS same-origin mutations,
+and a per-session CSRF token. Login is rate-limited. Operator username,
+password, signing key, certificate, and private key are Compose secrets outside
+Git. The single operator credential is bootstrapped at the server and can be
+rotated by replacing its secret and recreating `control-api`.
+
+Guided-browser candidates can be saved as drafts, listed, edited with
+optimistic version checks, accepted/rejected, and audited. Accepting a draft
+marks it reviewed but forcibly leaves every endpoint in `observe`; it does not
+compile, enforce, or change ADC state. These records contain only the positive
+model and bounded source summary, never raw field values or request bodies.
+
+### Phase 4 verification checkpoint — 2026-09-22
+
+- Implementation: HTTPS frontend, operator login/session/logout, CSRF checks,
+  candidate persistence/review/history endpoints and GUI are implemented.
+- Security: all control API routes except `/healthz` and the HTTPS login route
+  require an operator session. State-changing calls also require exact-host
+  HTTPS origin and CSRF token. Missing credentials fail closed. TLS
+  certificate trust is intentionally not established in this lab; do not use
+  this self-signed setup on an untrusted network.
+- Validation: auth middleware tests cover login, signed-session tampering and
+  expiry, HTTPS origin checks, CSRF enforcement, and fail-closed configuration.
+  Candidate tests prove acceptance cannot set a blocking mode. Browser
+  correlation and candidate-generation regressions also pass. Deployment/live
+  verification is pending in this checkpoint.
+- Recovery after connectivity loss or reboot: SSH to `grega@192.168.11.90`,
+  enter `/home/grega/waf-intelligence-repo`, run `git pull --ff-only origin
+  main` and `docker compose -p waf-intelligence ps`; health-check via
+  `curl -fsS http://127.0.0.1:8110/healthz`, and browse to
+  `https://192.168.11.90/`. Initial operator credentials are in the
+  server-only `secrets/waf_operator_username` and
+  `secrets/waf_operator_password`; never commit or print them into logs/chat.
+  If rotating the password, replace only the password secret and recreate the
+  control API. Keep the TLS private key and session-signing secret stable to
+  avoid unnecessary browser warnings and session invalidation. No ADC changes
+  are part of this phase.
+
 ### Phase 2/3 verification checkpoint — 2026-09-22
 
 - Implementation: `07628c7` added phases 2/3; deployment startup exposed a

@@ -6,6 +6,10 @@
   <title>WAF Intelligence</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 960px; margin: 3rem auto; padding: 0 1rem; color: #17202a; }
+    body:not(.authenticated) > :not(#auth-gate) { visibility: hidden; }
+    #auth-gate { position: fixed; inset: 0; z-index: 10000; display: grid; place-items: center; padding: 1rem; background: #eef2f6; }
+    #auth-gate[hidden] { display: none; }
+    .auth-card { width: min(100%, 420px); padding: 1.5rem; background: #fff; border: 1px solid #d9dee3; border-radius: 10px; box-shadow: 0 12px 40px rgba(20, 40, 60, .16); }
     h1 { margin-bottom: .25rem; }
     .muted { color: #5f6b76; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: 2rem; }
@@ -120,9 +124,22 @@
   </style>
 </head>
 <body>
+  <section id="auth-gate" aria-labelledby="auth-title">
+    <div class="auth-card">
+      <h1 id="auth-title">Operator sign in</h1>
+      <p class="small muted">WAF Intelligence is available over HTTPS. Credentials are sent only to this service and are not stored in the browser.</p>
+      <form id="operator-login-form">
+        <input id="operator-username" required maxlength="128" autocomplete="username" value="operator" placeholder="Operator username">
+        <input id="operator-password" required type="password" maxlength="512" autocomplete="current-password" placeholder="Password">
+        <button type="submit">Sign in</button>
+      </form>
+      <p id="operator-login-status" class="small muted" role="status"></p>
+    </div>
+  </section>
   <h1>WAF Intelligence Platform</h1>
   <p class="muted">Connect a NetScaler ADC, then open only the tools you need.</p>
   <p id="mode-line" class="small muted">Mode: <strong id="platform-mode">approval-gated</strong> · Write mode: <strong id="waf-write-mode" class="progress">unknown</strong></p>
+  <button id="operator-logout" class="secondary" type="button">Sign out</button>
   <section class="next">
     <div id="connect-menu">
       <h2>Connect to NetScaler ADC</h2>
@@ -183,6 +200,12 @@
       <div class="job-actions"><button type="submit">Navigate (GET)</button><button id="browser-lab-refresh" class="secondary" type="button">Refresh snapshot</button><button id="browser-lab-stop" class="secondary" type="button">Close session</button></div>
     </form>
     <div id="browser-lab-snapshot" class="profile"></div>
+    <section id="positive-candidate-review" class="next card">
+      <h3>Saved positive-model candidates</h3>
+      <p class="small muted">Candidates are drafts until reviewed. Accepting marks the model reviewed but keeps every endpoint in observe mode; it does not enforce or change the ADC.</p>
+      <button id="positive-candidate-refresh" class="secondary" type="button">Refresh candidates</button>
+      <div id="positive-candidate-list" class="profile"></div>
+    </section>
     <details class="url-list-panel">
       <summary>Deterministic positive-model dry run</summary>
       <p class="small muted">Paste a version 1 model and metadata-only transaction descriptor. Raw values are rejected; format and numeric-content rules are explicitly reported as not evaluated.</p>
@@ -194,8 +217,28 @@
     </details>
   </section>
   <script>
-    const api = (path, options = {}) => fetch(path, options).then(async r => { if (!r.ok) { let detail = ''; try { const body = await r.json(); detail = body.detail || body.message || ''; } catch (error) { try { detail = await r.text(); } catch (ignored) {} } throw new Error(detail || `${r.status}`); } return r.status === 204 ? null : r.json(); });
+    let csrfToken = '';
+    const api = (path, options = {}) => { const headers = new Headers(options.headers || {}); if (!['GET','HEAD','OPTIONS'].includes(String(options.method || 'GET').toUpperCase()) && csrfToken) headers.set('X-CSRF-Token', csrfToken); return fetch(path, {...options, headers, credentials:'same-origin'}).then(async r => { if (r.status === 401) { csrfToken = ''; document.body.classList.remove('authenticated'); document.querySelector('#auth-gate').hidden = false; } if (!r.ok) { let detail = ''; try { const body = await r.json(); detail = body.detail || body.message || ''; } catch (error) { try { detail = await r.text(); } catch (ignored) {} } throw new Error(detail || `${r.status}`); } return r.status === 204 ? null : r.json(); }); };
+    async function initializeOperatorSession() { try { const response = await fetch('/api/auth/session', {credentials:'same-origin', cache:'no-store'}); if (!response.ok) throw new Error('sign-in required'); const data = await response.json(); csrfToken = data.csrf_token || ''; document.body.classList.add('authenticated'); document.querySelector('#auth-gate').hidden = true; loadPositiveCandidates(); } catch (error) { document.body.classList.remove('authenticated'); document.querySelector('#auth-gate').hidden = false; } }
+    document.querySelector('#operator-login-form').addEventListener('submit', async event => { event.preventDefault(); const status = document.querySelector('#operator-login-status'); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true; status.textContent = 'Signing in…'; try { const response = await fetch('/api/auth/login', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:document.querySelector('#operator-username').value, password:document.querySelector('#operator-password').value})}); const result = await response.json(); if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`); document.querySelector('#operator-password').value = ''; location.reload(); } catch (error) { document.querySelector('#operator-password').value = ''; status.textContent = `Sign-in failed: ${error.message}`; } finally { button.disabled = false; } });
+    document.querySelector('#operator-logout').addEventListener('click', async () => { try { await api('/api/auth/logout', {method:'POST'}); } finally { csrfToken = ''; location.reload(); } });
+    initializeOperatorSession();
     const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    window.positiveCandidates = [];
+    function renderPositiveCandidates(items) {
+      window.positiveCandidates = items || [];
+      const host = document.querySelector('#positive-candidate-list');
+      if (!host) return;
+      if (!items?.length) { host.innerHTML = '<p class="small muted">No saved candidates yet.</p>'; return; }
+      host.innerHTML = items.map(item => `<details class="card"><summary><strong>${escapeHtml(item.hostname)}</strong> · ${escapeHtml(item.status)} · v${Number(item.version)} · ${Number(item.model?.endpoints?.length || 0)} endpoints</summary><p class="small muted">Created by ${escapeHtml(item.created_by)} · updated ${escapeHtml(item.updated_at)} · enforcement remains observe-only</p><label>Model JSON (edit only creates a new draft)<textarea class="positive-candidate-editor" data-id="${escapeHtml(item.candidate_id)}" spellcheck="false">${escapeHtml(JSON.stringify(item.model, null, 2))}</textarea></label><label>Review note<input class="positive-candidate-note" data-id="${escapeHtml(item.candidate_id)}" maxlength="2000" value="${escapeHtml(item.review_note || '')}"></label><p class="job-actions"><button class="secondary positive-candidate-save" data-id="${escapeHtml(item.candidate_id)}" type="button">Save edits as draft</button><button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="accepted" type="button">Accept for observe-only review</button><button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="rejected" type="button">Reject</button>${item.status !== 'draft' ? `<button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="draft" type="button">Return to draft</button>` : ''}<button class="secondary positive-candidate-audit" data-id="${escapeHtml(item.candidate_id)}" type="button">Review history</button></p><div class="positive-candidate-audit-result small"></div></details>`).join('');
+    }
+    async function loadPositiveCandidates() {
+      const host = document.querySelector('#positive-candidate-list');
+      if (!host) return;
+      host.textContent = 'Loading saved candidates…';
+      try { renderPositiveCandidates(await api('/api/positive-model/candidates')); }
+      catch (error) { host.textContent = `Unable to load saved candidates: ${error.message}`; }
+    }
     window.browserLabSessionId = null;
     window.browserLabSelectionMode = false;
     function renderBrowserLabSnapshot(snapshot) {
@@ -716,7 +759,7 @@
       const payload = { seed_url: document.querySelector('#seed-url').value.trim(), allowed_paths: paths, max_pages: Number(document.querySelector('#max-pages').value), rate_limit_per_second: 1 };
       const status = document.querySelector('#discovery-status');
       status.textContent = 'Queueing passive discovery...';
-      try { await fetch('/api/discovery/jobs', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); }); status.textContent = 'Discovery job queued.'; await loadJobs(); }
+      try { await api('/api/discovery/jobs', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }); status.textContent = 'Discovery job queued.'; await loadJobs(); }
       catch (error) { status.textContent = 'Unable to queue discovery job.'; }
     });
     document.querySelector('#browser-lab-start-form').addEventListener('submit', async event => {
@@ -761,6 +804,7 @@
       const openLink = event.target.closest('.browser-open-link');
       const selectionMode = event.target.closest('.browser-selection-mode');
       const candidateButton = event.target.closest('#browser-lab-candidate-generate');
+      const saveCandidateButton = event.target.closest('#browser-lab-candidate-save');
       const preview = event.target.closest('#browser-lab-preview');
       if (selectionMode) {
         window.browserLabSelectionMode = !window.browserLabSelectionMode;
@@ -836,17 +880,47 @@
         candidateButton.disabled = true;
         try {
           const result = await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}/candidate`);
+          window.currentGuidedCandidate = result.candidate;
+          window.currentGuidedCandidateSummary = result.summary;
           const host = document.querySelector('#browser-lab-candidate');
           host.hidden = false;
           const cookieRows = (result.cookie_metadata || []).map(item => `${item.name} · ${item.path}${item.secure ? ' · Secure' : ''}${item.http_only ? ' · HttpOnly' : ''}${item.same_site ? ` · SameSite=${item.same_site}` : ''}`).join('\n');
-          host.innerHTML = `<strong>Observe-only positive-model candidate · not saved · ${Number(result.summary?.endpoint_count || 0)} endpoints · ${Number(result.summary?.field_count || 0)} fields</strong><p class="small">${escapeHtml(result.summary?.confidence_note || '')}</p><p class="small">Cookie names and attributes (values excluded):<br><code>${escapeHtml(cookieRows || 'No scoped cookies observed')}</code></p><pre>${escapeHtml(JSON.stringify(result.candidate, null, 2))}</pre>`;
+          host.innerHTML = `<strong>Observe-only positive-model candidate · not saved · ${Number(result.summary?.endpoint_count || 0)} endpoints · ${Number(result.summary?.field_count || 0)} fields</strong><p class="small">${escapeHtml(result.summary?.confidence_note || '')}</p><p class="small">Cookie names and attributes (values excluded):<br><code>${escapeHtml(cookieRows || 'No scoped cookies observed')}</code></p><button id="browser-lab-candidate-save" type="button">Save draft for review</button><pre>${escapeHtml(JSON.stringify(result.candidate, null, 2))}</pre>`;
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Candidate generation failed: ${error.message}`; }
         finally { candidateButton.disabled = false; }
+      }
+      if (saveCandidateButton && window.browserLabSessionId) {
+        saveCandidateButton.disabled = true;
+        try { const result = await api('/api/positive-model/candidates', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:window.currentGuidedCandidate, source_summary:window.currentGuidedCandidateSummary || {}})}); document.querySelector('#browser-lab-status').textContent = `Candidate saved as draft ${result.candidate_id}.`; await loadPositiveCandidates(); }
+        catch (error) { document.querySelector('#browser-lab-status').textContent = `Could not save candidate draft: ${error.message}`; }
+        finally { saveCandidateButton.disabled = false; }
       }
       if (openLink && window.browserLabSessionId) {
         document.querySelector('#browser-lab-navigation-url').value = openLink.dataset.url;
         document.querySelector('#browser-lab-navigation-form').requestSubmit();
       }
+    });
+    document.querySelector('#positive-candidate-refresh').addEventListener('click', loadPositiveCandidates);
+    document.querySelector('#positive-candidate-list').addEventListener('click', async event => {
+      const save = event.target.closest('.positive-candidate-save');
+      const statusButton = event.target.closest('.positive-candidate-status');
+      const auditButton = event.target.closest('.positive-candidate-audit');
+      const button = save || statusButton || auditButton;
+      if (!button) return;
+      const item = window.positiveCandidates.find(candidate => candidate.candidate_id === button.dataset.id);
+      if (!item) return;
+      if (statusButton?.dataset.status === 'accepted' && !window.confirm('Accept this model for reviewed, observe-only use? This will not enable enforcement or change the ADC.')) return;
+      if (statusButton?.dataset.status === 'rejected' && !window.confirm('Reject this positive-model candidate?')) return;
+      button.disabled = true;
+      try {
+        if (auditButton) { const history = await api(`/api/positive-model/candidates/${encodeURIComponent(item.candidate_id)}/audit`); const target = button.closest('details').querySelector('.positive-candidate-audit-result'); target.innerHTML = history.length ? `<table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Status</th><th>Version</th></tr></thead><tbody>${history.map(row => `<tr><td>${escapeHtml(row.created_at)}</td><td>${escapeHtml(row.actor)}</td><td>${escapeHtml(row.action)}</td><td>${escapeHtml(row.prior_status || '—')} → ${escapeHtml(row.new_status)}</td><td>${Number(row.version)}</td></tr>`).join('')}</tbody></table>` : 'No review events.'; button.disabled = false; return; }
+        const body = {expected_version:Number(item.version), review_note:document.querySelector(`.positive-candidate-note[data-id="${CSS.escape(item.candidate_id)}"]`)?.value || ''};
+        if (save) { body.model = JSON.parse(document.querySelector(`.positive-candidate-editor[data-id="${CSS.escape(item.candidate_id)}"]`).value); body.status = 'draft'; }
+        else body.status = statusButton.dataset.status;
+        const result = await api(`/api/positive-model/candidates/${encodeURIComponent(item.candidate_id)}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+        await loadPositiveCandidates();
+        if (result.status === 'accepted') document.querySelector('#browser-lab-status').textContent = 'Candidate accepted for observe-only review; no enforcement was enabled.';
+      } catch (error) { button.disabled = false; document.querySelector('#browser-lab-status').textContent = `Candidate review failed: ${error.message}`; }
     });
     document.querySelector('#positive-model-validation-form').addEventListener('submit', async event => {
       event.preventDefault();
@@ -864,7 +938,7 @@
       const status = document.querySelector('#adc-status');
       status.textContent = 'Connecting to NetScaler...';
       const payload = { nsip: document.querySelector('#nsip').value.trim(), username: document.querySelector('#adc-username').value.trim(), password: document.querySelector('#adc-password').value, save_credentials: document.querySelector('#save-credentials').checked };
-      try { const result = await fetch('/api/netscalers/connect', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(async response => { if (!response.ok) throw new Error(await response.text()); return response.json(); }); setConnected(result, result.credentials_saved ? 'Connected. Encrypted credentials saved.' : 'Connected. Credentials were not persisted.'); document.querySelector('#adc-password').value = ''; await loadSavedNetScalers(); }
+      try { const result = await api('/api/netscalers/connect', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }); setConnected(result, result.credentials_saved ? 'Connected. Encrypted credentials saved.' : 'Connected. Credentials were not persisted.'); document.querySelector('#adc-password').value = ''; await loadSavedNetScalers(); }
       catch (error) { status.textContent = 'Unable to connect to NetScaler. Check NSIP and credentials.'; }
     });
     document.querySelector('#saved-netscalers').addEventListener('click', async event => {
