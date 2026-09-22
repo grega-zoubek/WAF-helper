@@ -49,12 +49,16 @@ network metadata, and a selectable DOM control inventory. Selection does not
 activate controls or inspect entered values. Nothing is persisted.
 
 This is not yet the complete pointer-guided learning workflow described in the
-architecture plan: interactive authentication and arbitrary pointer interaction
-remain future work. Selection reports only a low-confidence name/id-to-query-key
-heuristic for already observed safe GETs; full event-based correlation,
-candidate generation, and model persistence remain future work. Do not infer an
-observed POST or a parameter constraint from a DOM form alone. No policy
-compiler, runtime enforcement, or ADC write was added.
+architecture plan: interactive authentication, arbitrary pointer interaction,
+typing, and submission remain future work. The explicit `Observe focus` action
+focuses a selected control without clicking or typing, then correlates only
+subsequent same-host, in-scope XHR/fetch GET/HEAD metadata within a two-second
+window. A matching DOM name/id and query key is stronger evidence than timing
+alone; timing-only matches are marked low confidence and never promoted to a
+model. Query values and request bodies are not captured. Do not infer an
+observed POST or a parameter constraint from a DOM form alone. Candidate-model
+generation, persistence, and full interaction correlation remain future work.
+No policy compiler, runtime enforcement, or ADC write was added.
 
 ### Phase 2/3 verification checkpoint — 2026-09-22
 
@@ -86,6 +90,27 @@ compiler, runtime enforcement, or ADC write was added.
   `WAF_DB_PASSWORD` from the existing Postgres container environment without
   printing it, then rebuild `control-api`, `runtime-inspector`, and `frontend`.
   Recheck `/healthz`; do not change ADC state as part of browser validation.
+
+### Guided browser focus-correlation increment — 2026-09-22
+
+- Action: added an explicit `Observe focus` action that focuses (but does not
+  click, type into, or submit) a selected enabled control. It correlates only
+  subsequent same-host, in-scope XHR/fetch requests observed within two seconds.
+  Exact DOM name/id to query-key matches are labelled stronger; timing-only
+  matches stay low confidence. Request IDs are opaque, query values remain
+  redacted, and no request body or input value is read. Network correlation
+  uses a bounded rolling window so busy pages can still capture new events.
+- Scope: no form submission, authentication, persistence, policy generation,
+  or ADC change. The result is evidence only, not proof of causation. This is
+  one increment of Phase 3; arbitrary pointer/key interaction, authentication,
+  candidate generation, and evidence persistence remain pending.
+- Recovery after connectivity loss or reboot: verify local and server Git
+  revisions, SSH to `grega@192.168.11.90`, run
+  `docker compose -p waf-intelligence ps`, and check `/healthz` plus the GUI at
+  `http://192.168.11.90:8180/`. Rebuild/recreate only `runtime-inspector`,
+  `control-api`, and `frontend` from the committed revision; verify the focus
+  endpoint and all existing services. Re-run Browser Lab with read-only focus
+  checks only. Do not change ADC configuration.
 
 ## Generic scanner architecture
 

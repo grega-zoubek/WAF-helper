@@ -22,6 +22,8 @@ guided_playwright: Any = None
 GUIDED_SESSION_TTL_SECONDS = 900
 MAX_GUIDED_SESSIONS = 5
 MAX_NETWORK_EVENTS = 200
+MAX_INTERACTION_EVENTS = 100
+GUIDED_CORRELATION_WINDOW_SECONDS = 2.0
 INTERESTING_NETWORK_MARKERS = ("/api/", "/auth", "/login", "/signin", "/oauth", "/token", "/graphql", "/rest/", "/user")
 SAFE_RESPONSE_HEADERS = {
     "content-security-policy", "content-security-policy-report-only", "strict-transport-security",
@@ -140,6 +142,36 @@ def redacted_route_template(value: str) -> str:
                 parts.append(segment)
     path = "/".join(parts) or "/"
     return path if path.startswith("/") else "/" + path
+
+
+def correlate_focus_to_requests(element: dict[str, Any], event_started: float, requests: list[dict[str, Any]], hostname: str) -> list[dict[str, Any]]:
+    """Correlate metadata-only focus events to later safe same-host XHR/fetch requests."""
+    field_names = {str(element.get(key, "")).casefold() for key in ("name", "id")}
+    field_names.discard("")
+    correlated: list[dict[str, Any]] = []
+    for item in requests:
+        started = item.get("started_at")
+        if not isinstance(started, (int, float)) or started < event_started:
+            continue
+        delta = started - event_started
+        if delta > GUIDED_CORRELATION_WINDOW_SECONDS:
+            continue
+        if item.get("resource_type") not in {"xhr", "fetch"} or not is_same_host(str(item.get("url", "")), hostname):
+            continue
+        parsed = urlparse(str(item.get("url", "")))
+        query_names = {name.casefold() for name, _ in parse_qsl(parsed.query, keep_blank_values=True)}
+        matched = sorted(field_names.intersection(query_names))
+        correlated.append({
+            "request_id": item.get("id"),
+            "method": item.get("method"),
+            "path_template": redacted_route_template(str(item.get("url", ""))),
+            "matched_parameter_names": matched,
+            "confidence": 0.7 if matched else 0.25,
+            "time_delta_ms": round(delta * 1000),
+            "reason": "DOM field name/id matches a query key on a subsequent safe request" if matched else "Safe same-host XHR/fetch occurred shortly after focus; field-level linkage is unconfirmed",
+            "raw_values_captured": False,
+        })
+    return correlated[:20]
 
 
 def validate_request(request: InspectionRequest) -> None:
@@ -379,19 +411,33 @@ async def start_guided_session(request: GuidedSessionRequest) -> dict[str, Any]:
         session_id = str(uuid4())
         session: dict[str, Any] = {
                 "id": session_id, "context": context, "page": page, "hostname": request.hostname.lower(),
-                "allowed_paths": request.allowed_paths or ["/"], "network_events": {}, "status_code": None,
+                "allowed_paths": request.allowed_paths or ["/"], "network_events": {}, "network_sequence": [],
+                "interaction_events": [], "status_code": None,
                 "created": time.monotonic(), "touched": time.monotonic(),
         }
-
         def record_request(browser_request: Any) -> None:
                 if browser_request.method.upper() not in {"GET", "HEAD"} or not in_scope(browser_request.url, scope):
                     return
                 key = (browser_request.method, redact_url(browser_request.url), browser_request.resource_type)
+                event_item = {
+                    "id": str(uuid4()), "method": browser_request.method,
+                    "url": redact_url(browser_request.url), "resource_type": browser_request.resource_type,
+                    "status_code": None, "started_at": time.monotonic(),
+                }
+                session["network_sequence"].append(event_item)
+                session["network_sequence"] = session["network_sequence"][-MAX_NETWORK_EVENTS:]
                 if len(session["network_events"]) < MAX_NETWORK_EVENTS or key in session["network_events"]:
                     session["network_events"].setdefault(key, {"method": browser_request.method, "url": redact_url(browser_request.url), "resource_type": browser_request.resource_type, "status_code": None})
 
         def record_response(browser_response: Any) -> None:
                 browser_request = browser_response.request
+                for sequence_item in reversed(session["network_sequence"]):
+                    if (sequence_item["method"] == browser_request.method
+                            and sequence_item["url"] == redact_url(browser_request.url)
+                            and sequence_item["resource_type"] == browser_request.resource_type
+                            and sequence_item["status_code"] is None):
+                        sequence_item["status_code"] = browser_response.status
+                        break
                 key = (browser_request.method, redact_url(browser_request.url), browser_request.resource_type)
                 if key in session["network_events"]:
                     session["network_events"][key]["status_code"] = browser_response.status
@@ -483,6 +529,51 @@ async def select_guided_element(session_id: str, request: GuidedSelectRequest) -
         selected["correlated_requests"] = correlated[:20]
         session["touched"] = time.monotonic()
         return {"page_url": redact_url(session["page"].url), "element": selected, "evidence_kind": "dom_metadata_only", "raw_value_captured": False}
+
+
+@app.post("/guided/sessions/{session_id}/focus")
+async def focus_guided_element(session_id: str, request: GuidedSelectRequest) -> dict[str, Any]:
+    """Focus a selected control (never click/type/submit) and correlate safe follow-on requests."""
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        session = browser_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
+        items = session["page"].locator('input,button,select,textarea,[role="button"],[role="textbox"]')
+        if request.element_index >= await items.count():
+            raise HTTPException(status_code=404, detail="Selectable element is no longer present")
+        element = await items.nth(request.element_index).evaluate("""el => ({
+          tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', name: el.getAttribute('name') || '', id: el.id || '',
+          role: el.getAttribute('role') || '', aria_label: el.getAttribute('aria-label') || '', placeholder: el.getAttribute('placeholder') || '',
+          required: el.hasAttribute('required'), disabled: el.hasAttribute('disabled'), autocomplete: el.getAttribute('autocomplete') || '',
+          minlength: el.getAttribute('minlength') || '', maxlength: el.getAttribute('maxlength') || '',
+          labels: Array.from(el.labels || []).map(x => (x.innerText || x.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 120))
+        })""")
+        if element.get("disabled"):
+            raise HTTPException(status_code=422, detail="Disabled controls cannot be focused")
+        event_started = time.monotonic()
+        interaction = {
+            "id": str(uuid4()), "event": "focus", "element_index": request.element_index,
+            "name": element.get("name", ""), "id_attribute": element.get("id", ""),
+            "started_at": event_started,
+        }
+        session["interaction_events"].append(interaction)
+        session["interaction_events"] = session["interaction_events"][-MAX_INTERACTION_EVENTS:]
+        try:
+            await items.nth(request.element_index).focus(timeout=2_000)
+            await session["page"].wait_for_timeout(1_200)
+        except PlaywrightTimeoutError:
+            raise HTTPException(status_code=422, detail="Control could not be focused")
+        correlated = correlate_focus_to_requests(element, event_started, session["network_sequence"], session["hostname"])
+        session["touched"] = time.monotonic()
+        return {
+            "page_url": redact_url(session["page"].url),
+            "event": {"type": "focus", "element": element, "evidence_id": interaction["id"]},
+            "correlation_status": "matched" if correlated else "no_request_observed",
+            "correlated_requests": correlated,
+            "capture_policy": "metadata-only; focus only; GET/HEAD same-host in-scope requests; no click, typing, form submission, request bodies, or raw field values",
+            "raw_value_captured": False,
+        }
 
 
 @app.delete("/guided/sessions/{session_id}")

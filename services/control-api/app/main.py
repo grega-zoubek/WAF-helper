@@ -1052,6 +1052,19 @@ async def browser_lab_select(session_id: str, request: BrowserLabSelectRequest) 
         raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
 
 
+@app.post("/api/browser-lab/sessions/{session_id}/focus")
+async def browser_lab_focus(session_id: str, request: BrowserLabSelectRequest) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            response = await client.post(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}/focus", json=request.model_dump())
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Control focus was rejected")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+
+
 @app.delete("/api/browser-lab/sessions/{session_id}")
 async def browser_lab_stop(session_id: str) -> dict[str, bool]:
     try:
