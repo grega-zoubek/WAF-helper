@@ -142,8 +142,19 @@ behavior, so use them only on an approved test scope.
   has TLS and operator authentication. Never enter credentials into the current
   HTTP Browser Lab. This is a documented security prerequisite.
 - Verification: local network-guard/correlation tests (6) and candidate
-  generation tests (3) pass; Python and frontend syntax checks pass. Live
-  deployment and Browser Lab smoke tests are pending for this checkpoint.
+  generation tests (3) pass; Python compilation, frontend JavaScript syntax,
+  and `git diff --check` pass. The deployed images pass the same 9 tests. On
+  `192.168.11.90`, control API health returned `ok`, GUI returned HTTP 200,
+  and all eight Compose services were running. A safe guided session against
+  `https://www.ess.gov.si/` returned HTTP 200 (185 controls, 30 observed
+  requests); screenshot-point selection returned metadata only. Candidate
+  generation produced 30 GET-only endpoints and 399 metadata fields, remained
+  unpersisted in `observe` mode, and returned privacy flags false for raw
+  values, bodies, and cookie values. Explicit submit-button activation was
+  rejected with HTTP 422. The session was closed. No synthetic value was
+  entered and no ADC configuration was changed.
+- Deployment: commit `74de89f` is on `main` and deployed at
+  `/home/grega/waf-intelligence-repo` on `192.168.11.90`.
 - Recovery after connectivity loss or reboot: use
   `C:\\Users\\G.Zoubek\\.ssh\\id_rsa_waf_scanner` to SSH to
   `grega@192.168.11.90`; check the repository revision and
