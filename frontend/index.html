@@ -504,9 +504,10 @@
         routeByUrl.set(url, {url, crawled: crawled || Boolean(previous?.crawled), status: route.status_code ?? previous?.status ?? null});
       }
       const startUrls = [...routeByUrl.values()];
+      const regexUrls = [...new Set([...startUrls.map(item => item.url), ...(profile.evidence || []).filter(item => item.evidence_type === 'asset' && item.source_url).map(item => item.source_url)])];
       const startUrlRows = startUrls.map(item => `<li><div class="discovery-url-entry"><span class="url-short" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</span><span class="small ${item.crawled ? 'high' : 'muted'}">${item.crawled ? `crawled${item.status !== null ? ` · ${escapeHtml(item.status)}` : ''}` : 'discovered'}</span></div></li>`).join('');
-      window.currentProfileStartUrls = startUrls.map(item => item.url);
-      host.innerHTML = `<div class="card"><h3>Findings summary <span class="small muted">${escapeHtml(profile.run_id)}</span></h3><p class="small">${technologies.length} technologies · ${profile.evidence_count || 0} evidence rows · <span class="high">${confidenceCounts.high || 0} high</span> · <span class="medium">${confidenceCounts.medium || 0} medium</span> · <span class="low">${confidenceCounts.low || 0} low</span></p><p class="small">Routes: <strong>${routeCount}</strong> · form fields: <strong>${formCount}</strong> · authentication surfaces: <strong>${authCount}</strong></p><div class="profile-summary-grid"><section class="summary-panel"><h4>Detected technologies (${technologies.length})</h4>${technologyRows ? `<table><thead><tr><th>Technology</th><th>Category</th><th>Confidence</th><th>Score</th></tr></thead><tbody>${technologyRows}</tbody></table>` : '<p class="small muted">No technology signals were observed.</p>'}</section><section class="summary-panel"><h4>Start URLs and discovered routes (${startUrls.length})</h4><p class="small muted">All in-scope URLs found by the crawler. Scroll to review the complete list; only safe GET requests are fetched.</p>${startUrls.length ? `<ol class="discovery-url-list">${startUrlRows}</ol><button class="secondary regex-prepare-open" type="button">Prepare regex rules</button><div class="regex-prepare-panel" hidden><p class="small muted">Choose a consolidation level. These are review-only Python-compatible regex proposals, not applied to the ADC.</p><div class="regex-mode-options"><button class="secondary regex-mode-option" data-mode="basic" type="button"><strong>Basic</strong><span class="small">One suffix catch-all plus folders with more than 3 observed URLs.</span></button><button class="secondary regex-mode-option" data-mode="balanced" type="button"><strong>Balanced</strong><span class="small">Observed suffixes consolidated; folders with 3+ URLs grouped; remaining paths stay exact.</span></button><button class="secondary regex-mode-option" data-mode="aggressive" type="button"><strong>Aggressive</strong><span class="small">Few anchored regex rules combine exact observed paths without matching unseen paths.</span></button></div><div class="regex-proposal-output"></div></div>` : '<p class="small muted">No URLs were recorded.</p>'}</section><section class="summary-panel"><h4>Signature applicability</h4><p class="small muted">Catalog matches are supporting applicability context, not independent technology detections.</p><p class="small">Status: <strong>${escapeHtml(signatureStatus)}</strong> · catalog rules: <strong>${signatureRuleCount}</strong> · matches: <strong>${signatureMatches.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Technology</th><th>Surface</th><th>Rules</th><th>Categories</th><th>Examples</th></tr></thead><tbody>${signatureRows}</tbody></table>` : '<p class="small muted">No technology-tagged signature matches were found for this profile.</p>'}</section></div><p class="small muted">Use Signature recommendations for protection decisions.</p></div>`;
+      window.currentProfileRegexUrls = regexUrls;
+      host.innerHTML = `<div class="card"><h3>Findings summary <span class="small muted">${escapeHtml(profile.run_id)}</span></h3><p class="small">${technologies.length} technologies · ${profile.evidence_count || 0} evidence rows · <span class="high">${confidenceCounts.high || 0} high</span> · <span class="medium">${confidenceCounts.medium || 0} medium</span> · <span class="low">${confidenceCounts.low || 0} low</span></p><p class="small">Routes: <strong>${routeCount}</strong> · form fields: <strong>${formCount}</strong> · authentication surfaces: <strong>${authCount}</strong></p><div class="profile-summary-grid"><section class="summary-panel"><h4>Detected technologies (${technologies.length})</h4>${technologyRows ? `<table><thead><tr><th>Technology</th><th>Category</th><th>Confidence</th><th>Score</th></tr></thead><tbody>${technologyRows}</tbody></table>` : '<p class="small muted">No technology signals were observed.</p>'}</section><section class="summary-panel"><h4>Start URLs and discovered routes (${startUrls.length})</h4><p class="small muted">All in-scope URLs found by the crawler. Scroll to review the complete list; only safe GET requests are fetched.</p>${startUrls.length ? `<ol class="discovery-url-list">${startUrlRows}</ol><button class="secondary regex-prepare-open" type="button">Prepare regex rules</button><div class="regex-prepare-panel" hidden><p class="small muted">Choose a consolidation level. Drafts use ${regexUrls.length} distinct route and asset URLs, are Python-compatible, and are not applied to the ADC.</p><div class="regex-mode-options"><button class="secondary regex-mode-option" data-mode="basic" type="button"><strong>Basic</strong><span class="small">One rule for observed suffixes; broad rules per folder prefix with 4+ matching URLs.</span></button><button class="secondary regex-mode-option" data-mode="balanced" type="button"><strong>Balanced</strong><span class="small">Consolidated suffixes and exact route groups for folders with 3+ URLs.</span></button><button class="secondary regex-mode-option" data-mode="aggressive" type="button"><strong>Aggressive</strong><span class="small">Up to five exact-path rules, factored for brevity; no wildcard matching.</span></button></div><div class="regex-proposal-output"></div></div>` : '<p class="small muted">No URLs were recorded.</p>'}</section><section class="summary-panel"><h4>Signature applicability</h4><p class="small muted">Catalog matches are supporting applicability context, not independent technology detections.</p><p class="small">Status: <strong>${escapeHtml(signatureStatus)}</strong> · catalog rules: <strong>${signatureRuleCount}</strong> · matches: <strong>${signatureMatches.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Technology</th><th>Surface</th><th>Rules</th><th>Categories</th><th>Examples</th></tr></thead><tbody>${signatureRows}</tbody></table>` : '<p class="small muted">No technology-tagged signature matches were found for this profile.</p>'}</section></div><p class="small muted">Use Signature recommendations for protection decisions.</p></div>`;
     }
     function renderAnalysisSummary(analysis) {
       const host = document.querySelector('#profile');
@@ -517,18 +518,35 @@
       const signatures = (plan.signature_recommendations || []).slice(0, 6).map(item => `<li>${escapeHtml(item.name || item.catalog_key || '-')} · ${escapeHtml(item.deployment_mode || '-')}</li>`).join('');
       host.innerHTML = `<div class="card"><h3>Analysis summary <span class="small muted">${escapeHtml(analysis.run_id || '-')}</span></h3><p class="small muted">${escapeHtml(analysis.analysis_mode || 'deterministic-synthesis')} · ${analysis.observation_count || 0} sanitized observations</p><p><strong>Likely architecture:</strong> ${architecture}</p><p><strong>Protection areas:</strong></p><ul>${protections || '<li>None identified</li>'}</ul>${intents ? `<p><strong>Included protection intents:</strong></p><ul>${intents}</ul>` : ''}${signatures ? `<p><strong>Recommended signature groups:</strong></p><ul>${signatures}</ul>` : ''}<p class="small muted">This is a compact summary. Detailed evidence remains available through the API and can be exposed later as an explicit drill-down.</p></div>`;
     }
-    function escapeRegexLiteral(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+    function escapeRegexLiteral(value) { return [...String(value)].map(character => '\\^$.*+?()[]{}|'.includes(character) ? `\\${character}` : character).join(''); }
+    function regexPathname(value) { try { return new URL(value, location.href).pathname || '/'; } catch (error) { return ''; } }
+    function buildRegexTrieExpression(paths) {
+      const root = {terminal: false, children: new Map()};
+      for (const path of paths) {
+        let node = root;
+        for (const character of path) {
+          if (!node.children.has(character)) node.children.set(character, {terminal: false, children: new Map()});
+          node = node.children.get(character);
+        }
+        node.terminal = true;
+      }
+      const render = node => {
+        const alternatives = [...node.children.entries()].map(([character, child]) => `${escapeRegexLiteral(character)}${render(child)}`);
+        if (!alternatives.length) return '';
+        const body = alternatives.length === 1 ? alternatives[0] : `(?:${alternatives.join('|')})`;
+        return node.terminal ? `(?:${body})?` : body;
+      };
+      return render(root);
+    }
     function buildUrlRegexProposal(urls, mode) {
-      const paths = [...new Set((urls || []).map(value => { try { return new URL(value, location.href).pathname || '/'; } catch (error) { return ''; } }).filter(Boolean))];
+      const paths = [...new Set((urls || []).map(regexPathname).filter(Boolean))].sort();
       const suffixes = [...new Set(paths.map(path => path.match(/\.([A-Za-z0-9]{1,16})$/)?.[1]?.toLowerCase()).filter(Boolean))].sort();
-      const folderCounts = new Map();
+      const folderPrefixes = new Set();
       for (const path of paths) {
         const segments = path.split('/').filter(Boolean);
-        for (let depth = 1; depth < segments.length; depth++) {
-          const folder = `/${segments.slice(0, depth).join('/')}`;
-          folderCounts.set(folder, (folderCounts.get(folder) || 0) + 1);
-        }
+        for (let depth = 2; depth < segments.length; depth++) folderPrefixes.add(`/${segments.slice(0, depth).join('/')}`);
       }
+      const folderCounts = new Map([...folderPrefixes].map(prefix => [prefix, paths.filter(path => path === prefix || path.startsWith(`${prefix}/`)).length]));
       const rules = [];
       const addRule = (name, pattern, rationale) => {
         try {
@@ -539,31 +557,25 @@
           rules.push({name, pattern, rationale: `${rationale} · preview validation failed`, matches: []});
         }
       };
-      const addExactPathRules = (items, label) => {
-        let group = [];
-        for (const path of items) {
-          const candidate = [...group, path];
-          const pattern = `^(?:${candidate.map(escapeRegexLiteral).join('|')})$`;
-          if (group.length && pattern.length > 1800) {
-            addRule(label, `^(?:${group.map(escapeRegexLiteral).join('|')})$`, 'Anchored alternatives match only the observed paths in this proposal group.');
-            group = [path];
-          } else group = candidate;
-        }
-        if (group.length) addRule(label, `^(?:${group.map(escapeRegexLiteral).join('|')})$`, 'Anchored alternatives match only the observed paths in this proposal group.');
-      };
       if (mode === 'aggressive') {
-        addExactPathRules(paths, 'Exact observed URL paths');
+        if (paths.length) addRule('Exact observed URL paths', `^${buildRegexTrieExpression(paths)}$`, 'A prefix-factored trie matches only the finite set of observed paths; no unseen path is admitted.');
       } else {
-        if (mode === 'basic') addRule('All file suffixes', '^.*\\.[^/]+$', 'One broad suffix rule catches extension-like endings, including suffixes not observed in this scan.');
-        else if (suffixes.length) addRule('Observed file suffixes', `\\.(?:${suffixes.map(escapeRegexLiteral).join('|')})$`, `Consolidates the ${suffixes.length} observed suffix type(s): ${suffixes.join(', ')}.`);
+        if (suffixes.length) addRule('Observed file suffixes', `^/(?:[^/?#]+/)*[^/?#]+\\.(?:${suffixes.map(escapeRegexLiteral).join('|')})$`, `One rule consolidates all ${suffixes.length} observed suffix type(s): ${suffixes.join(', ')}.`);
         const threshold = mode === 'basic' ? 4 : 3;
         const folders = [...folderCounts.entries()].filter(([, count]) => count >= threshold).sort((a, b) => a[0].length - b[0].length);
-        for (const [folder, count] of folders) addRule(`Folder ${folder}`, `^${escapeRegexLiteral(folder)}(?:/.*)?$`, `Groups this folder and its subfolders; ${count} observed URL(s) are under it.`);
         const covered = new Set(rules.flatMap(rule => rule.matches));
-        addExactPathRules(paths.filter(path => !covered.has(path)), 'Remaining exact URL paths');
+        for (const [folder, count] of folders) {
+          const folderPaths = paths.filter(path => (path === folder || path.startsWith(`${folder}/`)) && (mode === 'basic' || !covered.has(path)));
+          if (!folderPaths.length) continue;
+          if (mode === 'basic') addRule(`Folder ${folder} and descendants`, `^${escapeRegexLiteral(folder)}(?:/[^/?#]+)*$`, `Broadly matches this folder and its subfolders; ${count} observed URL(s) are beneath the prefix.`);
+          else addRule(`Observed routes under ${folder}`, `^${escapeRegexLiteral(folder)}${buildRegexTrieExpression(folderPaths.map(path => path.slice(folder.length)))}$`, `Prefix-factored exact alternatives for ${folderPaths.length} observed URL(s) in a folder with ${count} appearances.`);
+          for (const path of folderPaths) covered.add(path);
+        }
+        const remaining = paths.filter(path => !covered.has(path));
+        if (remaining.length) addRule('Remaining exact observed paths', `^${buildRegexTrieExpression(remaining)}$`, `Exact prefix-factored match for ${remaining.length} URL path(s) outside the repeated-folder groups.`);
       }
       const covered = new Set(rules.flatMap(rule => rule.matches));
-      return {mode, paths, suffixes, rules, coveredCount: covered.size};
+      return {mode, paths, suffixes, rules, coveredCount: covered.size, folderCounts};
     }
     function renderUrlRegexProposal(mode, urls) {
       const proposal = buildUrlRegexProposal(urls, mode);
