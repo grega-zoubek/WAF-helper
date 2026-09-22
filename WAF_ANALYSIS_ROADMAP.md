@@ -58,22 +58,34 @@ compiler, runtime enforcement, or ADC write was added.
 
 ### Phase 2/3 verification checkpoint — 2026-09-22
 
-- Local verification: 12 positive-model/validator tests pass; Python compileall,
-  frontend JavaScript syntax validation, and `git diff --check` pass.
-- Network reachability: ordinary GETs to `192.168.11.91`, `www.rtvslo.si`, and
-  `www.ess.gov.si` returned HTTP 200 from this workstation. This confirms basic
-  reachability only, not validation by the newly changed scanner.
-- Deployment/live scanner verification is pending: SSH to `grega@192.168.11.90`
-  returned `Permission denied (publickey,password)`. Docker is unavailable on
-  the Windows workstation, so the new Playwright endpoints could not be run
-  locally.
-- Recovery after connectivity loss or reboot: check local Git status/revision;
-  restore authorized SSH access to the Ubuntu scanner host; verify the actual
-  checkout path and disk space; then update the checkout and rebuild/recreate
-  only `control-api`, `runtime-inspector`, and `frontend`. Check `/healthz`, run
-  the Guided Browser Lab on the three requested targets, and submit captured
-  route metadata to `/api/positive-model/validate`. Do not claim a live scanner
-  test until those API calls pass.
+- Implementation: `07628c7` added phases 2/3; deployment startup exposed a
+  FastAPI 204 response declaration issue, fixed in `c44bcbe`. Both commits are
+  pushed and deployed from `/home/grega/waf-intelligence-repo`.
+- Runtime: `/healthz` is `ok`; Compose reports all services running, Postgres
+  healthy, and the GUI returns HTTP 200 with the new Browser Lab. Rebuild of
+  the selected services also recreated Compose dependencies `discovery-worker`
+  and `netscaler-adapter`; they are running. No ADC configuration was changed.
+- Validator: schema endpoint reports `1.0.0`; a matching transaction returns
+  `pass`; a method mismatch returns `method_not_modeled`. An injected
+  `raw_value` property is rejected and the fake canary string is not echoed.
+- Guided browser: Juice Shop `192.168.11.91` root returned HTTP 200 and title
+  `OWASP Juice Shop`, with 9 safe requests, but 0 DOM controls/forms. Its
+  `main.js`, `polyfills.js`, `scripts.js`, `styles.css`, and favicon requests
+  receive HTTP 302 to `/`, so the SPA does not render controls in this session.
+  RTV SLO returned HTTP 200 (`RTV SLO`), 69 controls, 6 forms, and 4 safe
+  requests. ESS returned HTTP 200 (`Iskalci zaposlitve - Zavod Republike
+  Slovenije za zaposlovanje`), 32 controls, 2 forms, and 30 safe requests. Each
+  root-route positive-model dry run passed; a POST-vs-GET mismatch was rejected
+  as `method_not_modeled`; selecting the first RTV/ESS control returned
+  DOM-only metadata. No form was submitted; `values_submitted=false` throughout.
+- Recovery after connectivity loss or reboot: use the scanner identity at
+  `C:\\Users\\G.Zoubek\\.ssh\\id_rsa_waf_scanner` for SSH to
+  `grega@192.168.11.90`; verify local/server revision and `docker compose -p
+  waf-intelligence ps`. The server checkout is
+  `/home/grega/waf-intelligence-repo`. If recreating services, source
+  `WAF_DB_PASSWORD` from the existing Postgres container environment without
+  printing it, then rebuild `control-api`, `runtime-inspector`, and `frontend`.
+  Recheck `/healthz`; do not change ADC state as part of browser validation.
 
 ## Generic scanner architecture
 
