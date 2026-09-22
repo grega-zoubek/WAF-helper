@@ -29,7 +29,7 @@ from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
 from app.signature_workflow import ACTION_VALUES, OBJECT_NAME_RE, cli_import_commands, default_object_name, load_upstream_catalog, select_rules_for_detection, workflow_fingerprint
 from app.positive_model import DecisionMode, Lifecycle, PositiveModelDocument, positive_model_json_schema
-from app.positive_learning import build_guided_candidate
+from app.positive_learning import build_discovery_candidate, build_guided_candidate
 from app.operator_auth import AuthConfigurationError, COOKIE_NAME, SESSION_TTL_SECONDS, create_session, request_is_secure_same_origin, verify_credentials, verify_session
 from app.positive_validator import TransactionDescriptor, validate_transaction
 
@@ -1089,7 +1089,7 @@ async def create_positive_candidate(request: Request, body: PositiveCandidateCre
     model_json = model.model_dump(mode="json")
     if len(json.dumps(model_json, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > 1_500_000:
         raise HTTPException(status_code=413, detail="Positive-model candidate is too large")
-    summary_keys = {"session_id", "evidence_sources", "endpoint_count", "field_count", "confidence_note"}
+    summary_keys = {"session_id", "evidence_sources", "endpoint_count", "field_count", "confidence_note", "discovery_job_id", "route_candidates_not_verified", "runtime_auth_surface_count", "runtime_api_endpoint_count", "technology_signals", "generic_applicability", "adc_match", "adc_vserver", "adc_topology_status"}
     summary = {key: body.source_summary[key] for key in summary_keys if key in body.source_summary and isinstance(body.source_summary[key], (str, int, float, bool, list))}
     if len(json.dumps(summary, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > 16_000:
         raise HTTPException(status_code=413, detail="Candidate evidence summary is too large")
@@ -1106,6 +1106,47 @@ async def create_positive_candidate(request: Request, body: PositiveCandidateCre
             (str(uuid4()), candidate_id, actor, now),
         )
     return {"candidate_id": candidate_id, "hostname": model.hostname, "status": "draft", "model": model_json, "source_summary": summary, "review_note": "", "version": 1, "created_by": actor, "reviewed_by": None, "created_at": now.isoformat(), "updated_at": now.isoformat(), "persisted": True, "enforcement_mode": "observe"}
+
+
+@app.post("/api/discovery/jobs/{job_id}/positive-model-candidate", status_code=201)
+async def create_discovery_positive_candidate(job_id: str, request: Request) -> dict[str, Any]:
+    """Fuse discovery, technology, runtime, and optional ADC evidence into a draft."""
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            job_response = await client.get(f"{DISCOVERY_WORKER_URL}/jobs/{job_id}")
+            job_response.raise_for_status()
+            profile_response = await client.get(f"{DISCOVERY_WORKER_URL}/jobs/{job_id}/profile")
+            profile_response.raise_for_status()
+            profile = profile_response.json()
+            observations_response = await client.get(f"{DISCOVERY_WORKER_URL}/jobs/{job_id}/observations")
+            observations_response.raise_for_status()
+            analysis_response = await client.post(f"{ANALYSIS_SERVICE_URL}/analyze", json={"run_id": job_id, "profile": profile, "observations": observations_response.json()})
+            analysis_response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=404 if exc.response.status_code == 404 else 502, detail="Unable to build positive-model discovery draft") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Discovery analysis services are unavailable") from exc
+
+    job = job_response.json()
+    hostname = str((job.get("scope") or {}).get("hostname") or "").strip().lower()
+    if not hostname:
+        raise HTTPException(status_code=422, detail="Discovery job has no validated hostname")
+
+    topology_context: dict[str, Any] = {"status": "unavailable", "matched_vserver": None}
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            topology_response = await client.get(f"{ADAPTER_URL}/api/adc/classic-inventory")
+            topology_response.raise_for_status()
+            topology = topology_response.json()
+        classic = topology.get("classic", topology) if isinstance(topology, dict) else {}
+        vservers = ((classic.get("vservers") or {}).get("records") or []) if isinstance(classic, dict) else []
+        match = next((item for item in vservers if isinstance(item, dict) and str(item.get("host", "")).lower() == hostname and str(item.get("vserver_type", "lb")).lower() == "lb"), None)
+        topology_context = {"status": "matched" if match else "no-match", "matched_vserver": match.get("name") if match else None}
+    except (httpx.HTTPError, ValueError, TypeError):
+        pass
+
+    model, summary = build_discovery_candidate(hostname, job_id, profile, analysis_response.json(), topology_context)
+    return await create_positive_candidate(request, PositiveCandidateCreateRequest(model=model, source_summary=summary))
 
 
 @app.get("/api/positive-model/candidates")

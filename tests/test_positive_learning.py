@@ -6,7 +6,7 @@ from pathlib import Path
 CONTROL_API = Path(__file__).resolve().parents[1] / "services" / "control-api"
 sys.path.insert(0, str(CONTROL_API))
 
-from app.positive_learning import build_guided_candidate
+from app.positive_learning import build_discovery_candidate, build_guided_candidate
 
 
 class GuidedCandidateTests(unittest.TestCase):
@@ -74,6 +74,37 @@ class GuidedCandidateTests(unittest.TestCase):
         candidate = build_guided_candidate(source)
         path_names = [field.name for field in candidate.endpoints[0].fields if field.location.value == "path"]
         self.assertEqual(path_names, ["id", "id_2"])
+
+    def test_discovery_fusion_uses_observed_same_host_safe_methods_only(self):
+        profile = {
+            "technology_count": 1,
+            "technologies": [{"technology": "WordPress", "confidence_score": 0.91}],
+            "route_inventory": [
+                {"evidence_type": "route", "request_method": "GET", "status_code": 200, "source_url": "https://example.test/search?q=private-value", "metadata": {"content_type": "text/html", "headers": {"content-type": "text/html"}}},
+                {"evidence_type": "route", "request_method": "POST", "status_code": 200, "source_url": "https://example.test/login", "metadata": {}},
+                {"evidence_type": "route", "request_method": "GET", "status_code": 200, "source_url": "https://other.test/admin", "metadata": {}},
+                {"evidence_type": "route_discovered", "request_method": "GET", "status_code": None, "source_url": "https://example.test/unverified", "metadata": {"not_fetched": True}},
+            ],
+            "route_candidates": [{"source_url": "https://example.test/static-candidate"}],
+            "auth_endpoint_candidates": [{"source_url": "https://example.test/auth-candidate"}],
+            "auth_surfaces": [{"source_url": "https://example.test/login"}],
+            "api_endpoints": [{"method": "GET", "status_code": 200, "url": "https://example.test/api/items?page=3", "content_type": "application/json"}, {"method": "POST", "status_code": 200, "url": "https://example.test/api/login"}],
+        }
+        analysis = {"generic_protection_intents": [{"intent_id": "session-and-authentication-protection", "applicability_score": 0.95, "applicability_confidence": "high"}]}
+        model, summary = build_discovery_candidate("example.test", "job-123", profile, analysis, {"status": "matched", "matched_vserver": "lb_example"})
+        endpoints = {(item.path_template, item.method) for item in model.endpoints}
+        self.assertEqual(endpoints, {("/search", "GET"), ("/api/items", "GET")})
+        self.assertTrue(all(item.decision_mode.value == "observe" for item in model.endpoints))
+        self.assertEqual(model.lifecycle.value, "discovered")
+        endpoint_evidence = {ref.source.value for endpoint in model.endpoints for ref in endpoint.evidence}
+        self.assertEqual(endpoint_evidence, {"passive_crawl", "runtime_inspection"})
+        self.assertEqual(summary["route_candidates_not_verified"], 2)
+        self.assertEqual(summary["runtime_auth_surface_count"], 1)
+        self.assertEqual(summary["adc_vserver"], "lb_example")
+        serialized = json.dumps(model.model_dump(mode="json")) + json.dumps(summary)
+        self.assertNotIn("private-value", serialized)
+        self.assertNotIn("/unverified", serialized)
+        self.assertNotIn("/login", serialized)
 
 
 if __name__ == "__main__":

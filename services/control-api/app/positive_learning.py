@@ -6,6 +6,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qsl, urlparse
 from uuid import uuid4
 
 from app.positive_model import (
@@ -174,13 +175,18 @@ def build_guided_candidate(source: dict[str, Any]) -> PositiveModelDocument:
             ))
 
         endpoint_id = str(uuid4())
-        evidence = EvidenceRef(
-            evidence_id=f"guided-{session_id[:64]}-{endpoint_id}",
-            source=EvidenceSource.GUIDED_BROWSER,
-            observed_at=now,
-            sample_count=min(10_000_000, max(1, len(observations))),
-            confidence=_confidence(len(observations)).score,
-        )
+        evidence_refs = []
+        source_counts = Counter(str(item.get("evidence_source", source.get("evidence_source", EvidenceSource.GUIDED_BROWSER.value))) for item in observations)
+        for evidence_source, source_count in sorted(source_counts.items()):
+            source_name = re.sub(r"[^A-Za-z0-9._:-]", "-", evidence_source)[:24]
+            evidence_refs.append(EvidenceRef(
+                evidence_id=f"{source_name}-{session_id[:48]}-{endpoint_id}",
+                source=EvidenceSource(evidence_source),
+                observed_at=now,
+                sample_count=min(10_000_000, max(1, source_count)),
+                confidence=_confidence(source_count).score,
+            ))
+        endpoint_confidence = min(0.65, _confidence(len(observations)).score + 0.05 * max(0, len(source_counts) - 1))
         endpoints.append({
             "path_template": path_template,
             "method": method,
@@ -188,8 +194,13 @@ def build_guided_candidate(source: dict[str, Any]) -> PositiveModelDocument:
             "response_content_types": sorted(response_types),
             "authentication": AuthenticationState.UNKNOWN,
             "fields": fields,
-            "evidence": [evidence],
-            "confidence": _confidence(len(observations)),
+            "evidence": evidence_refs,
+            "confidence": ConfidenceAssessment(
+                score=endpoint_confidence,
+                sample_count=max(1, len(observations)),
+                independent_session_count=1,
+                source_count=max(1, len(source_counts)),
+            ),
             "lifecycle": Lifecycle.DISCOVERED,
             "decision_mode": DecisionMode.OBSERVE,
         })
@@ -204,3 +215,121 @@ def build_guided_candidate(source: dict[str, Any]) -> PositiveModelDocument:
         endpoints=endpoints,
     )
     return candidate
+
+
+def _safe_observed_path(value: str, hostname: str) -> str | None:
+    parsed = urlparse(value)
+    if parsed.scheme or parsed.netloc:
+        if (parsed.hostname or "").casefold() != hostname.casefold():
+            return None
+        path = parsed.path or "/"
+    else:
+        path = parsed.path or value
+    if not path.startswith("/") or path.startswith("//") or any(char in path for char in "?#\r\n"):
+        return None
+    return path[:2048]
+
+
+def build_discovery_candidate(
+    hostname: str,
+    job_id: str,
+    profile: dict[str, Any],
+    analysis: dict[str, Any],
+    adc_topology: dict[str, Any] | None = None,
+) -> tuple[PositiveModelDocument, dict[str, Any]]:
+    """Fuse only observed, same-host GET/HEAD metadata into a review-only model draft.
+
+    Static JavaScript candidates contribute to coverage context, never to endpoint
+    allow-list candidates, because those routes have not been verified as reachable.
+    """
+    requests: list[dict[str, Any]] = []
+    route_rows = [row for row in profile.get("route_inventory", []) if isinstance(row, dict)]
+    for row in route_rows:
+        method = str(row.get("request_method") or "").upper()
+        if method not in {"GET", "HEAD"} or row.get("status_code") is None:
+            continue
+        path = _safe_observed_path(str(row.get("source_url") or ""), hostname)
+        if not path:
+            continue
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        header_names = metadata.get("headers") if isinstance(metadata.get("headers"), dict) else {}
+        requests.append({
+            "method": method,
+            "path_template": path,
+            "scheme": urlparse(str(row.get("source_url") or "")).scheme,
+            "query_names": [key for key, _ in parse_qsl(urlparse(str(row.get("source_url") or "")).query, keep_blank_values=True) if SAFE_FIELD_NAME.fullmatch(key)],
+            "response_header_names": [key for key in header_names if isinstance(key, str) and SAFE_FIELD_NAME.fullmatch(key)],
+            "response_content_type": str(metadata.get("content_type") or ""),
+            "evidence_source": EvidenceSource.PASSIVE_CRAWL.value,
+        })
+    api_keys: set[tuple[str, str]] = set()
+    for item in profile.get("api_endpoints", []):
+        if not isinstance(item, dict) or str(item.get("method") or "").upper() not in {"GET", "HEAD"}:
+            continue
+        path = _safe_observed_path(str(item.get("url") or ""), hostname)
+        api_key = (path, str(item.get("method")).upper()) if path else None
+        if not path or api_key in api_keys:
+            continue
+        if item.get("status_code") is None:
+            continue
+        response_headers = item.get("response_headers") if isinstance(item.get("response_headers"), dict) else {}
+        content_type = next((str(value) for key, value in response_headers.items() if str(key).casefold() == "content-type"), "")
+        requests.append({
+            "method": str(item.get("method")).upper(),
+            "path_template": path,
+            "scheme": urlparse(str(item.get("url") or "")).scheme,
+            "query_names": [key for key, _ in parse_qsl(urlparse(str(item.get("url") or "")).query, keep_blank_values=True) if SAFE_FIELD_NAME.fullmatch(key)],
+            "response_content_type": content_type,
+            "evidence_source": EvidenceSource.RUNTIME_INSPECTION.value,
+        })
+        api_keys.add(api_key)
+
+    source = {
+        "hostname": hostname,
+        "session_id": re.sub(r"[^A-Za-z0-9._:-]", "-", job_id)[:64],
+        "requests": requests,
+        "interaction_events": [],
+        "cookie_metadata": [],
+        "evidence_source": EvidenceSource.PASSIVE_CRAWL.value,
+    }
+    model = build_guided_candidate(source)
+    model.model_id = f"discovery-{uuid4()}"
+    model.evidence = []
+    if profile.get("technologies"):
+        model.evidence.append(EvidenceRef(
+        evidence_id=f"technology-{re.sub(r'[^A-Za-z0-9._:-]', '-', job_id)[:48]}",
+        source=EvidenceSource.TECHNOLOGY_DETECTION,
+        observed_at=datetime.now(timezone.utc),
+        sample_count=max(1, int(profile.get("technology_count", 0))),
+        confidence=max((float(item.get("confidence_score", 0)) for item in profile.get("technologies", []) if isinstance(item, dict)), default=0.0),
+        ))
+    if adc_topology and adc_topology.get("matched_vserver"):
+        model.evidence.append(EvidenceRef(
+            evidence_id=f"adc-{re.sub(r'[^A-Za-z0-9._:-]', '-', job_id)[:48]}",
+            source=EvidenceSource.ADC_TOPOLOGY,
+            observed_at=datetime.now(timezone.utc),
+            sample_count=1,
+            confidence=0.95,
+        ))
+
+    intents = analysis.get("generic_protection_intents", [])
+    summary = {
+        "evidence_sources": sorted({ref.source.value for endpoint in model.endpoints for ref in endpoint.evidence} | {"technology_detection"} | ({"adc_topology"} if adc_topology and adc_topology.get("matched_vserver") else set())),
+        "endpoint_count": len(model.endpoints),
+        "field_count": sum(len(endpoint.fields) for endpoint in model.endpoints),
+        "confidence_note": "Observed same-host GET/HEAD routes only; one discovery run; static candidates are not promoted to endpoints; all endpoints remain observe-only.",
+        "discovery_job_id": job_id,
+        "route_candidates_not_verified": len(profile.get("route_candidates", []) or []) + len(profile.get("auth_endpoint_candidates", []) or []),
+        "runtime_auth_surface_count": len(profile.get("auth_surfaces", []) or []),
+        "runtime_api_endpoint_count": len(profile.get("api_endpoints", []) or []),
+        "technology_signals": [str(item.get("technology"))[:128] for item in profile.get("technologies", []) if isinstance(item, dict) and item.get("technology")][:50],
+        "generic_applicability": [{
+            "intent_id": str(item.get("intent_id", ""))[:128],
+            "score": float(item.get("applicability_score", 0)),
+            "confidence": str(item.get("applicability_confidence", "low"))[:16],
+        } for item in intents if isinstance(item, dict)][:30],
+        "adc_match": bool(adc_topology and adc_topology.get("matched_vserver")),
+        "adc_vserver": str(adc_topology.get("matched_vserver", ""))[:128] if adc_topology else "",
+        "adc_topology_status": str(adc_topology.get("status", "unavailable"))[:32] if adc_topology else "unavailable",
+    }
+    return model, summary
