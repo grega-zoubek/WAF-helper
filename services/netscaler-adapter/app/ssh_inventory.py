@@ -34,6 +34,48 @@ def _read_secret() -> str:
     return Path(path).read_text(encoding="utf-8").strip() if path and Path(path).is_file() else ""
 
 
+def read_system_identity(host: str, username: str, password: str) -> dict[str, str | None]:
+    """Read only the ADC hostname and software version over SSH."""
+    if os.getenv("NETSCALER_SSH_ENABLED", "false").strip().lower() != "true":
+        return {"status": "disabled", "hostname": None, "version": None}
+    if not host or not username or not password:
+        return {"status": "not-configured", "hostname": None, "version": None}
+
+    port = int(os.getenv("NETSCALER_SSH_PORT", "22"))
+    timeout = min(float(os.getenv("NETSCALER_SSH_TIMEOUT_SECONDS", "30")), 10.0)
+    client = paramiko.SSHClient()
+    known_hosts = os.getenv("NETSCALER_SSH_KNOWN_HOSTS_FILE", "")
+    if known_hosts and Path(known_hosts).is_file():
+        client.load_host_keys(known_hosts)
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    elif os.getenv("NETSCALER_SSH_STRICT_HOST_KEY", "true").strip().lower() == "true":
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    else:
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    hostname: str | None = None
+    version: str | None = None
+    try:
+        client.connect(host, port=port, username=username, password=password, look_for_keys=False, allow_agent=False, timeout=timeout, banner_timeout=timeout, auth_timeout=timeout)
+        channel = client.invoke_shell(width=160, height=500)
+        _read_until_prompt(channel, timeout)
+        channel.send("show ns hostname\n")
+        hostname_output = _read_until_prompt(channel, timeout)
+        channel.send("show ns version\n")
+        version_output = _read_until_prompt(channel, timeout)
+        hostname_match = re.search(r"(?im)^\s*hostname\s*:\s*(\S+)", hostname_output)
+        version_match = re.search(r"(?im)^\s*NetScaler\s+(NS[\w.]+)\s*:\s*Build\s*([^,\s]+)", version_output)
+        hostname = hostname_match.group(1) if hostname_match else None
+        version = f"{version_match.group(1)} Build {version_match.group(2)}" if version_match else None
+        return {"status": "available" if hostname and version else "partial", "hostname": hostname, "version": version}
+    except (paramiko.AuthenticationException, paramiko.BadHostKeyException):
+        return {"status": "authentication-failed", "hostname": None, "version": None}
+    except (paramiko.SSHException, socket.timeout, TimeoutError, OSError):
+        return {"status": "unavailable", "hostname": hostname, "version": version}
+    finally:
+        client.close()
+
+
 def _read_until_prompt(channel: paramiko.Channel, timeout: float) -> str:
     data = bytearray()
     deadline = time.monotonic() + timeout

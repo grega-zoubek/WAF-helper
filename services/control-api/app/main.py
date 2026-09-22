@@ -657,7 +657,8 @@ def db_connect() -> psycopg.Connection[Any]:
 
 def init_db_sync() -> None:
     with db_connect() as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS netscaler_connections (id TEXT PRIMARY KEY, nsip TEXT NOT NULL, username TEXT NOT NULL, password_hash TEXT NOT NULL, password_ciphertext TEXT NOT NULL, version TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, last_verified_at TIMESTAMPTZ NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS netscaler_connections (id TEXT PRIMARY KEY, nsip TEXT NOT NULL, username TEXT NOT NULL, password_hash TEXT NOT NULL, password_ciphertext TEXT NOT NULL, version TEXT NOT NULL, hostname TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL, last_verified_at TIMESTAMPTZ NOT NULL)""")
+        conn.execute("ALTER TABLE netscaler_connections ADD COLUMN IF NOT EXISTS hostname TEXT NOT NULL DEFAULT ''")
         conn.execute("""CREATE TABLE IF NOT EXISTS netscaler_signature_inventory (id TEXT PRIMARY KEY, nsip TEXT NOT NULL, adc_version TEXT NOT NULL, inventory_status TEXT NOT NULL, entry_count INTEGER NOT NULL, entries JSONB NOT NULL, fetched_at TIMESTAMPTZ NOT NULL)""")
         conn.execute("""CREATE INDEX IF NOT EXISTS idx_netscaler_signature_inventory_lookup ON netscaler_signature_inventory (nsip, fetched_at DESC)""")
         conn.execute("""CREATE TABLE IF NOT EXISTS netscaler_write_audit (id TEXT PRIMARY KEY, operation TEXT NOT NULL, nsip TEXT NOT NULL, profile_name TEXT NOT NULL, signature_name TEXT NOT NULL, result TEXT NOT NULL, details JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)""")
@@ -692,19 +693,19 @@ def password_hash(password: str) -> str:
     return "$scrypt$16384$8$1$" + base64.urlsafe_b64encode(salt).decode() + "$" + base64.urlsafe_b64encode(digest).decode()
 
 
-def save_connection_sync(connection_id: str, request: NetScalerConnectRequest, version: str) -> None:
+def save_connection_sync(connection_id: str, request: NetScalerConnectRequest, version: str, hostname: str = "") -> None:
     key = encryption_key()
     timestamp = datetime.now(timezone.utc)
     ciphertext = Fernet(key).encrypt(request.password.encode()).decode()
     with db_connect() as conn:
-        conn.execute("""INSERT INTO netscaler_connections (id, nsip, username, password_hash, password_ciphertext, version, created_at, last_verified_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO UPDATE SET nsip=EXCLUDED.nsip, username=EXCLUDED.username, password_hash=EXCLUDED.password_hash, password_ciphertext=EXCLUDED.password_ciphertext, version=EXCLUDED.version, last_verified_at=EXCLUDED.last_verified_at""", (connection_id, request.nsip, request.username, password_hash(request.password), ciphertext, version, timestamp, timestamp))
+        conn.execute("""INSERT INTO netscaler_connections (id, nsip, username, password_hash, password_ciphertext, version, hostname, created_at, last_verified_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO UPDATE SET nsip=EXCLUDED.nsip, username=EXCLUDED.username, password_hash=EXCLUDED.password_hash, password_ciphertext=EXCLUDED.password_ciphertext, version=EXCLUDED.version, hostname=EXCLUDED.hostname, last_verified_at=EXCLUDED.last_verified_at""", (connection_id, request.nsip, request.username, password_hash(request.password), ciphertext, version, hostname, timestamp, timestamp))
         conn.commit()
 
 
 def list_connections_sync() -> list[dict[str, Any]]:
     with db_connect() as conn:
-        rows = conn.execute("SELECT id, nsip, version, created_at, last_verified_at FROM netscaler_connections ORDER BY last_verified_at DESC").fetchall()
-    columns = ["id", "nsip", "version", "created_at", "last_verified_at"]
+        rows = conn.execute("SELECT id, nsip, version, hostname, created_at, last_verified_at FROM netscaler_connections ORDER BY last_verified_at DESC").fetchall()
+    columns = ["id", "nsip", "version", "hostname", "created_at", "last_verified_at"]
     return [dict(zip(columns, row)) for row in rows]
 
 
@@ -718,9 +719,9 @@ def load_connection_sync(connection_id: str) -> tuple[str, str, str] | None:
     return str(nsip), str(username), password
 
 
-def update_connection_sync(connection_id: str, version: str) -> None:
+def update_connection_sync(connection_id: str, version: str, hostname: str = "") -> None:
     with db_connect() as conn:
-        conn.execute("UPDATE netscaler_connections SET version = %s, last_verified_at = %s WHERE id = %s", (version, datetime.now(timezone.utc), connection_id))
+        conn.execute("UPDATE netscaler_connections SET version = CASE WHEN %s = 'unknown' THEN version ELSE %s END, hostname = COALESCE(NULLIF(%s, ''), hostname), last_verified_at = %s WHERE id = %s", (version, version, hostname, datetime.now(timezone.utc), connection_id))
         conn.commit()
 
 
@@ -1538,7 +1539,7 @@ async def connect_netscaler(request: NetScalerConnectRequest) -> dict[str, Any]:
     request.nsip = nsip_value(request.nsip)
     connection_id = str(uuid4())
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(f"{ADAPTER_URL}/api/adc/connect", json={"nsip": request.nsip, "username": request.username, "password": request.password})
             response.raise_for_status()
             result = response.json()
@@ -1548,12 +1549,12 @@ async def connect_netscaler(request: NetScalerConnectRequest) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="NetScaler adapter unavailable") from exc
     if request.save_credentials:
         try:
-            await asyncio.to_thread(save_connection_sync, connection_id, request, str(result.get("version", "unknown")))
+            await asyncio.to_thread(save_connection_sync, connection_id, request, str(result.get("version", "unknown")), str(result.get("hostname") or ""))
         except (OSError, ValueError, psycopg.Error) as exc:
             raise HTTPException(status_code=503, detail="Encrypted credential storage is not configured") from exc
     else:
         active_connections[connection_id] = (request.nsip, request.username, request.password)
-    return {"connection_id": connection_id, "nsip": request.nsip, "version": result.get("version", "unknown"), "credentials_saved": request.save_credentials}
+    return {"connection_id": connection_id, "nsip": request.nsip, "hostname": result.get("hostname"), "version": result.get("version", "unknown"), "identity_status": result.get("identity_status", "unavailable"), "credentials_saved": request.save_credentials}
 
 
 @app.get("/api/netscalers")
@@ -1574,16 +1575,16 @@ async def reconnect_netscaler(connection_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Saved NetScaler connection not found")
     nsip, username, password = credentials
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(f"{ADAPTER_URL}/api/adc/connect", json={"nsip": nsip, "username": username, "password": password})
             response.raise_for_status()
             result = response.json()
-        await asyncio.to_thread(update_connection_sync, connection_id, str(result.get("version", "unknown")))
+        await asyncio.to_thread(update_connection_sync, connection_id, str(result.get("version", "unknown")), str(result.get("hostname") or ""))
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=401, detail="NetScaler connection failed") from exc
     except (httpx.HTTPError, psycopg.Error) as exc:
         raise HTTPException(status_code=503, detail="NetScaler connection service unavailable") from exc
-    return {"connection_id": connection_id, "nsip": nsip, "version": result.get("version", "unknown"), "credentials_saved": True}
+    return {"connection_id": connection_id, "nsip": nsip, "hostname": result.get("hostname"), "version": result.get("version", "unknown"), "identity_status": result.get("identity_status", "unavailable"), "credentials_saved": True}
 
 
 @app.post("/api/netscalers/{connection_id}/disconnect")

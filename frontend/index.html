@@ -5,22 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WAF Intelligence</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 3rem auto; padding: 0 1rem; color: #17202a; }
+    body { font-family: system-ui, sans-serif; max-width: 860px; margin: 1.5rem auto; padding: 0 .75rem; color: #17202a; }
     body:not(.authenticated) > :not(#auth-gate) { visibility: hidden; }
     #auth-gate { position: fixed; inset: 0; z-index: 10000; display: grid; place-items: center; padding: 1rem; background: #eef2f6; }
     #auth-gate[hidden] { display: none; }
     .auth-card { width: min(100%, 420px); padding: 1.5rem; background: #fff; border: 1px solid #d9dee3; border-radius: 10px; box-shadow: 0 12px 40px rgba(20, 40, 60, .16); }
     h1 { margin-bottom: .25rem; }
     .muted { color: #5f6b76; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: 2rem; }
-    .action-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .75rem; margin-top: 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .75rem; margin-top: 1.25rem; }
+    .action-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: .55rem; margin-top: .6rem; }
     .mode-line { margin: .5rem 0 0; }
-    .card { border: 1px solid #d9dee3; border-radius: 8px; padding: 1rem; background: #fff; }
+    .card { border: 1px solid #d9dee3; border-radius: 8px; padding: .75rem; background: #fff; }
     [hidden] { display: none !important; }
-    .connection-screen { display: grid; gap: 1rem; width: min(100%, 720px); margin: 1.5rem auto; }
+    .connection-screen { display: grid; gap: .7rem; width: min(100%, 620px); margin: 1rem auto; }
     .connection-panel { margin: 0; }
-    .connection-list { display: grid; gap: .45rem; max-height: 37.5rem; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: .2rem .45rem .2rem 0; }
-    .connection-row { display: flex; align-items: center; justify-content: space-between; gap: .8rem; box-sizing: border-box; height: 4.25rem; padding: .5rem .65rem; border: 1px solid #d9dee3; border-radius: 6px; background: #fafbfc; }
+    .connection-list { display: grid; gap: .35rem; max-height: 33rem; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: .2rem .45rem .2rem 0; }
+    .connection-row { display: flex; align-items: center; justify-content: space-between; gap: .7rem; box-sizing: border-box; height: 3.7rem; padding: .4rem .55rem; border: 1px solid #d9dee3; border-radius: 6px; background: #fafbfc; }
     .connection-row button { flex: 0 0 auto; }
     .connection-name { min-width: 0; overflow-wrap: anywhere; }
     .connection-name strong, .connection-name span { display: block; }
@@ -33,15 +33,15 @@
     code { background: #f1f3f5; padding: .15rem .3rem; border-radius: 4px; }
     .inventory { margin-top: 2rem; }
     .inventory span { display: block; font-size: 1.8rem; font-weight: 700; margin-top: .4rem; }
-    .next { margin-top: 2rem; }
-    form { display: grid; gap: .7rem; max-width: 620px; }
-    input, textarea, select, button { font: inherit; padding: .65rem; border: 1px solid #b9c2ca; border-radius: 5px; }
+    .next { margin-top: 1rem; }
+    form { display: grid; gap: .55rem; max-width: 620px; }
+    input, textarea, select, button { font: inherit; padding: .5rem .6rem; border: 1px solid #b9c2ca; border-radius: 5px; }
     textarea { min-height: 10rem; width: 100%; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
     button { background: #17202a; color: white; cursor: pointer; }
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { text-align: left; padding: .55rem; border-bottom: 1px solid #d9dee3; vertical-align: top; }
     .small { font-size: .9rem; }
-    .profile { margin-top: 1rem; }
+    .profile { margin-top: .7rem; }
     .high { color: #087f5b; font-weight: 600; }
     .medium { color: #9a6700; font-weight: 600; }
     .low { color: #b42318; font-weight: 600; }
@@ -151,7 +151,7 @@
   </section>
   <h1>WAF Intelligence Platform</h1>
   <p class="muted">Connect a NetScaler ADC, then open only the tools you need.</p>
-  <p id="mode-line" class="small muted">Mode: <strong id="platform-mode">approval-gated</strong> · Write mode: <strong id="waf-write-mode" class="progress">unknown</strong></p>
+  <p id="mode-line" class="small muted" hidden>Mode: <strong id="platform-mode">approval-gated</strong> · Write mode: <strong id="waf-write-mode" class="progress">unknown</strong></p>
   <button id="operator-logout" class="secondary" type="button">Sign out</button>
   <section id="connection-screen" class="connection-screen">
     <div class="card connection-panel">
@@ -181,6 +181,7 @@
         <div class="connected-detail"><span class="small muted">Hostname</span><span id="connected-hostname">-</span></div>
         <div class="connected-detail"><span class="small muted">Version</span><span id="connected-version">-</span></div>
       </div>
+      <p id="connection-identity-status" class="small muted"></p>
       <button id="disconnect-button" class="secondary" type="button">Disconnect</button>
     </section>
     <section class="next card" id="main-actions">
@@ -768,7 +769,7 @@
       const host = document.querySelector('#saved-netscalers');
       try {
         const items = await api('/api/netscalers');
-        host.innerHTML = items.length ? items.map(item => `<div class="connection-row"><span class="connection-name"><strong>${escapeHtml(item.nsip)}</strong><span class="small muted">Last verified ${escapeHtml(item.last_verified_at || 'unknown')} · software version ${escapeHtml(item.version || 'unknown')}</span></span><button class="secondary reconnect-button" data-connection="${escapeHtml(item.id)}" type="button">Connect</button></div>`).join('') : '<p class="small muted">No saved connections yet.</p>';
+        host.innerHTML = items.length ? items.map(item => `<div class="connection-row"><span class="connection-name"><strong>${escapeHtml(item.nsip)}${item.hostname ? ` · ${escapeHtml(item.hostname)}` : ''}</strong><span class="small muted">${escapeHtml(item.version || 'Version not recorded')} · verified ${escapeHtml(item.last_verified_at || 'unknown')}</span></span><button class="secondary reconnect-button" data-connection="${escapeHtml(item.id)}" type="button">Connect</button></div>`).join('') : '<p class="small muted">No saved connections yet.</p>';
       } catch (error) { host.innerHTML = '<p class="small muted">Saved connections unavailable.</p>'; }
     }
     async function loadWafInventory() {
@@ -1044,8 +1045,10 @@
       window.currentConnectionId = result.connection_id;
       document.querySelector('#connection-success-message').textContent = message;
       document.querySelector('#connected-nsip').innerHTML = `<strong>${escapeHtml(result.nsip || 'unknown')}</strong>`;
-      document.querySelector('#connected-hostname').textContent = result.hostname || 'Not exposed by the supplied Next-Gen API';
-      document.querySelector('#connected-version').textContent = result.version && result.version !== 'unknown' ? result.version : 'Not exposed by the supplied Next-Gen API';
+      document.querySelector('#connected-hostname').textContent = result.hostname || 'Unavailable';
+      document.querySelector('#connected-version').textContent = result.version && result.version !== 'unknown' ? result.version : 'Unavailable';
+      document.querySelector('#connection-identity-status').textContent = result.identity_status === 'available' ? 'Hostname and version read from the appliance over SSH.' : `SSH identity lookup: ${result.identity_status || 'unavailable'}.`;
+      document.querySelector('#mode-line').hidden = false;
       document.querySelector('#connection-screen').hidden = true;
       document.querySelector('#workspace').hidden = false;
     }
@@ -1055,6 +1058,7 @@
       try { if (window.currentConnectionId) await api(`/api/netscalers/${encodeURIComponent(window.currentConnectionId)}/disconnect`, {method: 'POST'}); } catch (error) {}
       window.currentConnectionId = null;
       window.wafInventoryLoaded = false;
+      document.querySelector('#mode-line').hidden = true;
       document.querySelector('#connection-screen').hidden = false;
       document.querySelector('#workspace').hidden = true;
       document.querySelector('#waf-section').hidden = true;

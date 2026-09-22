@@ -25,7 +25,7 @@ from app.nextgen import (
     write_enabled,
 )
 from app.rule_catalog import load_rule_catalog
-from app.ssh_inventory import collect_waf_inventory, execute_cli_commands
+from app.ssh_inventory import collect_waf_inventory, execute_cli_commands, read_system_identity
 
 
 app = FastAPI(title="NetScaler Next-Gen Adapter", version="0.2.0")
@@ -260,7 +260,8 @@ async def connect(request: ConnectionRequest) -> dict[str, Any]:
     status, data = await get("/applications", host=request.nsip, username=request.username, password=request.password)
     if status >= 300:
         raise HTTPException(status_code=401 if status in {401, 403} else 502, detail="NetScaler Next-Gen API authentication or connection failed")
-    return {"nsip": request.nsip, "provider": "netscaler-nextgen", "api_version": OAS_VERSION, "version": "unknown", "applications": len(data.get("applications", [])) if isinstance(data, dict) else 0}
+    identity = await asyncio.to_thread(read_system_identity, request.nsip, request.username, request.password)
+    return {"nsip": request.nsip, "hostname": identity.get("hostname"), "provider": "netscaler-nextgen", "api_version": OAS_VERSION, "version": identity.get("version") or "unknown", "identity_status": identity.get("status", "unavailable"), "applications": len(data.get("applications", [])) if isinstance(data, dict) else 0}
 
 
 async def _applications() -> tuple[int, Any]:
