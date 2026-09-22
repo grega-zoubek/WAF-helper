@@ -200,6 +200,7 @@
       <input id="browser-lab-navigation-url" required type="url" maxlength="2048" placeholder="Navigate within the same host and allowed paths">
       <div class="job-actions"><button type="submit">Navigate (GET)</button><button id="browser-lab-refresh" class="secondary" type="button">Refresh snapshot</button><button id="browser-lab-stop" class="secondary" type="button">Close session</button></div>
     </form>
+    <div id="browser-lab-selected" class="notice" hidden></div>
     <div id="browser-lab-snapshot" class="profile"></div>
     <section id="positive-candidate-review" class="next card">
       <h3>Saved positive-model candidates</h3>
@@ -259,7 +260,7 @@
       const auth = snapshot.authentication || {};
       const authForm = snapshot.url?.startsWith('https://') && userOptions.length && passwordOptions.length && submitOptions.length
         ? `<section class="next card"><h4>Guided login · ${escapeHtml(auth.state || 'anonymous')}</h4><p class="small muted">One explicitly confirmed HTTPS POST to the selected same-host, in-scope form action is allowed. Credentials are sent through the isolated browser, never stored in the candidate, and cleared after the attempt. Other unsafe requests remain blocked. Certificate bypass applies only if enabled when this session was opened.</p><form id="browser-lab-auth-form"><label>Username field<select id="browser-lab-auth-user">${userOptions.map(item => `<option value="${Number(item.index)}">${escapeHtml(optionLabel(item))}</option>`).join('')}</select></label><label>Password field<select id="browser-lab-auth-password">${passwordOptions.map(item => `<option value="${Number(item.index)}">${escapeHtml(optionLabel(item))}</option>`).join('')}</select></label><label>Submit control<select id="browser-lab-auth-submit">${submitOptions.map(item => `<option value="${Number(item.index)}">${escapeHtml(optionLabel(item))}</option>`).join('')}</select></label><label>Test identity label<input id="browser-lab-auth-label" value="test-user" maxlength="64" pattern="[A-Za-z0-9._-]+" required></label><label>Username<input id="browser-lab-auth-username" autocomplete="off" maxlength="256" required></label><label>Password<input id="browser-lab-auth-password-value" type="password" autocomplete="new-password" maxlength="512" required></label><label><input id="browser-lab-auth-confirm" type="checkbox" required> I authorize one login POST using these credentials.</label><button type="submit"${auth.attempted ? ' disabled' : ''}>${auth.attempted ? 'Login attempt already used' : 'Submit one login attempt'}</button></form><p class="small">State: ${escapeHtml(auth.state || 'anonymous')} · Result: ${escapeHtml(auth.result || 'not-attempted')} · Label: ${escapeHtml(auth.identity_label || '—')}</p></section>` : '';
-      document.querySelector('#browser-lab-snapshot').innerHTML = `<div class="card"><h3>${escapeHtml(snapshot.title || 'Guided browser')} <span class="small muted">HTTP ${escapeHtml(snapshot.status_code ?? '-')}</span></h3><p class="small"><code>${escapeHtml(snapshot.url)}</code></p><p class="small muted">${escapeHtml(snapshot.capture_policy)}</p><p class="small muted">The screenshot is read-only. Enable selection mode and click a page element to inspect it. “Probe with synthetic value” is blocked for sensitive/non-empty fields and never submits. “Observe click” is limited to non-submit buttons/links; only same-host in-scope GET/HEAD requests are allowed.</p><div class="browser-lab-layout"><div><div class="browser-preview-shell"><img class="browser-preview" id="browser-lab-preview" data-vw="${Number(snapshot.viewport?.width || 1365)}" data-vh="${Number(snapshot.viewport?.height || 900)}" alt="Temporary screenshot of guided browser page" src="${snapshot.screenshot_data_uri}"></div><div class="browser-select-actions"><button class="secondary browser-selection-mode" type="button">Enable page selection</button><button class="secondary" id="browser-lab-candidate-generate" type="button">Generate observe-only candidate</button></div><h4>Page headings</h4><p class="small">${escapeHtml((snapshot.headings || []).join(' · ') || 'No headings detected')}</p></div><div><h4>Select a DOM field or control</h4><div class="browser-list">${controlRows || '<p class="small muted">No controls found on this page.</p>'}</div><h4>Same-host links</h4><div class="browser-list">${linkRows || '<p class="small muted">No in-scope links found.</p>'}</div></div></div>${authForm}${formRows ? `<h4>Forms (observed; submissions blocked except the explicitly authorized single HTTPS login POST)</h4><table><thead><tr><th>Form</th><th>Method</th><th>Action</th><th>Fields</th></tr></thead><tbody>${formRows}</tbody></table>` : ''}${requestRows ? `<h4>Safe network metadata</h4><div class="browser-list"><table><thead><tr><th>Method</th><th>URL</th><th>Type</th><th>Status</th></tr></thead><tbody>${requestRows}</tbody></table></div>` : ''}<div id="browser-lab-selected" class="notice" hidden></div><div id="browser-lab-candidate" class="notice" hidden></div></div>`;
+      document.querySelector('#browser-lab-snapshot').innerHTML = `<div class="card"><h3>${escapeHtml(snapshot.title || 'Guided browser')} <span class="small muted">HTTP ${escapeHtml(snapshot.status_code ?? '-')}</span></h3><p class="small"><code>${escapeHtml(snapshot.url)}</code></p><p class="small muted">${escapeHtml(snapshot.capture_policy)}</p><p class="small muted">The screenshot is read-only. Enable selection mode and click a page element to inspect it. “Probe with synthetic value” is blocked for sensitive/non-empty fields and never submits. “Observe click” is limited to non-submit buttons/links; only same-host in-scope GET/HEAD requests are allowed. DOM action results appear above this long snapshot.</p><div class="browser-lab-layout"><div><div class="browser-preview-shell"><img class="browser-preview" id="browser-lab-preview" data-vw="${Number(snapshot.viewport?.width || 1365)}" data-vh="${Number(snapshot.viewport?.height || 900)}" alt="Temporary screenshot of guided browser page" src="${snapshot.screenshot_data_uri}"></div><div class="browser-select-actions"><button class="secondary browser-selection-mode" type="button">Enable page selection</button><button class="secondary" id="browser-lab-candidate-generate" type="button">Generate observe-only candidate</button></div><h4>Page headings</h4><p class="small">${escapeHtml((snapshot.headings || []).join(' · ') || 'No headings detected')}</p></div><div><h4>Select a DOM field or control</h4><div class="browser-list">${controlRows || '<p class="small muted">No controls found on this page.</p>'}</div><h4>Same-host links</h4><div class="browser-list">${linkRows || '<p class="small muted">No in-scope links found.</p>'}</div></div></div>${authForm}${formRows ? `<h4>Forms (observed; submissions blocked except the explicitly authorized single HTTPS login POST)</h4><table><thead><tr><th>Form</th><th>Method</th><th>Action</th><th>Fields</th></tr></thead><tbody>${formRows}</tbody></table>` : ''}${requestRows ? `<h4>Safe network metadata</h4><div class="browser-list"><table><thead><tr><th>Method</th><th>URL</th><th>Type</th><th>Status</th></tr></thead><tbody>${requestRows}</tbody></table></div>` : ''}<div id="browser-lab-candidate" class="notice" hidden></div></div>`;
       document.querySelector('#browser-lab-navigation-form').hidden = false;
       document.querySelector('#browser-lab-navigation-url').value = snapshot.url;
     }
@@ -779,6 +780,8 @@
       try { parsed = new URL(target); } catch (error) { status.textContent = 'Enter a valid HTTP or HTTPS application URL.'; return; }
       if (!['http:', 'https:'].includes(parsed.protocol)) { status.textContent = 'Only HTTP and HTTPS URLs are supported.'; return; }
       status.textContent = 'Starting isolated browser session...';
+      document.querySelector('#browser-lab-selected').hidden = true;
+      document.querySelector('#browser-lab-selected').innerHTML = '';
       try {
         const snapshot = await api('/api/browser-lab/sessions', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:target, hostname:parsed.hostname, allowed_paths:document.querySelector('#browser-lab-paths').value.split(',').map(item => item.trim()).filter(Boolean), ignore_https_errors:document.querySelector('#browser-lab-ignore-tls').checked})});
         window.browserLabSessionId = snapshot.session_id;
@@ -819,23 +822,33 @@
       window.browserLabSessionId = null;
       document.querySelector('#browser-lab-navigation-form').hidden = true;
       document.querySelector('#browser-lab-snapshot').innerHTML = '';
+      document.querySelector('#browser-lab-selected').hidden = true;
+      document.querySelector('#browser-lab-selected').innerHTML = '';
       document.querySelector('#browser-lab-status').textContent = 'Guided browser session closed; temporary browser state discarded.';
     });
-    document.querySelector('#browser-lab-snapshot').addEventListener('click', async event => {
-      const select = event.target.closest('.browser-select-element');
-      const focus = event.target.closest('.browser-focus-element');
-      const probe = event.target.closest('.browser-probe-element');
-      const activate = event.target.closest('.browser-activate-element');
-      const openLink = event.target.closest('.browser-open-link');
-      const selectionMode = event.target.closest('.browser-selection-mode');
-      const candidateButton = event.target.closest('#browser-lab-candidate-generate');
-      const saveCandidateButton = event.target.closest('#browser-lab-candidate-save');
-      const preview = event.target.closest('#browser-lab-preview');
+    document.addEventListener('click', async event => {
+      const eventElement = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const closest = selector => eventElement?.closest(selector) || event.composedPath?.().find(item => item instanceof Element && item.matches(selector)) || null;
+      const select = closest('.browser-select-element');
+      const focus = closest('.browser-focus-element');
+      const probe = closest('.browser-probe-element');
+      const activate = closest('.browser-activate-element');
+      const openLink = closest('.browser-open-link');
+      const selectionMode = closest('.browser-selection-mode');
+      const candidateButton = closest('#browser-lab-candidate-generate');
+      const saveCandidateButton = closest('#browser-lab-candidate-save');
+      const preview = closest('#browser-lab-preview');
       if (selectionMode) {
         window.browserLabSelectionMode = !window.browserLabSelectionMode;
         const image = document.querySelector('#browser-lab-preview');
         image?.classList.toggle('selecting', window.browserLabSelectionMode);
         selectionMode.textContent = window.browserLabSelectionMode ? 'Selection mode on · click page' : 'Enable page selection';
+      }
+      if ((select || focus || probe || activate || openLink || candidateButton || saveCandidateButton || (preview && window.browserLabSelectionMode)) && !window.browserLabSessionId) {
+        const status = document.querySelector('#browser-lab-status');
+        status.textContent = 'This snapshot has no active browser session. Open a new guided browser session, then try the action again.';
+        status.scrollIntoView({behavior:'smooth', block:'center'});
+        return;
       }
       if (preview && window.browserLabSelectionMode && window.browserLabSessionId) {
         const rect = preview.getBoundingClientRect();
@@ -860,6 +873,8 @@
           const host = document.querySelector('#browser-lab-selected');
           host.hidden = false;
           host.innerHTML = `<strong>Page element selected</strong><pre>${escapeHtml(JSON.stringify(result.element, null, 2))}</pre><span class="small">Selection does not activate the element and does not read its current value.</span>`;
+          document.querySelector('#browser-lab-status').textContent = 'Selected page metadata; no page action was triggered.';
+          host.scrollIntoView({behavior:'smooth', block:'center'});
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Screenshot selection failed: ${error.message}`; }
       }
       if (select && window.browserLabSessionId) {
@@ -868,6 +883,8 @@
           const host = document.querySelector('#browser-lab-selected');
           host.hidden = false;
           host.innerHTML = `<strong>Selected DOM metadata</strong><pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre><span class="small">Selection is a candidate observation only. No control is activated and no input value is read.</span>`;
+          document.querySelector('#browser-lab-status').textContent = 'Selected DOM metadata; no page action was triggered.';
+          host.scrollIntoView({behavior:'smooth', block:'center'});
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Element selection failed: ${error.message}`; }
       }
       if (focus && window.browserLabSessionId) {
@@ -877,6 +894,8 @@
           const host = document.querySelector('#browser-lab-selected');
           host.hidden = false;
           host.innerHTML = `<strong>Focus-to-request correlation: ${escapeHtml(result.correlation_status)}</strong><p class="small">${escapeHtml(result.capture_policy)}</p><pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre><span class="small">Correlation is evidence, not proof of causation. No input value or request body was captured.</span>`;
+          document.querySelector('#browser-lab-status').textContent = `Focus observation complete: ${result.correlation_status}.`;
+          host.scrollIntoView({behavior:'smooth', block:'center'});
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Focus observation failed: ${error.message}`; }
         finally { focus.disabled = false; }
       }
@@ -887,6 +906,8 @@
           const host = document.querySelector('#browser-lab-selected');
           host.hidden = false;
           host.innerHTML = `<strong>Synthetic input correlation: ${escapeHtml(result.correlation_status)}</strong><p class="small">${escapeHtml(result.capture_policy)}</p><pre>${escapeHtml(JSON.stringify(result.correlated_requests, null, 2))}</pre><span class="small">The test value was not returned or stored; close the session to discard the ephemeral page state.</span>`;
+          document.querySelector('#browser-lab-status').textContent = `Synthetic probe complete: ${result.correlation_status}.`;
+          host.scrollIntoView({behavior:'smooth', block:'center'});
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Synthetic input probe failed: ${error.message}`; }
         finally { probe.disabled = false; }
       }
@@ -898,6 +919,8 @@
           const host = document.querySelector('#browser-lab-selected');
           host.hidden = false;
           host.innerHTML = `<strong>Click-to-request correlation: ${escapeHtml(result.correlation_status)}</strong><p class="small">${escapeHtml(result.capture_policy)}</p><pre>${escapeHtml(JSON.stringify(result.correlated_requests, null, 2))}</pre><span class="small">This was an explicit, non-submit click. Causality remains a candidate; no request body or field value was captured.</span>`;
+          document.querySelector('#browser-lab-status').textContent = `Click observation complete: ${result.correlation_status}.`;
+          host.scrollIntoView({behavior:'smooth', block:'center'});
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Observed click failed: ${error.message}`; }
         finally { activate.disabled = false; }
       }
