@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import ipaddress
+import json
 import re
 import time
 from datetime import datetime, timezone
@@ -10,9 +11,11 @@ from typing import Any
 from urllib.parse import parse_qsl, urlparse
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from playwright.async_api import Browser, TimeoutError as PlaywrightTimeoutError, async_playwright
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
+
+from app.auth_journey import guided_request_allowed, validated_login_target
 
 app = FastAPI(title="WAF Runtime Inspector", version="0.2.0")
 inspection_lock = asyncio.Lock()
@@ -97,6 +100,7 @@ class GuidedSessionRequest(BaseModel):
     url: str = Field(min_length=8, max_length=2048)
     hostname: str = Field(min_length=1, max_length=253)
     allowed_paths: list[str] = Field(default_factory=lambda: ["/"], max_length=100)
+    ignore_https_errors: bool = False
 
 
 class GuidedNavigateRequest(BaseModel):
@@ -110,6 +114,16 @@ class GuidedSelectRequest(BaseModel):
 class GuidedPointSelectRequest(BaseModel):
     x: float = Field(ge=0, le=4096)
     y: float = Field(ge=0, le=4096)
+
+
+class GuidedAuthenticateRequest(BaseModel):
+    username: SecretStr = Field(min_length=1, max_length=256)
+    password: SecretStr = Field(min_length=1, max_length=512)
+    username_index: int = Field(ge=0, le=999)
+    password_index: int = Field(ge=0, le=999)
+    submit_index: int = Field(ge=0, le=999)
+    identity_label: str = Field(default="test-user", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    authorize_single_login_post: bool = False
 
 
 def allowed_path(path: str, prefixes: list[str]) -> bool:
@@ -222,11 +236,15 @@ def validate_guided_request(request: GuidedSessionRequest, url: str | None = Non
         raise HTTPException(status_code=422, detail="Guided browser URL is outside the selected host/path scope")
 
 
-async def guard_guided_route(route: Any, scope: InspectionRequest) -> None:
+async def guard_guided_route(route: Any, scope: InspectionRequest, session: dict[str, Any] | None = None) -> None:
     target = route.request.url
-    if route.request.method.upper() not in {"GET", "HEAD"} or not in_scope(target, scope):
+    was_used = bool(session and session.get("auth_post_used"))
+    allowed = guided_request_allowed(route.request.method, target, scope.hostname, scope.allowed_paths, session or {})
+    if not allowed:
         await route.abort("blockedbyclient")
         return
+    if session and not was_used and session.get("auth_post_used"):
+        session["auth_sequence_start"] = len(session.get("network_sequence", []))
     await route.continue_()
 
 
@@ -271,8 +289,9 @@ async def guided_snapshot(session: dict[str, Any]) -> dict[str, Any]:
         "headings": dom["headings"], "controls": dom["controls"], "forms": [{**form, "action": redact_url(form["action"])} for form in dom["forms"]],
         "links": [{**link, "href": redact_url(link["href"])} for link in dom["links"] if is_same_host(link["href"], session["hostname"]) and allowed_path(urlparse(link["href"]).path, session["allowed_paths"])],
         "network_requests": requests, "screenshot_data_uri": "data:image/jpeg;base64," + base64.b64encode(screenshot).decode("ascii"),
-        "capture_policy": "same-host, in-scope GET/HEAD only; WebSockets and downloads blocked; no form submission; request bodies, cookies, and raw field values are not captured",
-        "values_submitted": False,
+        "authentication": {"state": session.get("auth_state", "anonymous"), "identity_label": session.get("identity_label", ""), "attempted": bool(session.get("auth_attempt_count")), "result": session.get("auth_result", "not-attempted")},
+        "capture_policy": "same-host, in-scope GET/HEAD only except a separately authorized single HTTPS login POST; all other unsafe methods, WebSockets, downloads, request bodies, cookies, and raw field values are blocked or not captured",
+        "values_submitted": bool(session.get("auth_post_used")),
     }
 
 
@@ -435,19 +454,24 @@ async def start_guided_session(request: GuidedSessionRequest) -> dict[str, Any]:
             guided_playwright = await async_playwright().start()
         if guided_browser is None or not guided_browser.is_connected():
             guided_browser = await guided_playwright.chromium.launch(headless=True, executable_path="/usr/bin/chromium", args=["--no-sandbox", "--disable-dev-shm-usage"])
-        context = await guided_browser.new_context(viewport={"width": 1365, "height": 900}, accept_downloads=False, service_workers="block")
+        context = await guided_browser.new_context(viewport={"width": 1365, "height": 900}, accept_downloads=False, service_workers="block", ignore_https_errors=request.ignore_https_errors)
         page = await context.new_page()
         scope = InspectionRequest(urls=[request.url], hostname=request.hostname, allowed_paths=request.allowed_paths)
-
-        await context.route("**/*", lambda route: guard_guided_route(route, scope))
-        await context.route_web_socket("**/*", block_guided_websocket)
         session_id = str(uuid4())
         session: dict[str, Any] = {
                 "id": session_id, "context": context, "page": page, "hostname": request.hostname.lower(),
                 "allowed_paths": request.allowed_paths or ["/"], "network_events": {}, "network_sequence": [],
                 "interaction_events": [], "selected_elements": [], "status_code": None,
+                "auth_attempt_count": 0, "auth_state": "anonymous", "identity_label": "",
+                "auth_post_pending": False, "auth_post_used": False, "auth_post_target": None,
+                "auth_response_status": None, "auth_response_event": None,
                 "created": time.monotonic(), "touched": time.monotonic(),
         }
+        async def guarded_route(route: Any) -> None:
+            await guard_guided_route(route, scope, session)
+
+        await context.route("**/*", guarded_route)
+        await context.route_web_socket("**/*", block_guided_websocket)
         def record_request(browser_request: Any) -> None:
                 if browser_request.method.upper() not in {"GET", "HEAD"} or not in_scope(browser_request.url, scope):
                     return
@@ -455,6 +479,7 @@ async def start_guided_session(request: GuidedSessionRequest) -> dict[str, Any]:
                 event_item = {
                     "id": str(uuid4()), "method": browser_request.method,
                     "url": redact_url(browser_request.url), "resource_type": browser_request.resource_type,
+                    "authentication": session.get("auth_state", "anonymous"),
                     "status_code": None, "started_at": time.monotonic(),
                     "observed_at": datetime.now(timezone.utc).isoformat(),
                     "request_header_names": sorted(str(name).lower()[:128] for name in browser_request.headers.keys())[:100],
@@ -467,6 +492,15 @@ async def start_guided_session(request: GuidedSessionRequest) -> dict[str, Any]:
 
         def record_response(browser_response: Any) -> None:
                 browser_request = browser_response.request
+                if browser_request.method.upper() == "POST" and session.get("auth_post_used"):
+                    expected = session.get("auth_post_target") or {}
+                    parsed = urlparse(browser_request.url)
+                    if f"{parsed.scheme}://{parsed.netloc.lower()}" == expected.get("origin") and parsed.path == expected.get("path"):
+                        session["auth_response_status"] = browser_response.status
+                        response_event = session.get("auth_response_event")
+                        if response_event:
+                            response_event.set()
+                    return
                 safe_response_headers = safe_headers(browser_response.headers)
                 response_header_names = sorted(str(name).lower()[:128] for name in browser_response.headers.keys() if str(name).lower() in SAFE_RESPONSE_HEADER_NAMES)
                 for sequence_item in reversed(session["network_sequence"]):
@@ -523,12 +557,18 @@ async def start_guided_session(request: GuidedSessionRequest) -> dict[str, Any]:
           const record = event => {
             const source = event.target;
             const el = source?.closest?.('input,button,select,textarea,a,form,[role="button"],[role="textbox"]');
-            if (event.type === 'submit') { event.preventDefault(); event.stopImmediatePropagation(); }
+            if (event.type === 'submit') {
+              if (window.__wafAuthSubmitArmed === true) window.__wafAuthSubmitArmed = false;
+              else { event.preventDefault(); event.stopImmediatePropagation(); }
+            }
             emit(event.type, el);
           };
-          const blockedSubmit = function() { emit('submit', this); };
+          const nativeSubmit = HTMLFormElement.prototype.submit;
+          const nativeRequestSubmit = HTMLFormElement.prototype.requestSubmit;
+          const blockedSubmit = function(...args) { if (window.__wafAuthSubmitArmed === true) { window.__wafAuthSubmitArmed = false; return nativeSubmit.apply(this, args); } emit('submit', this); };
+          const blockedRequestSubmit = function(...args) { if (window.__wafAuthSubmitArmed === true) return nativeRequestSubmit.apply(this, args); emit('submit', this); };
           try { Object.defineProperty(HTMLFormElement.prototype, 'submit', {configurable: true, value: blockedSubmit}); } catch (_) {}
-          try { Object.defineProperty(HTMLFormElement.prototype, 'requestSubmit', {configurable: true, value: blockedSubmit}); } catch (_) {}
+          try { Object.defineProperty(HTMLFormElement.prototype, 'requestSubmit', {configurable: true, value: blockedRequestSubmit}); } catch (_) {}
           for (const type of ['click','input','change','submit']) document.addEventListener(type, record, true);
         }""")
         browser_sessions[session_id] = session
@@ -552,6 +592,144 @@ async def get_guided_session(session_id: str) -> dict[str, Any]:
         if not session:
             raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
         return await guided_snapshot(session)
+
+
+@app.post("/guided/sessions/{session_id}/authenticate")
+async def authenticate_guided_session(session_id: str, request: Request, response: Response) -> dict[str, Any]:
+    """Perform at most one explicitly authorized HTTPS login POST, then resume GET/HEAD only."""
+    try:
+        raw_payload = await request.body()
+        if len(raw_payload) > 4_096:
+            raise HTTPException(status_code=413, detail="Authentication request is too large")
+        payload = json.loads(raw_payload)
+        if not isinstance(payload, dict):
+            raise ValueError("Expected JSON object")
+        credentials = GuidedAuthenticateRequest.model_validate(payload)
+        payload.clear()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=422, detail="Authentication request is invalid; credential values were not echoed")
+    response.headers["Cache-Control"] = "no-store"
+    if not credentials.authorize_single_login_post:
+        raise HTTPException(status_code=422, detail="Explicit confirmation of the single login POST is required")
+    if len(str(credentials.identity_label)) > 64:
+        raise HTTPException(status_code=422, detail="Identity label is invalid")
+
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        session = browser_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
+        if session.get("auth_attempt_count", 0) >= 1:
+            raise HTTPException(status_code=409, detail="This browser session has already used its single login attempt")
+        page = session["page"]
+        if urlparse(page.url).scheme.casefold() != "https":
+            raise HTTPException(status_code=422, detail="Target authentication requires an HTTPS page")
+        indexes = (credentials.username_index, credentials.password_index, credentials.submit_index)
+        if len(set(indexes)) != 3:
+            raise HTTPException(status_code=422, detail="Choose three distinct login controls")
+        controls = page.locator('input,button,select,textarea,a[href],[role="button"],[role="textbox"]')
+        control_count = await controls.count()
+        if any(index >= control_count for index in indexes):
+            raise HTTPException(status_code=404, detail="A selected login control is no longer present")
+        details = await page.evaluate("""indexes => {
+          const all = Array.from(document.querySelectorAll('input,button,select,textarea,a[href],[role="button"],[role="textbox"]'));
+          const chosen = indexes.map(index => all[index]);
+          if (chosen.some(item => !item)) return null;
+          const [user, pass, submit] = chosen;
+          const visible = el => { const s=getComputedStyle(el), r=el.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
+          const form = user.form;
+          return {
+            username_ok: user.tagName === 'INPUT' && ['text','email'].includes((user.type || 'text').toLowerCase()) && visible(user) && !user.disabled,
+            password_ok: pass.tagName === 'INPUT' && pass.type.toLowerCase() === 'password' && visible(pass) && !pass.disabled,
+            submit_ok: ((submit.tagName === 'BUTTON' && (submit.type || 'submit').toLowerCase() === 'submit') || (submit.tagName === 'INPUT' && submit.type.toLowerCase() === 'submit')) && visible(submit) && !submit.disabled,
+            same_form: Boolean(form) && pass.form === form && submit.form === form,
+            method: form ? (form.method || 'GET').toUpperCase() : '',
+            action: form ? form.action : ''
+          };
+        }""", list(indexes))
+        if not details or not details["username_ok"] or not details["password_ok"] or not details["submit_ok"] or not details["same_form"]:
+            raise HTTPException(status_code=422, detail="Select a visible username field, password field, and submit button from the same login form")
+        try:
+            target = validated_login_target(page.url, details["method"], details["action"], session["hostname"], session["allowed_paths"])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        session["auth_attempt_count"] = 1
+        session["identity_label"] = credentials.identity_label
+        session["auth_post_target"] = {"origin": target[0], "path": target[1]}
+        session["auth_post_pending"] = True
+        session["auth_post_used"] = False
+        session["auth_response_status"] = None
+        session["auth_response_event"] = asyncio.Event()
+        session["auth_result"] = "attempt-started"
+        session["touched"] = time.monotonic()
+        user_control = controls.nth(credentials.username_index)
+        password_control = controls.nth(credentials.password_index)
+        submit_control = controls.nth(credentials.submit_index)
+        try:
+            await user_control.fill(credentials.username.get_secret_value(), timeout=3_000)
+            await password_control.fill(credentials.password.get_secret_value(), timeout=3_000)
+            await page.evaluate("window.__wafAuthSubmitArmed = true")
+            try:
+                await submit_control.click(timeout=5_000)
+            except PlaywrightTimeoutError:
+                # A normal POST navigation may outlive the click's navigation wait.
+                pass
+            try:
+                await asyncio.wait_for(session["auth_response_event"].wait(), timeout=10)
+            except asyncio.TimeoutError:
+                pass
+        except PlaywrightTimeoutError as exc:
+            session["auth_post_pending"] = False
+            session["auth_result"] = "login-controls-unavailable"
+            raise HTTPException(status_code=422, detail="Login controls could not be used; credential values were not returned") from exc
+        except Exception as exc:
+            session["auth_post_pending"] = False
+            session["auth_result"] = "login-attempt-failed"
+            raise HTTPException(status_code=502, detail="The isolated browser could not complete the authorized login attempt") from exc
+        finally:
+            session["auth_post_pending"] = False
+            try:
+                await page.evaluate("window.__wafAuthSubmitArmed = false")
+                await user_control.fill("", timeout=1_000)
+                await password_control.fill("", timeout=1_000)
+            except Exception:
+                # A successful navigation destroys the old document and its input values.
+                pass
+
+        response_status = session.get("auth_response_status")
+        if not session.get("auth_post_used"):
+            session["auth_result"] = "login-post-not-observed"
+            session["auth_state"] = "anonymous"
+        elif response_status is None:
+            session["auth_result"] = "login-response-unobserved"
+            session["auth_state"] = "unknown"
+        elif response_status >= 400:
+            session["auth_result"] = "login-rejected-or-error"
+            session["auth_state"] = "anonymous"
+        else:
+            try:
+                password_still_visible = await page.locator('input[type="password"]').evaluate_all("items => items.some(el => { const r=el.getBoundingClientRect(), s=getComputedStyle(el); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; })")
+            except Exception:
+                password_still_visible = True
+            if password_still_visible:
+                session["auth_result"] = "login-submitted-unconfirmed"
+                session["auth_state"] = "unknown"
+            else:
+                session["auth_result"] = "likely-authenticated"
+                session["auth_state"] = "role-specific"
+        session["auth_response_event"] = None
+        auth_sequence_start = session.get("auth_sequence_start")
+        if isinstance(auth_sequence_start, int):
+            for event_item in session["network_sequence"][auth_sequence_start:]:
+                event_item["authentication"] = session["auth_state"]
+        session["touched"] = time.monotonic()
+        return {
+            "snapshot": await guided_snapshot(session),
+            "authentication": {"state": session["auth_state"], "identity_label": session["identity_label"], "result": session["auth_result"], "login_http_status": response_status, "login_post_sent": bool(session.get("auth_post_used")), "values_submitted": bool(session.get("auth_post_used")), "credentials_retained": False},
+        }
 
 
 @app.post("/guided/sessions/{session_id}/navigate")
@@ -829,6 +1007,7 @@ async def guided_candidate_source(session_id: str) -> dict[str, Any]:
             requests.append({
                 "id": item["id"], "method": item["method"], "path_template": redacted_route_template(item["url"]),
                 "scheme": urlparse(item["url"]).scheme.lower(),
+                "authentication": item.get("authentication", "anonymous"),
                 "resource_type": item["resource_type"], "status_code": item["status_code"],
                 "query_names": query_names, "request_header_names": item.get("request_header_names", []),
                 "cookie_header_present": "cookie" in item.get("request_header_names", []),
@@ -859,6 +1038,10 @@ async def guided_candidate_source(session_id: str) -> dict[str, Any]:
             "session_id": session["id"], "hostname": session["hostname"],
             "requests": requests, "selected_elements": session["selected_elements"][-MAX_INTERACTION_EVENTS:],
             "interaction_events": safe_interactions, "cookie_metadata": cookie_metadata[:200],
+            "auth_state": session.get("auth_state", "anonymous"),
+            "identity_label": session.get("identity_label", ""),
+            "auth_attempted": bool(session.get("auth_attempt_count")),
+            "auth_result": session.get("auth_result", "not-attempted"),
             "privacy": {"raw_values_returned": False, "request_bodies_returned": False, "cookie_values_returned": False},
         }
 

@@ -20,7 +20,7 @@ import psycopg
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 from psycopg.types.json import Jsonb
 
 from app.rule_catalog import normalize_rule_catalog, resolve_rule_catalog
@@ -99,6 +99,7 @@ class BrowserLabStartRequest(BaseModel):
     url: str = Field(min_length=8, max_length=2048)
     hostname: str = Field(min_length=1, max_length=253)
     allowed_paths: list[str] = Field(default_factory=lambda: ["/"], max_length=100)
+    ignore_https_errors: bool = False
 
 
 class BrowserLabNavigateRequest(BaseModel):
@@ -112,6 +113,16 @@ class BrowserLabSelectRequest(BaseModel):
 class BrowserLabPointSelectRequest(BaseModel):
     x: float = Field(ge=0, le=4096)
     y: float = Field(ge=0, le=4096)
+
+
+class BrowserLabAuthenticateRequest(BaseModel):
+    username: SecretStr = Field(min_length=1, max_length=256)
+    password: SecretStr = Field(min_length=1, max_length=512)
+    username_index: int = Field(ge=0, le=999)
+    password_index: int = Field(ge=0, le=999)
+    submit_index: int = Field(ge=0, le=999)
+    identity_label: str = Field(default="test-user", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    authorize_single_login_post: bool = False
 
 
 class NetScalerConnectRequest(BaseModel):
@@ -1089,7 +1100,7 @@ async def create_positive_candidate(request: Request, body: PositiveCandidateCre
     model_json = model.model_dump(mode="json")
     if len(json.dumps(model_json, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > 1_500_000:
         raise HTTPException(status_code=413, detail="Positive-model candidate is too large")
-    summary_keys = {"session_id", "evidence_sources", "endpoint_count", "field_count", "confidence_note", "discovery_job_id", "route_candidates_not_verified", "runtime_auth_surface_count", "runtime_api_endpoint_count", "technology_signals", "generic_applicability", "adc_match", "adc_vserver", "adc_topology_status"}
+    summary_keys = {"session_id", "evidence_sources", "endpoint_count", "field_count", "confidence_note", "discovery_job_id", "route_candidates_not_verified", "runtime_auth_surface_count", "runtime_api_endpoint_count", "technology_signals", "generic_applicability", "adc_match", "adc_vserver", "adc_topology_status", "auth_state", "identity_label", "auth_attempted", "auth_result"}
     summary = {key: body.source_summary[key] for key in summary_keys if key in body.source_summary and isinstance(body.source_summary[key], (str, int, float, bool, list))}
     if len(json.dumps(summary, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > 16_000:
         raise HTTPException(status_code=413, detail="Candidate evidence summary is too large")
@@ -1268,6 +1279,54 @@ async def browser_lab_snapshot(session_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
 
 
+@app.post("/api/browser-lab/sessions/{session_id}/authenticate")
+async def browser_lab_authenticate(session_id: str, request: Request, response: Response) -> dict[str, Any]:
+    """Forward one explicit login attempt in memory; never persist or echo credentials."""
+    try:
+        raw_payload = await request.body()
+        if len(raw_payload) > 4_096:
+            raise HTTPException(status_code=413, detail="Authentication request is too large")
+        payload = json.loads(raw_payload)
+        if not isinstance(payload, dict):
+            raise ValueError("Expected JSON object")
+        credentials = BrowserLabAuthenticateRequest.model_validate(payload)
+        payload.clear()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=422, detail="Authentication request is invalid; credential values were not echoed")
+    if not credentials.authorize_single_login_post:
+        raise HTTPException(status_code=422, detail="Confirm the single login attempt before continuing")
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            current = await client.get(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}")
+            current.raise_for_status()
+            if urlparse(str(current.json().get("url", ""))).scheme.casefold() != "https":
+                raise HTTPException(status_code=422, detail="Target authentication requires an HTTPS page; credentials were not forwarded")
+            result = await client.post(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}/authenticate", json={
+                "username": credentials.username.get_secret_value(),
+                "password": credentials.password.get_secret_value(),
+                "username_index": credentials.username_index,
+                "password_index": credentials.password_index,
+                "submit_index": credentials.submit_index,
+                "identity_label": credentials.identity_label,
+                "authorize_single_login_post": credentials.authorize_single_login_post,
+            })
+            result.raise_for_status()
+            return result.json()
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", "Guided authentication was rejected")
+        except Exception:
+            detail = "Guided authentication was rejected; credential values were not returned"
+        raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable; credential values were not returned") from exc
+
+
 @app.post("/api/browser-lab/sessions/{session_id}/navigate")
 async def browser_lab_navigate(session_id: str, request: BrowserLabNavigateRequest) -> dict[str, Any]:
     try:
@@ -1369,7 +1428,11 @@ async def browser_lab_candidate(session_id: str) -> dict[str, Any]:
             "endpoint_count": len(candidate.endpoints),
             "field_count": sum(len(endpoint.fields) for endpoint in candidate.endpoints),
             "evidence_sources": ["guided_browser"],
-            "confidence_note": "Conservative single-session evidence; review and enrich with independent sources before promotion.",
+            "confidence_note": "Conservative single-session metadata; authenticated observations remain role-specific and observe-only.",
+            "auth_state": source.get("auth_state", "anonymous"),
+            "identity_label": source.get("identity_label", ""),
+            "auth_attempted": bool(source.get("auth_attempted")),
+            "auth_result": source.get("auth_result", "not-attempted"),
         },
         "cookie_metadata": source.get("cookie_metadata", []),
         "privacy": source.get("privacy", {}),

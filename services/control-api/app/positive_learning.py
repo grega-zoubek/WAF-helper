@@ -126,6 +126,19 @@ def build_guided_candidate(source: dict[str, Any]) -> PositiveModelDocument:
     endpoints = []
     now = datetime.now(timezone.utc)
     for (path_template, method), observations in sorted(grouped.items()):
+        observed_auth = {str(item.get("authentication", "")).casefold().replace("-", "_") for item in observations if item.get("authentication")}
+        if not observed_auth:
+            observed_auth = {str(source.get("auth_state", "unknown")).casefold().replace("-", "_")}
+        if observed_auth <= {"anonymous", "public"}:
+            endpoint_authentication = AuthenticationState.PUBLIC
+        elif observed_auth <= {"role_specific"}:
+            endpoint_authentication = AuthenticationState.ROLE_SPECIFIC
+        elif observed_auth <= {"authenticated"}:
+            endpoint_authentication = AuthenticationState.AUTHENTICATED
+        elif observed_auth <= {"anonymous", "public", "role_specific", "authenticated"}:
+            endpoint_authentication = AuthenticationState.OPTIONAL
+        else:
+            endpoint_authentication = AuthenticationState.UNKNOWN
         fields: list[FieldModel] = []
         query_counts: Counter[str] = Counter()
         request_headers: Counter[str] = Counter()
@@ -192,7 +205,7 @@ def build_guided_candidate(source: dict[str, Any]) -> PositiveModelDocument:
             "method": method,
             "request_content_types": [],
             "response_content_types": sorted(response_types),
-            "authentication": AuthenticationState.UNKNOWN,
+            "authentication": endpoint_authentication,
             "fields": fields,
             "evidence": evidence_refs,
             "confidence": ConfidenceAssessment(

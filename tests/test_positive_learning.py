@@ -52,6 +52,30 @@ class GuidedCandidateTests(unittest.TestCase):
         self.assertNotIn("req-post", json.dumps(document))
         self.assertNotIn("cookie_value", json.dumps(document))
 
+    def test_authenticated_observations_are_role_specific_and_still_observe_only(self):
+        candidate = build_guided_candidate({
+            "session_id": "opaque-session", "hostname": "example.test",
+            "auth_state": "role-specific", "identity_label": "qa-reader",
+            "requests": [{"method": "GET", "path_template": "/account", "query_names": []}],
+            "interaction_events": [], "cookie_metadata": [],
+        })
+        endpoint = candidate.endpoints[0]
+        self.assertEqual(endpoint.authentication.value, "role_specific")
+        self.assertEqual(endpoint.decision_mode.value, "observe")
+        self.assertEqual(endpoint.method, "GET")
+
+    def test_same_endpoint_observed_before_and_after_login_is_optional(self):
+        candidate = build_guided_candidate({
+            "session_id": "opaque-session", "hostname": "example.test",
+            "auth_state": "role-specific",
+            "requests": [
+                {"method": "GET", "path_template": "/", "authentication": "anonymous"},
+                {"method": "GET", "path_template": "/", "authentication": "role-specific"},
+            ],
+            "interaction_events": [], "cookie_metadata": [],
+        })
+        self.assertEqual(candidate.endpoints[0].authentication.value, "optional")
+
     def test_rejects_untrusted_raw_value_properties_without_echoing_them(self):
         source = {
             "session_id": "session-opaque-456", "hostname": "example.test",

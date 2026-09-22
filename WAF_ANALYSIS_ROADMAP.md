@@ -60,14 +60,11 @@ response content types, and safe path templates. It is schema-validated,
 single-session/low-confidence, `discovered`/`observe`, and returned in memory
 only. There is no policy persistence or enforcement.
 
-Credential entry and authenticated journeys are not enabled: the current
-control plane is HTTP and has no operator authentication, so forwarding typed
-credentials would not meet the architecture's privacy requirements. Do not use
-the Browser Lab for login until TLS and operator access control are implemented.
-No arbitrary keyboard input, native form submission, request-body capture,
-candidate persistence, policy compiler, runtime enforcement, or ADC write was
-added. Synthetic probes and explicit clicks can trigger application-side GET
-behavior, so use them only on an approved test scope.
+Credential entry and authenticated journeys are implemented in Phase 6 below.
+The browser still does not expose arbitrary keyboard input, raw request/response
+bodies, cookies, or field values to the scanner. Synthetic probes and explicit
+clicks can trigger application-side GET behavior, so use them only on an
+approved test scope.
 
 ## Positive security phase 4: operator security and candidate review
 
@@ -193,6 +190,42 @@ model and bounded source summary, never raw field values or request bodies.
   `control-api`, and `frontend` from the committed revision; verify the focus
   endpoint and all existing services. Re-run Browser Lab with read-only focus
   checks only. Do not change ADC configuration.
+
+### Phase 5 acceptance and Phase 6 guided authentication — 2026-09-22
+
+- Phase 5 acceptance: the Juice Shop discovery job
+  `8ef70a92-73f0-42a8-9696-142a7eca16af` completed against `192.168.11.91`.
+  Its positive-model draft was persisted as `c1be3229-65cc-4799-8c53-ca7ff5aa7f70`.
+  Acceptance checks found one observed GET endpoint, `observe` enforcement,
+  no query values in route templates, and no unsafe endpoint methods. Discovery
+  evidence included passive crawl and technology detection. This target is HTTP;
+  no login credentials were sent.
+- Phase 6: Browser Lab now supports a visible username/password/submit control
+  selection and one explicitly confirmed HTTPS login POST per ephemeral browser
+  session. Policy requires a same-origin form action on the selected hostname
+  and in configured path scope, without query/fragment, and then blocks all
+  further unsafe requests. After the one POST, same-origin HTTPS scoped GET/HEAD
+  requests may continue. Credentials use secret-typed fields, request bodies are
+  bounded and no-store, values are cleared after the attempt, and only an
+  operator-supplied identity label/authentication state can annotate the
+  observe-only candidate. Target certificate errors can be bypassed only with
+  an explicit lab-only GUI checkbox, default off.
+- Verification: auth journey policy and positive-learning tests pass; Python
+  compilation, frontend JavaScript parse, and `git diff --check` pass. A live
+  successful login was not attempted because the tested Juice Shop endpoint is
+  HTTP and no user-provided HTTPS test credentials were in scope. Complete
+  deployed route checks and service-health verification after deployment.
+- Safety boundary: no ADC endpoint was called for a write; `NETSCALER_WRITE_ENABLED`
+  was not changed. Login observations do not enable a positive policy or alter
+  enforcement.
+- Recovery after connectivity loss or reboot: SSH using
+  `C:\\Users\\G.Zoubek\\.ssh\\id_rsa_waf_scanner` to
+  `grega@192.168.11.90`; check the deployed Git revision and
+  `docker compose -p waf-intelligence ps`, then verify control API health and
+  the HTTPS GUI. Rebuild/recreate only `runtime-inspector`, `control-api`, and
+  `frontend` from the committed revision. Resume with HTTPS test-target policy
+  checks; do not use credentials without an explicitly authorized test account
+  and do not change ADC configuration.
 
 ### Guided browser Phase 3 completion checkpoint — 2026-09-22
 
