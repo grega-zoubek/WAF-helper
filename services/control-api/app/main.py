@@ -1052,12 +1052,13 @@ async def browser_lab_select(session_id: str, request: BrowserLabSelectRequest) 
         raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
 
 
-@app.delete("/api/browser-lab/sessions/{session_id}", status_code=204)
-async def browser_lab_stop(session_id: str) -> None:
+@app.delete("/api/browser-lab/sessions/{session_id}")
+async def browser_lab_stop(session_id: str) -> dict[str, bool]:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.delete(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}")
             response.raise_for_status()
+            return response.json()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Guided browser session was not found")) from exc
     except httpx.HTTPError as exc:

@@ -485,10 +485,11 @@ async def select_guided_element(session_id: str, request: GuidedSelectRequest) -
         return {"page_url": redact_url(session["page"].url), "element": selected, "evidence_kind": "dom_metadata_only", "raw_value_captured": False}
 
 
-@app.delete("/guided/sessions/{session_id}", status_code=204)
-async def stop_guided_session(session_id: str) -> None:
+@app.delete("/guided/sessions/{session_id}")
+async def stop_guided_session(session_id: str) -> dict[str, bool]:
     async with browser_lab_lock:
         session = browser_sessions.pop(session_id, None)
         if not session:
             raise HTTPException(status_code=404, detail="Guided browser session not found")
         await session["context"].close()
+        return {"closed": True}
