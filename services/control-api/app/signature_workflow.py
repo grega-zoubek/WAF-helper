@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.rule_catalog import catalog_fingerprint, normalize_rule_catalog, resolve_rule_catalog
-from app.generic_signature_groups import build_cve_signature_group, build_generic_group_subgroups, select_generic_signature_groups
+from app.generic_signature_groups import build_cve_signature_group, build_generic_group_subgroups, product_specific_rule_ids, select_generic_signature_groups
 from app.confidence import confidence_summary, rule_confidence, technology_detection_scores
 
 
@@ -111,12 +111,15 @@ def select_rules_for_detection(
 ) -> dict[str, Any]:
     rules = normalize_rule_catalog(catalog)
     by_id = {str(item["rule_id"]): item for item in rules}
+    product_index = catalog.get("product_index") if isinstance(catalog, dict) else None
+    generic_exclusions = product_specific_rule_ids(rules, product_index)
     intents = (analysis.get("generic_protection_intents") or []) if include_generic_signatures else []
-    generic = resolve_rule_catalog(intents, rules)
+    generic = resolve_rule_catalog(intents, rules, excluded_rule_ids=set(generic_exclusions))
     generic_groups = select_generic_signature_groups(
         rules,
         profile,
         selected_signature_groups,
+        set(generic_exclusions),
     ) if include_generic_signatures else {
         "groups": [],
         "requested_group_ids": [],
@@ -294,6 +297,12 @@ def select_rules_for_detection(
         "technology_rule_matches": technology_matches,
         "excluded_unmatched_technology_rules": excluded_unmatched_technology_rules,
         "excluded_unmatched_technology_rule_count": len(excluded_unmatched_technology_rules),
+        "excluded_product_specific_generic_rule_count": len(generic_exclusions),
+        "excluded_product_specific_generic_rules": [
+            {"rule_id": rule_id, "reason": reason}
+            for rule_id, reason in sorted(generic_exclusions.items(), key=lambda item: (0, int(item[0])) if item[0].isdigit() else (1, item[0]))
+            if rule_id not in selected_ids
+        ][:500],
         "selected_rules": selected_rules,
         "missing_requested_rule_ids": missing,
     }

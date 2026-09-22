@@ -29,6 +29,37 @@ class SignatureWorkflowTests(unittest.TestCase):
         self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["1", "2"])
         self.assertEqual(result["missing_requested_rule_ids"], [])
 
+    def test_generic_selection_excludes_cve_and_vendor_specific_signatures(self):
+        result = select_rules_for_detection(
+            {"signature_technology_context": {}, "technologies": [], "route_inventory": [{"path": "/"}]},
+            {"generic_protection_intents": [{"intent_id": "generic-web-attack-signatures", "decision": "include"}]},
+            {"status": "ready", "rules": [
+                {"rule_id": "60", "attack_classes": ["sql-injection"], "description": "Generic SQL injection attempt"},
+                {"rule_id": "61", "attack_classes": ["buffer-overflow"], "description": "WEB-MISC McAfee header buffer overflow attempt"},
+                {"rule_id": "62", "attack_classes": ["command-injection"], "description": "WEB-MISC Novell eDirectory issue (CVE-2024-6123)"},
+                {"rule_id": "63", "attack_classes": ["sql-injection"], "description": "WEB-MISC Cisco ISE SQL injection"},
+                {"rule_id": "65", "attack_classes": ["sql-injection"], "description": "Acme Widget injection signature"},
+            ], "product_index": {"vendors": [{"vendor": "Acme", "products": [
+                {"product": "Widget", "key": "acme/widget", "rule_ids": ["65"]},
+            ]}]}},
+        )
+        selected_ids = {item["rule_id"] for item in result["selected_rules"]}
+        self.assertEqual(selected_ids, {"60"})
+        self.assertEqual(result["excluded_product_specific_generic_rule_count"], 4)
+        self.assertEqual(result["cve_count"], 0)
+
+    def test_explicit_product_selection_can_include_product_specific_rule(self):
+        result = select_rules_for_detection(
+            {"signature_technology_context": {}, "technologies": []},
+            {"generic_protection_intents": []},
+            {"status": "ready", "rules": [
+                {"rule_id": "64", "attack_classes": ["command-injection"], "description": "McAfee product command injection"},
+            ], "product_index": {"products": [{"key": "mcafee/epolicy-orchestrator", "rule_ids": ["64"]}]}},
+            selected_technology_filters=["product:mcafee/epolicy-orchestrator"],
+            include_generic_signatures=False,
+        )
+        self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["64"])
+
     def test_requested_ids_are_exact_and_missing_ids_are_reported(self):
         result = select_rules_for_detection(
             {"signature_technology_context": {}, "technologies": []},
@@ -110,7 +141,7 @@ class SignatureWorkflowTests(unittest.TestCase):
             {"rule_id": "42", "attack_classes": ["cross-site-scripting"], "description": "Generic XSS rule (CVE-2024-3333)"},
         ]}
         result = select_rules_for_detection(profile, {"generic_protection_intents": [{"intent_id": "cross-site-scripting-signatures", "decision": "include"}]}, catalog)
-        self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["40", "42"])
+        self.assertEqual([item["rule_id"] for item in result["selected_rules"]], ["40"])
         self.assertEqual(result["cve_candidate_scope"], "detected-or-selected-technology-rules")
         self.assertEqual(result["cve_signature_group"]["cve_count"], 1)
         self.assertEqual(result["cve_signature_group"]["subgroups"][0]["name"], "WordPress")

@@ -47,6 +47,17 @@ GENERIC_SIGNATURE_GROUPS: tuple[dict[str, Any], ...] = (
 
 GROUP_IDS = tuple(item["group_id"] for item in GENERIC_SIGNATURE_GROUPS)
 _CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,8}\b", re.IGNORECASE)
+_KNOWN_PRODUCT_FINGERPRINT_RE = re.compile(
+    r"\b(?:novell|mcafee|jive(?:\s+software)?|openfire|cisco|symantec|"
+    r"hp\s+openview|hp\s+data\s+protector|dell\s+(?:openmanage|wyse)|"
+    r"microsoft\s+(?:exchange|sharepoint|iis|outlook)|oracle\s+(?:weblogic|peoplesoft)|"
+    r"vmware\s+(?:vcenter|esx|esxi|vsphere)|ibm\s+(?:lotus|websphere|qradar)|"
+    r"apache\s+(?:struts|tomcat|solr|ofbiz)|trend\s+micro|palo\s+alto|"
+    r"ivanti|infoblox|atlassian|zimbra|moodle|nagios|centreon|cacti|"
+    r"manageengine|solarwinds|prestashop|wordpress|drupal|joomla|magento|"
+    r"coldfusion|webmin|jenkins|elFinder|sharefile|netscaler)\b",
+    re.IGNORECASE,
+)
 
 _INJECTION_CLASSES = {
     "sql-injection",
@@ -59,6 +70,9 @@ _INJECTION_CLASSES = {
     "code-injection",
 }
 _PATH_CLASSES = {"path-traversal", "file-upload", "local-file-inclusion", "remote-file-inclusion"}
+_GENERIC_CANDIDATE_CLASSES = _INJECTION_CLASSES | _PATH_CLASSES | {
+    "cross-site-scripting", "buffer-overflow", "web-cgi", "web-client",
+}
 _PROTOCOL_RE = re.compile(
     r"\b(?:http\s+(?:header|request|method)|request\s+(?:method|smuggl|splitt)|"
     r"chunked(?:[- ]encoding)?|content[- ]length|transfer[- ]encoding|malformed|"
@@ -142,10 +156,39 @@ def match_rule_to_group(group_id: str, rule: dict[str, Any], profile: dict[str, 
     return False, []
 
 
+def product_specific_rule_ids(rules: list[dict[str, Any]], product_index: dict[str, Any] | None = None) -> dict[str, str]:
+    """Identify signatures that need matching product evidence, not generic selection.
+
+    CVE-linked rules are inherently vulnerability/product-specific. We also use
+    the repository's searchable vendor/product index plus a conservative set
+    of explicit vendor/product fingerprints for older signatures that predate
+    CVE identifiers and may not yet be covered by the index.
+    """
+    indexed = _product_labels_by_rule(product_index)
+    result: dict[str, str] = {}
+    for rule in rules:
+        rule_id = str(rule.get("rule_id") or "")
+        if not rule_id:
+            continue
+        text = _rule_text(rule)
+        classes = {str(value).casefold() for value in (rule.get("attack_classes") or [])}
+        generic_candidate = bool(classes & _GENERIC_CANDIDATE_CLASSES) or bool(_PROTOCOL_RE.search(text) or _EVASION_RE.search(text))
+        if not generic_candidate:
+            continue
+        if _CVE_RE.search(text):
+            result[rule_id] = "CVE-linked product vulnerability"
+        elif rule_id in indexed:
+            result[rule_id] = f"indexed product: {indexed[rule_id][1]}"
+        elif _KNOWN_PRODUCT_FINGERPRINT_RE.search(text):
+            result[rule_id] = "vendor/product fingerprint in signature description"
+    return result
+
+
 def select_generic_signature_groups(
     rules: list[dict[str, Any]],
     profile: dict[str, Any],
     requested_group_ids: list[str] | None = None,
+    excluded_rule_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     requested = {str(value).strip().casefold() for value in requested_group_ids or GROUP_IDS if str(value).strip()}
     requested &= set(GROUP_IDS)
@@ -158,6 +201,8 @@ def select_generic_signature_groups(
             continue
         matches: list[dict[str, Any]] = []
         for rule in rules:
+            if str(rule.get("rule_id")) in (excluded_rule_ids or set()):
+                continue
             matched, reasons = match_rule_to_group(group_id, rule, profile)
             if matched:
                 rule_id = str(rule.get("rule_id"))

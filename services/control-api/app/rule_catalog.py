@@ -83,7 +83,13 @@ def normalize_rule_catalog(catalog: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def resolve_rule_catalog(intents: list[dict[str, Any]], catalog: Any, *, provider: str = "netscaler") -> dict[str, Any]:
+def resolve_rule_catalog(
+    intents: list[dict[str, Any]],
+    catalog: Any,
+    *,
+    provider: str = "netscaler",
+    excluded_rule_ids: set[str] | None = None,
+) -> dict[str, Any]:
     rules = normalize_rule_catalog(catalog)
     included = [item for item in intents if item.get("decision") == "include"]
     if not rules:
@@ -106,6 +112,7 @@ def resolve_rule_catalog(intents: list[dict[str, Any]], catalog: Any, *, provide
         attack_classes = INTENT_ATTACK_CLASSES.get(intent_id, set())
         matches = [
             rule for rule in rules
+            if str(rule.get("rule_id")) not in (excluded_rule_ids or set())
             if attack_classes & set(rule.get("attack_classes", []))
             or intent_id in set(rule.get("technology_tags", []))
         ]
