@@ -142,6 +142,42 @@
     details.on-demand-panel { margin-top: 1rem; }
     details.on-demand-panel > summary { cursor: pointer; color: #17202a; font-weight: 600; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 360px; margin: .5rem 0 0; }
+
+    .workspace-bar { position: sticky; top: 0; z-index: 50; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem; margin: 0 0 1rem; padding: .65rem .8rem; border: 1px solid #d9dee3; border-radius: 8px; background: #f7f9fb; }
+    .workspace-bar-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem .85rem; min-width: 0; }
+    .workspace-bar-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+    .mode-badge { display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .55rem; border-radius: 999px; font-size: .78rem; font-weight: 700; letter-spacing: .02em; border: 1px solid transparent; }
+    .mode-badge.proposal { color: #9a6700; background: #fff8e1; border-color: #e8c66a; }
+    .mode-badge.write { color: #087f5b; background: #f0fff8; border-color: #87d3b5; }
+    .mode-badge.unknown { color: #5f6b76; background: #eef2f6; border-color: #d9dee3; }
+    .tool-card { text-align: left; display: grid; gap: .35rem; min-height: 6.2rem; align-content: start; }
+    .tool-card strong { font-size: 1rem; }
+    .tool-card .small { color: #5f6b76; font-weight: 400; }
+    .tool-card[disabled], .tool-card:disabled { opacity: .55; cursor: not-allowed; }
+    .tool-card.active { border-color: #17202a; box-shadow: inset 0 0 0 1px #17202a; }
+    .panel-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem; margin-bottom: .6rem; }
+    .panel-header h2 { margin: 0; }
+    .analyse-stepper { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .45rem; margin: .8rem 0 1rem; }
+    .analyse-step { border: 1px solid #d9dee3; border-radius: 6px; padding: .55rem .65rem; background: #fafbfc; }
+    .analyse-step.done { border-color: #087f5b; background: #f0fff8; }
+    .analyse-step.current { border-color: #9a6700; background: #fff8e1; }
+    .analyse-step .step-label { display: block; font-size: .78rem; font-weight: 700; text-transform: uppercase; color: #5f6b76; }
+    .inventory-tabs { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0; }
+    .inventory-tab { background: #fff; color: #17202a; }
+    .inventory-tab.active { background: #17202a; color: #fff; }
+    .inventory-pane[hidden] { display: none !important; }
+    .recommendation-sticky { position: sticky; bottom: 0; z-index: 40; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem; margin-top: 1rem; padding: .75rem .9rem; border: 1px solid #d9dee3; border-radius: 8px; background: #fff; box-shadow: 0 -8px 24px rgba(20, 40, 60, .08); }
+    .why-panel { border-left: 4px solid #315c7d; background: #f3f7fb; padding: .7rem .9rem; margin: .8rem 0; }
+    .compact-rule-meta { display: none; }
+    .generic-signature-rule.expanded .compact-rule-meta { display: block; }
+    .rule-toggle-meta { background: transparent; color: #315c7d; border: none; padding: 0; text-decoration: underline; cursor: pointer; font-size: .85rem; }
+    .structured-summary { display: grid; gap: .35rem; }
+    .structured-summary dt { font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: #5f6b76; margin: 0; }
+    .structured-summary dd { margin: 0 0 .35rem; overflow-wrap: anywhere; }
+    .status-human { font-weight: 600; }
+    .findings-cta { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+    .findings-cta .primary-cta { background: #087f5b; }
+    @media (max-width: 720px) { .analyse-stepper { grid-template-columns: 1fr 1fr; } .workspace-bar { align-items: stretch; } }
   </style>
 </head>
 <body>
@@ -157,10 +193,12 @@
       <p id="operator-login-status" class="small muted" role="status"></p>
     </div>
   </section>
-  <h1>WAF Intelligence Platform</h1>
-  <p class="muted">Connect a NetScaler ADC, then open only the tools you need.</p>
-  <button id="operator-logout" class="secondary" type="button">Sign out</button>
+  <header class="app-header">
+    <h1>WAF Intelligence Platform</h1>
+    <p class="muted">Connect a NetScaler ADC, then open only the tools you need.</p>
+  </header>
   <section id="connection-screen" class="connection-screen">
+    <div class="job-actions" style="justify-content:flex-end"><button id="operator-logout-connection" class="secondary" type="button">Sign out</button></div>
     <div class="card connection-panel">
       <h2>Saved NetScaler connections</h2>
       <p class="small muted">Select a saved appliance to reconnect. Scroll this list to see additional connections.</p>
@@ -168,9 +206,9 @@
     </div>
     <div id="connect-menu" class="card connection-panel">
       <h2>New connection</h2>
-      <p class="small muted">Enter the NSIP and credentials. If you save credentials, they are encrypted at rest.</p>
+      <p class="small muted">Enter the management IP (NSIP) and credentials. If you save credentials, they are encrypted at rest.</p>
       <form id="adc-form">
-        <input id="nsip" required maxlength="64" placeholder="NSIP, e.g. 192.168.11.101">
+        <input id="nsip" required maxlength="64" placeholder="NSIP, e.g. 192.168.11.101" aria-label="NetScaler management IP">
         <input id="adc-username" required maxlength="128" autocomplete="username" placeholder="Username">
         <input id="adc-password" required type="password" maxlength="512" autocomplete="current-password" placeholder="Password">
         <label><input id="save-credentials" type="checkbox"> Save encrypted credentials</label>
@@ -180,7 +218,18 @@
     <p id="adc-status" class="small muted"></p>
   </section>
   <main id="workspace" hidden>
-    <section class="next card">
+    <div id="workspace-bar" class="workspace-bar" role="status">
+      <div class="workspace-bar-meta">
+        <span><strong id="bar-nsip">-</strong> <span class="small muted" id="bar-hostname"></span></span>
+        <span id="write-mode-badge" class="mode-badge unknown" title="Write mode is refreshed from live inventory">Checking write mode…</span>
+        <span id="catalog-freshness" class="small muted">Catalog: not loaded</span>
+      </div>
+      <div class="workspace-bar-actions">
+        <button id="disconnect-button" class="secondary" type="button">Disconnect</button>
+        <button id="operator-logout" class="secondary" type="button">Sign out</button>
+      </div>
+    </div>
+    <section class="next card" id="connection-summary">
       <h2>Connected NetScaler</h2>
       <p id="connection-success-message" class="small connected-message"></p>
       <div class="connected-details">
@@ -189,45 +238,59 @@
         <div class="connected-detail"><span class="small muted">Version</span><span id="connected-version">-</span></div>
       </div>
       <p id="connection-identity-status" class="small muted"></p>
-      <button id="disconnect-button" class="secondary" type="button">Disconnect</button>
     </section>
     <section class="next card" id="main-actions">
       <h2>What would you like to do?</h2>
+      <p class="small muted">Each tool opens in its own workspace. You can return here at any time.</p>
       <div class="action-grid">
-        <button id="analyse-application" class="secondary" type="button">Analyse application</button>
-        <button id="create-signature-profile" class="secondary" type="button">Create new signature profile</button>
-        <button id="open-regex-rulz" class="secondary" type="button">Regex Rulz</button>
+        <button id="analyse-application" class="secondary tool-card" type="button"><strong>Analyse application</strong><span class="small">Passive crawl, technology findings, and signature recommendations.</span></button>
+        <button id="create-signature-profile" class="secondary tool-card" type="button"><strong>Create signature profile</strong><span class="small">Inspect live AppFW inventory and prepare a guarded LOG proposal.</span></button>
+        <button id="open-positive-security" class="secondary tool-card" type="button"><strong>Positive security lab</strong><span class="small">Build an observe-only allowlist from guided browsing.</span></button>
+        <button id="open-regex-rulz" class="secondary tool-card" type="button" disabled title="Coming soon — regex prepare is available under Findings after a scan"><strong>Regex Rulz</strong><span class="small">Coming soon. Path regex drafts are available under Findings for now.</span></button>
       </div>
     </section>
-    <section class="next card" id="waf-section" hidden>
-      <h2>WAF protection</h2>
+    <section class="next card" id="waf-section" hidden data-tool-panel="inventory">
+      <div class="panel-header">
+        <h2>Signature profile / WAF inventory</h2>
+        <button id="back-from-inventory" class="secondary back-to-tools" type="button">Back to tools</button>
+      </div>
       <p class="small muted">Live NetScaler AppFW inventory and approval-gated protection proposals. Nothing is exported without explicit approval, current-catalog preflight, and confirmation.</p>
       <button id="load-waf-inventory" class="secondary" type="button">Reload WAF inventory</button>
-      <p id="waf-status" class="small muted">Select Open WAF inventory to load current data.</p>
+      <p id="waf-status" class="small muted">Inventory loads when you open this tool. Use Reload to refresh from the ADC.</p>
       <div id="waf-inventory" class="profile"></div>
     </section>
-    <section class="next" id="discovery-section" hidden>
-      <h2>Application discovery</h2>
-      <p>Only approved same-host GET requests are used. Forms, uploads, authentication, and state-changing actions are observed but not executed.</p>
-      <form id="discovery-form">
-        <input id="seed-url" required type="url" maxlength="2048" placeholder="Seed URL, e.g. http://192.168.52.253:8081/">
-        <input id="allowed-paths" value="/" maxlength="1000" placeholder="Allowed paths, comma-separated">
-        <input id="max-pages" type="number" min="1" max="200" value="25" aria-label="Maximum pages">
-        <button type="submit">Start discovery</button>
-      </form>
-      <p id="discovery-status" class="small muted"></p>
-      <div id="jobs"></div>
+    <section class="next" id="discovery-section" hidden data-tool-panel="analyse">
+      <div class="panel-header">
+        <h2>Analyse application</h2>
+        <button id="back-from-analyse" class="secondary back-to-tools" type="button">Back to tools</button>
+      </div>
+      <div id="analyse-stepper" class="analyse-stepper" aria-label="Analyse workflow steps">
+        <div class="analyse-step current" data-step="scan"><span class="step-label">1. Scan</span><strong>Discovery</strong></div>
+        <div class="analyse-step" data-step="findings"><span class="step-label">2. Findings</span><strong>What we saw</strong></div>
+        <div class="analyse-step" data-step="recommendations"><span class="step-label">3. Recommend</span><strong>Signatures</strong></div>
+        <div class="analyse-step" data-step="export"><span class="step-label">4. Export</span><strong>Approve &amp; apply</strong></div>
+      </div>
+      <div id="analyse-scan-pane">
+        <p>Only approved same-host GET requests are used. Forms, uploads, authentication, and state-changing actions are observed but not executed.</p>
+        <form id="discovery-form">
+          <input id="seed-url" required type="url" maxlength="2048" placeholder="Seed URL, e.g. http://192.168.52.253:8081/">
+          <input id="allowed-paths" value="/" maxlength="1000" placeholder="Allowed paths, comma-separated">
+          <input id="max-pages" type="number" min="1" max="200" value="25" aria-label="Maximum pages">
+          <button type="submit">Start discovery</button>
+        </form>
+        <p id="discovery-status" class="small muted"></p>
+        <div id="jobs"></div>
+      </div>
       <div id="adc-correlation" class="profile"></div>
       <div id="profile" class="profile"></div>
+      <div id="analysis" class="profile"></div>
     </section>
-    <section class="next card" id="regex-rulz-section" hidden>
-      <h2>Regex Rulz</h2>
-      <p class="small muted">This workspace will optimize regular expressions for learned URL paths and cookie names. Run an application analysis first; we’ll wire the optimizer into that workflow next.</p>
-    </section>
-  </main>
-  <section class="next card" id="positive-model-workbench" hidden>
-    <h2>Positive model workbench</h2>
-    <p class="small muted">Guided browser capture is isolated and temporary. It permits same-host in-scope GET/HEAD requests and, only after a separate confirmation on an HTTPS login form, one matching login POST. Other unsafe methods remain blocked. Credentials are cleared after that attempt and never become candidate data. Sessions expire after 15 minutes.</p>
+    <section class="next card" id="positive-model-workbench" hidden data-tool-panel="positive">
+      <div class="panel-header">
+        <h2>Positive security lab</h2>
+        <button id="back-from-positive" class="secondary back-to-tools" type="button">Back to tools</button>
+      </div>
+      <p class="small muted">Build an observe-only allowlist from guided browsing. Capture is isolated and temporary: same-host in-scope GET/HEAD, and only after a separate confirmation on an HTTPS login form, one matching login POST. Credentials are cleared after that attempt and never become candidate data. Sessions expire after 15 minutes.</p>
     <form id="browser-lab-start-form">
       <input id="browser-lab-url" required type="url" maxlength="2048" placeholder="Application URL, e.g. http://192.168.11.91/">
       <input id="browser-lab-paths" value="/" maxlength="1000" placeholder="Allowed paths, comma-separated">
@@ -248,7 +311,7 @@
       <div id="positive-candidate-list" class="profile"></div>
     </section>
     <details class="url-list-panel">
-      <summary>Deterministic positive-model dry run</summary>
+      <summary>Advanced · Deterministic positive-model dry run</summary>
       <p class="small muted">Paste a version 1 model and metadata-only transaction descriptor. Raw values are rejected; format and numeric-content rules are explicitly reported as not evaluated.</p>
       <form id="positive-model-validation-form">
         <div class="json-workbench"><label>Positive model JSON<textarea id="positive-model-json" spellcheck="false"></textarea></label><label>Transaction metadata JSON<textarea id="positive-transaction-json" spellcheck="false"></textarea></label></div>
@@ -257,21 +320,115 @@
       <pre id="positive-validation-result" class="small muted"></pre>
     </details>
   </section>
+  </main>
   <script>
     let csrfToken = '';
     const api = (path, options = {}) => { const headers = new Headers(options.headers || {}); if (!['GET','HEAD','OPTIONS'].includes(String(options.method || 'GET').toUpperCase()) && csrfToken) headers.set('X-CSRF-Token', csrfToken); return fetch(path, {...options, headers, credentials:'same-origin'}).then(async r => { if (r.status === 401) { csrfToken = ''; document.body.classList.remove('authenticated'); document.querySelector('#auth-gate').hidden = false; } if (!r.ok) { let detail = ''; try { const body = await r.json(); detail = body.detail || body.message || ''; } catch (error) { try { detail = await r.text(); } catch (ignored) {} } throw new Error(detail || `${r.status}`); } return r.status === 204 ? null : r.json(); }); };
     async function initializeOperatorSession() { try { const response = await fetch('/api/auth/session', {credentials:'same-origin', cache:'no-store'}); if (!response.ok) throw new Error('sign-in required'); const data = await response.json(); csrfToken = data.csrf_token || ''; document.body.classList.add('authenticated'); document.querySelector('#auth-gate').hidden = true; loadPositiveCandidates(); } catch (error) { document.body.classList.remove('authenticated'); document.querySelector('#auth-gate').hidden = false; } }
     document.querySelector('#operator-login-form').addEventListener('submit', async event => { event.preventDefault(); const status = document.querySelector('#operator-login-status'); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true; status.textContent = 'Signing in…'; try { const response = await fetch('/api/auth/login', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:document.querySelector('#operator-username').value, password:document.querySelector('#operator-password').value})}); const result = await response.json(); if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`); document.querySelector('#operator-password').value = ''; location.reload(); } catch (error) { document.querySelector('#operator-password').value = ''; status.textContent = `Sign-in failed: ${error.message}`; } finally { button.disabled = false; } });
-    document.querySelector('#operator-logout').addEventListener('click', async () => { try { await api('/api/auth/logout', {method:'POST'}); } finally { csrfToken = ''; location.reload(); } });
+    async function operatorLogout() { try { await api('/api/auth/logout', {method:'POST'}); } finally { csrfToken = ''; location.reload(); } }
+    document.querySelector('#operator-logout')?.addEventListener('click', operatorLogout);
+    document.querySelector('#operator-logout-connection')?.addEventListener('click', operatorLogout);
     initializeOperatorSession();
     const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    const STATUS_LABELS = {
+      'feature-enabled-no-policy-binding-evidenced': 'AppFW is enabled, but this vServer has no WAF policy yet',
+      'blocked-write-disabled': 'Writes are disabled — proposal only',
+      'ready-for-apply': 'Ready to apply (still requires ENABLE WRITE)',
+      'unsupported-by-oas': 'Not available through the supplied Next-Gen API contract',
+      'prepared-disabled': 'Prepared as a review-only plan (not applied)',
+      'enumerated': 'Loaded from the ADC',
+      'unavailable': 'Not available',
+      'matched': 'Matched',
+      'unmatched': 'No match',
+      'protected': 'Protected',
+      'unprotected': 'Not protected',
+      'partial': 'Partially protected',
+      'draft': 'Draft',
+      'approved': 'Approved for review',
+      'exported': 'Exported to ADC',
+      'rolled-back': 'Rolled back',
+      'completed': 'Completed',
+      'running': 'Running',
+      'queued': 'Queued',
+      'failed': 'Failed',
+      'cancelled': 'Cancelled',
+      'interrupted': 'Interrupted',
+      'rejected': 'Rejected',
+    };
+    function humanStatus(code, fallback = '') {
+      const key = String(code || '').trim();
+      if (!key) return fallback || '—';
+      return STATUS_LABELS[key] || fallback || key.replace(/-/g, ' ');
+    }
+    function statusHtml(code, fallback = '') {
+      const key = String(code || '').trim();
+      const label = humanStatus(key, fallback);
+      return `<span class="status-human" title="${escapeHtml(key || label)}">${escapeHtml(label)}</span>`;
+    }
+    function setWriteModeBadge(writeEnabled, detail = '') {
+      const badge = document.querySelector('#write-mode-badge');
+      if (!badge) return;
+      if (writeEnabled === true) {
+        badge.className = 'mode-badge write';
+        badge.textContent = 'Guarded write enabled';
+        badge.title = detail || 'ADC writes are allowed after approval, preflight, and ENABLE WRITE.';
+      } else if (writeEnabled === false) {
+        badge.className = 'mode-badge proposal';
+        badge.textContent = 'Proposal only';
+        badge.title = detail || 'Writes are disabled. You can prepare and review plans without changing the ADC.';
+      } else {
+        badge.className = 'mode-badge unknown';
+        badge.textContent = 'Write mode unknown';
+        badge.title = detail || 'Open Signature profile to refresh live inventory mode.';
+      }
+    }
+    function setCatalogFreshness(text) {
+      const el = document.querySelector('#catalog-freshness');
+      if (el) el.textContent = text || 'Catalog: not loaded';
+    }
+    function setAnalyseStep(step) {
+      window.currentAnalyseStep = step || 'scan';
+      document.querySelectorAll('#analyse-stepper .analyse-step').forEach(node => {
+        const name = node.dataset.step;
+        const order = ['scan', 'findings', 'recommendations', 'export'];
+        const currentIdx = order.indexOf(window.currentAnalyseStep);
+        const idx = order.indexOf(name);
+        node.classList.toggle('current', name === window.currentAnalyseStep);
+        node.classList.toggle('done', idx > -1 && idx < currentIdx);
+      });
+    }
+    function showTool(tool) {
+      const panels = {
+        analyse: document.querySelector('#discovery-section'),
+        inventory: document.querySelector('#waf-section'),
+        positive: document.querySelector('#positive-model-workbench'),
+      };
+      Object.entries(panels).forEach(([name, el]) => { if (el) el.hidden = name !== tool; });
+      const hub = document.querySelector('#main-actions');
+      const summary = document.querySelector('#connection-summary');
+      if (hub) hub.hidden = Boolean(tool);
+      if (summary) summary.hidden = Boolean(tool);
+      document.querySelectorAll('.tool-card').forEach(btn => {
+        const map = {'analyse-application':'analyse','create-signature-profile':'inventory','open-positive-security':'positive'};
+        btn.classList.toggle('active', map[btn.id] === tool);
+      });
+      window.currentTool = tool || null;
+      if (tool === 'analyse') setAnalyseStep(window.currentAnalyseStep || 'scan');
+      const target = tool ? panels[tool] : hub;
+      target?.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+    function backToTools() {
+      showTool(null);
+      document.querySelector('#main-actions')?.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
     window.positiveCandidates = [];
     function renderPositiveCandidates(items) {
       window.positiveCandidates = items || [];
       const host = document.querySelector('#positive-candidate-list');
       if (!host) return;
       if (!items?.length) { host.innerHTML = '<p class="small muted">No saved candidates yet.</p>'; return; }
-      host.innerHTML = items.map(item => { const summary = item.source_summary || {}; const applicability = (summary.generic_applicability || []).map(value => `${escapeHtml(value.intent_id)} ${Number(value.score || 0).toFixed(2)} (${escapeHtml(value.confidence || 'low')})`).join(' · '); return `<details class="card"><summary><strong>${escapeHtml(item.hostname)}</strong> · ${escapeHtml(item.status)} · v${Number(item.version)} · ${Number(item.model?.endpoints?.length || 0)} endpoints</summary><p class="small muted">Created by ${escapeHtml(item.created_by)} · updated ${escapeHtml(item.updated_at)} · enforcement remains observe-only</p><p class="small">Evidence: ${escapeHtml((summary.evidence_sources || []).join(', ') || 'not recorded')} · ${Number(summary.runtime_auth_surface_count || 0)} auth surfaces · ${Number(summary.runtime_api_endpoint_count || 0)} runtime APIs · ${Number(summary.route_candidates_not_verified || 0)} unverified static candidates excluded</p>${summary.auth_state ? `<p class="small">Authentication evidence: ${escapeHtml(summary.auth_state)}${summary.identity_label ? ` · identity ${escapeHtml(summary.identity_label)}` : ''}${summary.auth_result ? ` · ${escapeHtml(summary.auth_result)}` : ''}. Authenticated observations remain role-specific and observe-only.</p>` : ''}${summary.technology_signals?.length ? `<p class="small">Technologies: ${escapeHtml(summary.technology_signals.join(', '))}</p>` : ''}${applicability ? `<p class="small">WAF applicability: ${applicability}</p>` : ''}<p class="small">ADC topology: ${escapeHtml(summary.adc_topology_status || 'not checked')}${summary.adc_vserver ? ` · matched ${escapeHtml(summary.adc_vserver)}` : ''}</p><p class="small muted">${escapeHtml(summary.confidence_note || '')}</p><label>Model JSON (edit only creates a new draft)<textarea class="positive-candidate-editor" data-id="${escapeHtml(item.candidate_id)}" spellcheck="false">${escapeHtml(JSON.stringify(item.model, null, 2))}</textarea></label><label>Review note<input class="positive-candidate-note" data-id="${escapeHtml(item.candidate_id)}" maxlength="2000" value="${escapeHtml(item.review_note || '')}"></label><p class="job-actions"><button class="secondary positive-candidate-save" data-id="${escapeHtml(item.candidate_id)}" type="button">Save edits as draft</button><button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="accepted" type="button">Accept for observe-only review</button><button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="rejected" type="button">Reject</button>${item.status !== 'draft' ? `<button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="draft" type="button">Return to draft</button>` : ''}<button class="secondary positive-candidate-audit" data-id="${escapeHtml(item.candidate_id)}" type="button">Review history</button></p><div class="positive-candidate-audit-result small"></div></details>`; }).join('');
+      host.innerHTML = items.map(item => { const summary = item.source_summary || {}; const applicability = (summary.generic_applicability || []).map(value => `${escapeHtml(value.intent_id)} ${Number(value.score || 0).toFixed(2)} (${escapeHtml(value.confidence || 'low')})`).join(' · '); const endpoints = item.model?.endpoints || []; const endpointPreview = endpoints.slice(0, 8).map(ep => `<li><code>${escapeHtml(ep.method || 'GET')}</code> ${escapeHtml(ep.path_template || ep.path || '-')} · ${escapeHtml(ep.decision_mode || 'observe')}</li>`).join(''); return `<details class="card"><summary><strong>${escapeHtml(item.hostname)}</strong> · ${statusHtml(item.status)} · v${Number(item.version)} · ${Number(endpoints.length)} endpoints</summary><p class="notice">Accepting keeps every endpoint observe-only. It does not enforce or change the ADC.</p><p class="small muted">Created by ${escapeHtml(item.created_by)} · updated ${escapeHtml(item.updated_at)}</p><dl class="structured-summary"><dt>Evidence</dt><dd>${escapeHtml((summary.evidence_sources || []).join(', ') || 'not recorded')} · ${Number(summary.runtime_auth_surface_count || 0)} auth surfaces · ${Number(summary.runtime_api_endpoint_count || 0)} runtime APIs · ${Number(summary.route_candidates_not_verified || 0)} unverified static candidates excluded</dd>${summary.auth_state ? `<dt>Authentication</dt><dd>${escapeHtml(summary.auth_state)}${summary.identity_label ? ` · identity ${escapeHtml(summary.identity_label)}` : ''}${summary.auth_result ? ` · ${escapeHtml(summary.auth_result)}` : ''}</dd>` : ''}${summary.technology_signals?.length ? `<dt>Technologies</dt><dd>${escapeHtml(summary.technology_signals.join(', '))}</dd>` : ''}${applicability ? `<dt>WAF applicability</dt><dd>${applicability}</dd>` : ''}<dt>ADC topology</dt><dd>${escapeHtml(humanStatus(summary.adc_topology_status || 'not checked'))}${summary.adc_vserver ? ` · matched ${escapeHtml(summary.adc_vserver)}` : ''}</dd></dl>${endpointPreview ? `<p class="small"><strong>Endpoints (observe-only)</strong></p><ul>${endpointPreview}${endpoints.length > 8 ? `<li class="small muted">…and ${endpoints.length - 8} more</li>` : ''}</ul>` : ''}<p class="small muted">${escapeHtml(summary.confidence_note || '')}</p><label>Review note<input class="positive-candidate-note" data-id="${escapeHtml(item.candidate_id)}" maxlength="2000" value="${escapeHtml(item.review_note || '')}"></label><p class="job-actions"><button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="accepted" type="button">Accept for observe-only review</button><button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="rejected" type="button">Reject</button>${item.status !== 'draft' ? `<button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="draft" type="button">Return to draft</button>` : ''}<button class="secondary positive-candidate-audit" data-id="${escapeHtml(item.candidate_id)}" type="button">Review history</button></p><details class="url-list-panel"><summary>Advanced · Edit model JSON (saves as a new draft)</summary><label>Model JSON<textarea class="positive-candidate-editor" data-id="${escapeHtml(item.candidate_id)}" spellcheck="false">${escapeHtml(JSON.stringify(item.model, null, 2))}</textarea></label><button class="secondary positive-candidate-save" data-id="${escapeHtml(item.candidate_id)}" type="button">Save edits as draft</button></details><p class="positive-candidate-status-msg small muted" data-id="${escapeHtml(item.candidate_id)}"></p><div class="positive-candidate-audit-result small"></div></details>`; }).join('');
     }
     async function loadPositiveCandidates() {
       const host = document.querySelector('#positive-candidate-list');
@@ -315,9 +472,9 @@
     document.querySelector('#positive-transaction-json').value = JSON.stringify(samplePositiveTransaction, null, 2);
     function renderJobs(jobs) {
       const host = document.querySelector('#jobs');
-      if (!jobs.length) { host.innerHTML = '<p class="muted">No discovery jobs yet.</p>'; return; }
+      if (!jobs.length) { host.innerHTML = '<p class="muted">No scans yet — start with a seed URL above.</p>'; return; }
       host.innerHTML = '<table><thead><tr><th>Status</th><th>Target</th><th>Phase</th><th>Pages</th><th>Assets</th><th>Evidence</th><th>Created</th><th></th></tr></thead><tbody>' + jobs.map(job =>
-        `<tr><td>${job.status === 'queued' || job.status === 'running' ? `<span class="progress">● scanning${job.phase ? ` · ${escapeHtml(job.phase)}` : ''}</span>` : escapeHtml(job.status)}</td><td>${escapeHtml(job.scope?.seed_url || '-')}</td><td>${escapeHtml(job.phase || '-')}</td><td>${job.pages_visited || 0}</td><td>${job.assets_fetched || 0}</td><td>${job.evidence_count || 0}</td><td>${escapeHtml(job.created_at || '-')}</td><td><div class="job-actions"><button class="secondary profile-button" data-job="${escapeHtml(job.id)}">View profile</button>${['completed'].includes(job.status) ? `<button class="secondary signature-recommendations-button" data-job="${escapeHtml(job.id)}">Signature recommendations</button>` : ''}${['queued','running'].includes(job.status) ? `<button class="secondary cancel-button" data-job="${escapeHtml(job.id)}">Cancel</button>` : ''}${['completed','failed','interrupted','rejected','cancelled'].includes(job.status) ? `<button class="secondary delete-button" data-job="${escapeHtml(job.id)}">Delete</button>` : ''}</div></td></tr>`
+        `<tr><td>${job.status === 'queued' || job.status === 'running' ? `<span class="progress">● scanning${job.phase ? ` · ${escapeHtml(job.phase)}` : ''}</span>` : escapeHtml(job.status)}</td><td>${escapeHtml(job.scope?.seed_url || '-')}</td><td>${escapeHtml(job.phase || '-')}</td><td>${job.pages_visited || 0}</td><td>${job.assets_fetched || 0}</td><td>${job.evidence_count || 0}</td><td>${escapeHtml(job.created_at || '-')}</td><td><div class="job-actions"><button class="secondary profile-button" data-job="${escapeHtml(job.id)}">View profile</button>${['completed'].includes(job.status) ? `<button class="secondary signature-recommendations-button" data-job="${escapeHtml(job.id)}">Signature recommendations</button><button class="secondary adc-path-button" data-job="${escapeHtml(job.id)}">Check ADC path</button><button class="secondary analysis-button" data-job="${escapeHtml(job.id)}">Advanced analysis</button>` : ''}${['queued','running'].includes(job.status) ? `<button class="secondary cancel-button" data-job="${escapeHtml(job.id)}">Cancel</button>` : ''}${['completed','failed','interrupted','rejected','cancelled'].includes(job.status) ? `<button class="secondary delete-button" data-job="${escapeHtml(job.id)}">Delete</button>` : ''}</div></td></tr>`
       ).join('') + '</tbody></table>';
     }
     function renderDuplicateProfilePlan(plan) {
@@ -328,11 +485,11 @@
       const preflight = plan.preflight || {};
       const preflightChecks = (preflight.checks || []).map(item => `<tr><td>${escapeHtml(item.name || '-')}</td><td class="${item.status === 'passed' ? 'high' : 'low'}">${escapeHtml(item.status || '-')}</td><td>${escapeHtml(item.detail || '-')}</td></tr>`).join('');
       const approvalUi = approval.status === 'approved'
-        ? `<p class="connected-message"><strong>Approved for review:</strong> ${escapeHtml(approval.approval_id || '-')} · expires ${escapeHtml(approval.expires_at || '-')}</p>${preflight.preview_id ? `<h5>Pre-write validation</h5><p><strong>Status:</strong> <span class="${preflight.status === 'ready-for-apply' ? 'high' : preflight.status === 'blocked-write-disabled' ? 'progress' : 'low'}">${escapeHtml(preflight.status || '-')}</span> · changes applied: ${preflight.changes_applied ? 'yes' : 'no'}</p>${preflightChecks ? `<table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${preflightChecks}</tbody></table>` : ''}<p class="small"><strong>Rollback snapshot:</strong> ${escapeHtml(preflight.rollback_snapshot?.status || '-')} · destination deletion is reference-checked.</p><label class="small">Type <code>ENABLE WRITE</code><input id="duplicate-write-confirmation" maxlength="64" placeholder="ENABLE WRITE"></label><button class="secondary duplicate-apply-button"${preflight.status !== 'ready-for-apply' ? ' disabled' : ''}>${preflight.write_enabled ? 'Apply duplicate profile' : 'Test guarded apply (write disabled)'}</button><button class="secondary duplicate-rollback-button"${preflight.status !== 'ready-for-apply' ? ' disabled' : ''}>${preflight.write_enabled ? 'Rollback duplicate profile' : 'Test guarded rollback (write disabled)'}</button><p id="duplicate-write-status" class="small muted">${preflight.write_enabled ? 'Apply is guarded by preflight and exact confirmation.' : 'Write mode is disabled; clicking the test will show the server-side block reason without contacting the ADC.'}</p>` : `<button class="secondary duplicate-preflight-button">Run duplicate-profile preflight</button><p id="duplicate-preflight-status" class="small muted"></p>`}`
+        ? `<p class="connected-message"><strong>Approved for review:</strong> ${escapeHtml(approval.approval_id || '-')} · expires ${escapeHtml(approval.expires_at || '-')}</p>${preflight.preview_id ? `<h5>Pre-write validation</h5><p><strong>Status:</strong> ${statusHtml(preflight.status || '-')} · changes applied: ${preflight.changes_applied ? 'yes' : 'no'}</p>${preflightChecks ? `<table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${preflightChecks}</tbody></table>` : ''}<p class="small"><strong>Rollback snapshot:</strong> ${escapeHtml(preflight.rollback_snapshot?.status || '-')} · destination deletion is reference-checked.</p><label class="small">Type <code>ENABLE WRITE</code><input id="duplicate-write-confirmation" maxlength="64" placeholder="ENABLE WRITE"></label><button class="secondary duplicate-apply-button"${preflight.status !== 'ready-for-apply' ? ' disabled' : ''}>${preflight.write_enabled ? 'Apply duplicate profile' : 'Test guarded apply (write disabled)'}</button><button class="secondary duplicate-rollback-button"${preflight.status !== 'ready-for-apply' ? ' disabled' : ''}>${preflight.write_enabled ? 'Rollback duplicate profile' : 'Test guarded rollback (write disabled)'}</button><p id="duplicate-write-status" class="small muted">${preflight.write_enabled ? 'Apply is guarded by preflight and exact confirmation.' : 'Write mode is disabled; clicking the test will show the server-side block reason without contacting the ADC.'}</p>` : `<button class="secondary duplicate-preflight-button">Run duplicate-profile preflight</button><p id="duplicate-preflight-status" class="small muted"></p>`}`
         : `<p class="small muted">Approval authorizes this exact duplicate plan for a future write attempt; it does not change the ADC.</p><label class="small">Type <code>APPROVE PLAN</code><input id="duplicate-approval-phrase" maxlength="64" placeholder="APPROVE PLAN"></label><button class="secondary duplicate-approve-button">Approve exact duplicate plan</button><p id="duplicate-approval-status" class="small muted"></p>`;
       const command = plan.command_preview || {};
       const commandBlock = command.create ? `<details class="command-preview"><summary>View exact NetScaler commands before write</summary><p class="small muted">The request below is the exact Next-Gen API shape; credentials and session headers are omitted.</p><h5>Create profile · Next-Gen API</h5><pre>${escapeHtml(JSON.stringify(command.create.nextgen, null, 2))}</pre><p><strong>CLI equivalent:</strong> <code>${escapeHtml(command.create.cli_equivalent || '-')}</code></p><p class="small muted">${escapeHtml(command.create.note || '')}</p><h5>Rollback · Next-Gen API</h5><pre>${escapeHtml(JSON.stringify(command.rollback?.nextgen || null, null, 2))}</pre><p><strong>CLI equivalent:</strong> <code>${escapeHtml(command.rollback?.cli_equivalent || '-')}</code></p><p class="small muted">${escapeHtml(command.rollback?.note || '')}</p></details>` : '';
-      return `<div class="card"><h4>Duplicate AppFW profile plan</h4><p><strong>Source:</strong> ${escapeHtml(plan.source_profile || '-')} · <strong>Destination:</strong> ${escapeHtml(plan.proposed_profile_name || plan.destination_profile || '-')}</p><p class="small muted">${escapeHtml(plan.note || '')}</p><p><strong>Status:</strong> <span class="progress">${escapeHtml(plan.plan_status || 'prepared-disabled')}</span> · <strong>Changes applied:</strong> ${plan.changes_applied ? 'yes' : 'no'}</p><p class="small"><strong>Source snapshot:</strong> type ${escapeHtml(Array.isArray(source.type) ? source.type.join(', ') : source.type || '-')} · state ${escapeHtml(source.state || '-')} · signatures ${escapeHtml(source.signatures || 'none')}</p>${checks ? `<table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checks}</tbody></table>` : ''}${commandBlock}${approvalUi}<p class="small muted">The source profile is unchanged and no destination profile was created. Plan fingerprint: <code>${escapeHtml(plan.plan_fingerprint || '-')}</code></p></div>`;
+      return `<div class="card"><h4>Duplicate AppFW profile plan</h4><p><strong>Source:</strong> ${escapeHtml(plan.source_profile || '-')} · <strong>Destination:</strong> ${escapeHtml(plan.proposed_profile_name || plan.destination_profile || '-')}</p><p class="small muted">${escapeHtml(plan.note || '')}</p><p><strong>Status:</strong> ${statusHtml(plan.plan_status || 'prepared-disabled')} · <strong>Changes applied:</strong> ${plan.changes_applied ? 'yes' : 'no'}</p><p class="small"><strong>Source snapshot:</strong> type ${escapeHtml(Array.isArray(source.type) ? source.type.join(', ') : source.type || '-')} · state ${escapeHtml(source.state || '-')} · signatures ${escapeHtml(source.signatures || 'none')}</p>${checks ? `<table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checks}</tbody></table>` : ''}${commandBlock}${approvalUi}<p class="small muted">The source profile is unchanged and no destination profile was created. Plan fingerprint: <code>${escapeHtml(plan.plan_fingerprint || '-')}</code></p></div>`;
     }
     function renderOperationCommands(commands) { const list = Array.isArray(commands) ? commands : [commands]; const usable = list.filter(Boolean); if (!usable.length) return '<p class="small muted">No executable command preview is available for this operation.</p>'; return usable.map((item, index) => `<details class="command-preview"><summary>View exact NetScaler command${usable.length > 1 ? ` ${index + 1}` : ''}</summary><p class="small muted">Credentials and session headers are omitted.</p><h5>Next-Gen API request</h5><pre>${escapeHtml(item.nextgen ? JSON.stringify(item.nextgen, null, 2) : 'No executable Next-Gen API request prepared.')}</pre><p><strong>CLI equivalent:</strong> <code>${escapeHtml(item.cli_equivalent || 'No CLI equivalent prepared.')}</code></p><p class="small muted">${escapeHtml(item.note || '')}</p></details>`).join(''); }
     function enableDuplicateWriteTests() { if (window.currentDuplicatePlan?.preflight?.status === 'blocked-write-disabled') document.querySelectorAll('.duplicate-apply-button, .duplicate-rollback-button').forEach(button => { button.disabled = false; }); }
@@ -369,10 +526,10 @@
       const signatureStatus = signatureCatalog.status === 'enumerated' && namedSignatures.length ? 'enumerated' : (signatureCatalog.status || 'not available');
       const sourceOptions = profiles.map(item => `<option value="${escapeHtml(item.name || '')}">${escapeHtml(item.name || '-')}</option>`).join('');
       const customSignatureOptions = signatures.filter(item => item && item.name && !String(item.name).startsWith('*')).map(item => `<option value="${escapeHtml(item.name)}">${escapeHtml(item.name)}</option>`).join('');
-      const lbVserverOptions = vservers.filter(item => item.vserver_type === 'lb').map(item => `<option value="${escapeHtml(item.name || '')}">${escapeHtml(item.name || '-')} · ${escapeHtml(item.host || '')}:${escapeHtml(item.port || '')}</option>`).join('');
-      const signatureRows = signatures.map(item => { const key = item.url || item.name || ''; const checked = window.selectedSignatureCatalogUrls.includes(key) ? ' checked' : ''; return `<tr><td><label><input type="checkbox" class="signature-select" data-signature-url="${escapeHtml(key)}"${checked}> ${escapeHtml(item.name || '-')}</label></td><td>${escapeHtml(item.url || '-')}</td><td>${escapeHtml(item.base_version || '-')}</td><td>${escapeHtml(item.encrypted_version || '-')}</td><td>${escapeHtml(item.creation_date || '-')}</td></tr>`; }).join('');
       const classic = inventory.classic || {};
       const vservers = asRows(classic.vservers?.records);
+      const lbVserverOptions = vservers.filter(item => item.vserver_type === 'lb').map(item => `<option value="${escapeHtml(item.name || '')}">${escapeHtml(item.name || '-')} · ${escapeHtml(item.host || '')}:${escapeHtml(item.port || '')}</option>`).join('');
+      const signatureRows = signatures.map(item => { const key = item.url || item.name || ''; const checked = window.selectedSignatureCatalogUrls.includes(key) ? ' checked' : ''; return `<tr><td><label><input type="checkbox" class="signature-select" data-signature-url="${escapeHtml(key)}"${checked}> ${escapeHtml(item.name || '-')}</label></td><td>${escapeHtml(item.url || '-')}</td><td>${escapeHtml(item.base_version || '-')}</td><td>${escapeHtml(item.encrypted_version || '-')}</td><td>${escapeHtml(item.creation_date || '-')}</td></tr>`; }).join('');
       const classicBindings = asRows(classic.bindings?.records);
       const profileBindings = vservers.filter(item => String(item.appfw_profile || '').trim());
       const grouped = classic.vservers_by_type || {};
@@ -382,24 +539,16 @@
         gw: asRows(grouped.gw?.records || vservers.filter(item => item.vserver_type === 'gw')),
         global: asRows(grouped.global?.records || vservers),
       };
-       const classicSection = `<h4>Classic ADC application topology</h4><p class="small">Status: <strong>${escapeHtml(classic.status || 'unavailable')}</strong> · total vservers: <strong>${vservers.length}</strong> · services: <strong>${classic.services?.record_count || 0}</strong> · service groups: <strong>${classic.servicegroups?.record_count || 0}</strong> · bindings: <strong>${classicBindings.length}</strong></p><p class="small">AppFW feature: <strong>${escapeHtml(waf.feature?.status || 'unknown')}</strong> · vserver AppFW profile bindings: <strong>${profileBindings.length}</strong> · active policies: <strong>${policies.length}</strong></p><div class="vserver-controls"><label class="small">Vserver type <select id="vserver-type-filter"><option value="lb">LB</option><option value="cs">CS</option><option value="gw">GW</option><option value="global">Global</option></select></label><label class="small">Rows <select id="vserver-page-size"><option value="10">10</option><option value="50">50</option><option value="100">100</option></select></label><label class="small">Search any vserver parameter <input id="vserver-search" type="search" placeholder="name, VIP, state, policy, parameter..."></label></div><p id="classic-vserver-summary" class="small muted"></p><table><thead><tr><th>Vserver</th><th>Type</th><th>VIP</th><th>Protocol</th><th>State</th><th>Bound services</th><th>AppFW profile</th></tr></thead><tbody id="classic-vserver-body"></tbody></table>`;
-       const productCard = `<div class="card signature-product-card"><h4>Local signature product index</h4><p class="small muted">${productIndex.status === 'enumerated' ? `${productIndex.total_product_count || productIndex.product_count || 0} products grouped under ${productIndex.total_vendor_count || productIndex.vendor_count || 0} vendors from ${productIndex.catalog_version ? `catalog ${productIndex.catalog_version}` : 'the latest verified catalog'}.` : escapeHtml(productIndex.status || 'Product index unavailable.')}</p>${productIndex.status === 'enumerated' ? `<label class="small">Search vendor or product <input id="signature-product-search" type="search" placeholder="VMware, vCenter, Lotus Notes, Exchange..."></label><div id="signature-product-tree">${renderSignatureProductTree(productIndex)}</div>` : ''}</div>`;
-       host.innerHTML = `<h3>NetScaler WAF inventory</h3><p class="small">AppFW profiles: <strong>${profiles.length}</strong> · policies: <strong>${policies.length}</strong> · signature catalogs: <strong>${signatures.length}</strong> · status: <strong>${escapeHtml(unsupported ? 'unsupported by supplied OAS' : signatureStatus)}</strong></p>${capabilityMessage}<h4>Available signature catalogs</h4><p class="small muted">Select catalogs for the proposal only. No NetScaler changes are made by selecting them. After selecting catalogs, run a discovery analysis and choose Generate ADC change plan.</p><p id="waf-selection-status" class="small">Selected for proposal: <strong>${window.selectedSignatureCatalogUrls.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Select / name</th><th>File</th><th>Base version</th><th>Encrypted version</th><th>Creation date</th></tr></thead><tbody>${signatureRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'Signature catalogs are not available through the supplied Next-Gen OAS.' : 'No enumerable signature catalogs returned.'}</p>`}${productCard}<div class="card"><h4>Create guarded WAF protection plan</h4><p class="small muted">Choose a baseline profile, an exported custom signature object, and optionally an LB vServer. The plan remains LOG-only and reviewable until approval, preflight, and exact ENABLE WRITE confirmation.</p><label class="small">Base profile <select class="create-profile-source">${sourceOptions}</select></label><label class="small">Custom profile name <input class="create-profile-name" maxlength="128" placeholder="waf-web-custom"></label><label class="small">Signature object <select class="create-signature-object"><option value="">No custom signature object</option>${customSignatureOptions}</select></label><label class="small">Target LB vServer <select class="create-vserver"><option value="">Create profile only</option>${lbVserverOptions}</select></label><label class="small">Policy name (optional) <input class="create-policy-name" maxlength="31" placeholder="auto-generated when vServer is selected"></label><button class="secondary create-profile-plan-button">Prepare guarded protection plan</button></div><h4>AppFW profiles</h4>${profileRows ? `<table><thead><tr><th>Name</th><th>State</th><th>Types</th><th>Origin</th><th>Signatures</th><th>Duplicate</th></tr></thead><tbody>${profileRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'AppFW profiles are not exposed by the supplied Next-Gen OAS.' : 'No AppFW profiles returned.'}</p>`}<div id="profile-duplicate-plan"></div><h4>AppFW policies</h4>${policyRows ? `<table><thead><tr><th>Name</th><th>Action / state</th><th>Rule</th></tr></thead><tbody>${policyRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'AppFW policies are not exposed by the supplied Next-Gen OAS.' : 'No AppFW policies returned or policy inventory is unavailable.'}</p>`}<p class="small muted">The selected catalogs and profile plans remain review-only. Guarded export is available only after approval, preflight, and exact confirmation.</p>`;
-       const profileHeading = [...host.querySelectorAll('h4')].find(item => item.textContent.trim() === 'AppFW profiles');
-       const profileTable = profileHeading?.nextElementSibling;
-      const profileCreateCard = host.querySelector('.create-profile-plan-button')?.closest('.card');
-       const duplicatePanel = host.querySelector('#profile-duplicate-plan');
-       if (profileHeading) {
-         const profileDetails = document.createElement('details');
-         profileDetails.id = 'appfw-profile-actions-panel';
-         profileDetails.className = 'on-demand-panel';
-         profileDetails.innerHTML = `<summary>Show AppFW profiles and profile actions (${profiles.length})</summary>`;
-         [profileCreateCard, profileHeading, profileTable, duplicatePanel].forEach(item => { if (item) profileDetails.append(item); });
-         const policyHeading = [...host.querySelectorAll('h4')].find(item => item.textContent.trim() === 'AppFW policies');
-         if (policyHeading) host.insertBefore(profileDetails, policyHeading);
-         else host.append(profileDetails);
-       }
-      host.insertAdjacentHTML('beforeend', classicSection);
+      const writeEnabled = inventory.write_enabled === true || inventory.capabilities?.waf_cli_writes === true;
+      window.currentWriteEnabled = writeEnabled;
+      setWriteModeBadge(writeEnabled);
+      const catalogVersion = productIndex.catalog_version || signatures[0]?.base_version || signatures[0]?.encrypted_version || 'unknown';
+      setCatalogFreshness(`Catalog: ${signatures.length} object(s) · ${productIndex.catalog_version ? `local index ${productIndex.catalog_version}` : 'local index pending'}`);
+      const safetyCard = `<div class="notice"><strong>What you can do safely:</strong> browse catalogs and AppFW objects, prepare a LOG-only plan, and review commands. ${writeEnabled ? 'Guarded write is enabled — export still requires approval, preflight, and ENABLE WRITE.' : 'Write mode is proposal-only — nothing will change the ADC from this screen.'}</div>`;
+      const classicSection = `<div id="inventory-pane-vservers" class="inventory-pane" hidden><h4>Classic ADC application topology</h4><p class="small">Status: <strong>${statusHtml(classic.status || 'unavailable')}</strong> · total vservers: <strong>${vservers.length}</strong> · services: <strong>${classic.services?.record_count || 0}</strong> · service groups: <strong>${classic.servicegroups?.record_count || 0}</strong> · bindings: <strong>${classicBindings.length}</strong></p><p class="small">AppFW feature: <strong>${statusHtml(waf.feature?.status || 'unknown')}</strong> · vserver AppFW profile bindings: <strong>${profileBindings.length}</strong> · active policies: <strong>${policies.length}</strong></p><div class="vserver-controls"><label class="small">Vserver type <select id="vserver-type-filter"><option value="lb">LB</option><option value="cs">CS</option><option value="gw">GW</option><option value="global">Global</option></select></label><label class="small">Rows <select id="vserver-page-size"><option value="10">10</option><option value="50">50</option><option value="100">100</option></select></label><label class="small">Search any vserver parameter <input id="vserver-search" type="search" placeholder="name, VIP, state, policy, parameter..."></label></div><p id="classic-vserver-summary" class="small muted"></p><table><thead><tr><th>Vserver</th><th>Type</th><th>VIP</th><th>Protocol</th><th>State</th><th>Bound services</th><th>AppFW profile</th></tr></thead><tbody id="classic-vserver-body"></tbody></table></div>`;
+      const productCard = `<div class="card signature-product-card"><h4>Local signature product index</h4><p class="small muted">${productIndex.status === 'enumerated' ? `${productIndex.total_product_count || productIndex.product_count || 0} products grouped under ${productIndex.total_vendor_count || productIndex.vendor_count || 0} vendors from ${productIndex.catalog_version ? `catalog ${productIndex.catalog_version}` : 'the latest verified catalog'}.` : escapeHtml(humanStatus(productIndex.status || 'Product index unavailable.'))}</p>${productIndex.status === 'enumerated' ? `<label class="small">Search vendor or product <input id="signature-product-search" type="search" placeholder="VMware, vCenter, Lotus Notes, Exchange..."></label><div id="signature-product-tree">${renderSignatureProductTree(productIndex)}</div>` : ''}</div>`;
+      const createPlanCard = `<div class="card" id="create-plan-card"><h4>Create guarded WAF protection plan</h4><p class="small muted">Choose a baseline profile, an exported custom signature object, and optionally an LB vServer. The plan remains LOG-only and reviewable until approval, preflight, and exact ENABLE WRITE confirmation.</p><label class="small">Base profile <select class="create-profile-source">${sourceOptions}</select></label><label class="small">Custom profile name <input class="create-profile-name" maxlength="128" placeholder="waf-web-custom"></label><label class="small">Signature object <select class="create-signature-object"><option value="">No custom signature object</option>${customSignatureOptions}</select></label><label class="small">Target LB vServer <select class="create-vserver"><option value="">Create profile only</option>${lbVserverOptions}</select></label><label class="small">Policy name (optional) <input class="create-policy-name" maxlength="31" placeholder="auto-generated when vServer is selected"></label><button class="secondary create-profile-plan-button">Prepare guarded protection plan</button><div id="profile-duplicate-plan"></div></div>`;
+      host.innerHTML = `<h3>NetScaler WAF inventory</h3><p class="small">AppFW profiles: <strong>${profiles.length}</strong> · policies: <strong>${policies.length}</strong> · signature catalogs: <strong>${signatures.length}</strong> · status: <strong>${unsupported ? statusHtml('unsupported-by-oas') : statusHtml(signatureStatus)}</strong></p>${safetyCard}${capabilityMessage}<div class="inventory-tabs" role="tablist"><button class="secondary inventory-tab active" type="button" data-inventory-tab="plan">Create plan</button><button class="secondary inventory-tab" type="button" data-inventory-tab="catalogs">Catalogs (${signatures.length})</button><button class="secondary inventory-tab" type="button" data-inventory-tab="appfw">Existing AppFW (${profiles.length})</button><button class="secondary inventory-tab" type="button" data-inventory-tab="vservers">Show vServers (${vservers.length})</button></div><div id="inventory-pane-plan" class="inventory-pane">${createPlanCard}</div><div id="inventory-pane-catalogs" class="inventory-pane" hidden><h4>Available signature catalogs</h4><p class="small muted">Select catalogs for proposals only. No NetScaler changes are made by selecting them.</p><p id="waf-selection-status" class="small">Selected for proposal: <strong>${window.selectedSignatureCatalogUrls.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Select / name</th><th>File</th><th>Base version</th><th>Encrypted version</th><th>Creation date</th></tr></thead><tbody>${signatureRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'Signature catalogs are not available through the supplied Next-Gen OAS.' : 'No enumerable signature catalogs returned.'}</p>`}${productCard}</div><div id="inventory-pane-appfw" class="inventory-pane" hidden><h4>AppFW profiles</h4>${profileRows ? `<table><thead><tr><th>Name</th><th>State</th><th>Types</th><th>Origin</th><th>Signatures</th><th>Duplicate</th></tr></thead><tbody>${profileRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'AppFW profiles are not exposed by the supplied Next-Gen OAS.' : 'No AppFW profiles returned.'}</p>`}<h4>AppFW policies</h4>${policyRows ? `<table><thead><tr><th>Name</th><th>Action / state</th><th>Rule</th></tr></thead><tbody>${policyRows}</tbody></table>` : `<p class="small muted">${unsupported ? 'AppFW policies are not exposed by the supplied Next-Gen OAS.' : 'No AppFW policies returned or policy inventory is unavailable.'}</p>`}<p class="small muted">Duplicate plans remain review-only until approval, preflight, and confirmation.</p></div>${classicSection}`;
       window.classicVserverType = window.classicVserverType || 'lb';
       const typeFilter = document.querySelector('#vserver-type-filter');
       if (typeFilter) typeFilter.value = window.classicVserverType;
@@ -429,7 +578,8 @@
       }).join('');
       const proposal = correlation.proposal || {};
       const blocking = correlation.blocking_conditions || proposal.blocking_conditions || [];
-      host.innerHTML = `<div class="card"><h3>ADC path correlation</h3><p class="small">Target: <strong>${escapeHtml(correlation.target?.hostname || '-')}</strong>:${escapeHtml(correlation.target?.port || '-')} · status: <strong>${escapeHtml(correlation.status || '-')}</strong> · protection: <strong>${escapeHtml(correlation.protection_status || '-')}</strong></p>${matches ? `<table><thead><tr><th>LB vserver</th><th>VIP</th><th>State</th><th>Match</th><th>Backend</th></tr></thead><tbody>${matches}</tbody></table>` : '<p class="small muted">No exact ADC path match.</p>'}<p class="small">AppFW policies: <strong>${escapeHtml(correlation.appfw_policy_count ?? 0)}</strong> · automatic apply: <strong>${correlation.automatic_apply_allowed ? 'allowed' : 'disabled'}</strong></p><p class="small">Proposal: <strong>${escapeHtml(proposal.status || 'blocked')}</strong>${proposal.source_profile ? ` · source profile: <strong>${escapeHtml(proposal.source_profile)}</strong> · proposed profile: <strong>${escapeHtml(proposal.proposed_custom_profile || '-')}</strong> · mode: <strong>${escapeHtml(proposal.initial_enforcement_mode || '-')}</strong>` : ''}</p>${blocking.length ? `<p class="small"><strong>Blocking conditions:</strong></p><ul>${blocking.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}</div>`;
+      const protectionLabel = humanStatus(correlation.protection_status || correlation.status || '-');
+      host.innerHTML = `<div class="card"><h3>ADC path correlation</h3><p class="small">Target: <strong>${escapeHtml(correlation.target?.hostname || '-')}</strong>:${escapeHtml(correlation.target?.port || '-')} · status: ${statusHtml(correlation.status || '-')} · protection: ${statusHtml(correlation.protection_status || '-', protectionLabel)}</p>${correlation.protection_status === 'feature-enabled-no-policy-binding-evidenced' ? '<p class="notice"><strong>AppFW is enabled, but this vServer has no WAF policy yet.</strong> You can still prepare a LOG proposal and bind it later.</p>' : ''}${matches ? `<table><thead><tr><th>LB vserver</th><th>VIP</th><th>State</th><th>Match</th><th>Backend</th></tr></thead><tbody>${matches}</tbody></table>` : '<p class="small muted">No exact ADC path match.</p>'}<p class="small">AppFW policies: <strong>${escapeHtml(correlation.appfw_policy_count ?? 0)}</strong> · automatic apply: <strong>${correlation.automatic_apply_allowed ? 'allowed' : 'disabled'}</strong></p><p class="small">Proposal: ${statusHtml(proposal.status || 'blocked')}${proposal.source_profile ? ` · source profile: <strong>${escapeHtml(proposal.source_profile)}</strong> · proposed profile: <strong>${escapeHtml(proposal.proposed_custom_profile || '-')}</strong> · mode: <strong>${escapeHtml(proposal.initial_enforcement_mode || '-')}</strong>` : ''}</p>${blocking.length ? `<p class="small"><strong>Blocking conditions:</strong></p><ul>${blocking.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}</div>`;
     }
     function renderEvidenceRows(items, filter = 'all') {
       return items.filter(item => filter === 'all' || item.evidence_type === filter).map(item => {
@@ -507,7 +657,9 @@
       const regexUrls = [...new Set([...startUrls.map(item => item.url), ...(profile.evidence || []).filter(item => item.evidence_type === 'asset' && item.source_url).map(item => item.source_url)])];
       const startUrlRows = startUrls.map(item => `<li><div class="discovery-url-entry"><span class="url-short" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</span><span class="small ${item.crawled ? 'high' : 'muted'}">${item.crawled ? `crawled${item.status !== null ? ` · ${escapeHtml(item.status)}` : ''}` : 'discovered'}</span></div></li>`).join('');
       window.currentProfileRegexUrls = regexUrls;
-      host.innerHTML = `<div class="card"><h3>Findings summary <span class="small muted">${escapeHtml(profile.run_id)}</span></h3><p class="small">${technologies.length} technologies · ${profile.evidence_count || 0} evidence rows · <span class="high">${confidenceCounts.high || 0} high</span> · <span class="medium">${confidenceCounts.medium || 0} medium</span> · <span class="low">${confidenceCounts.low || 0} low</span></p><p class="small">Routes: <strong>${routeCount}</strong> · form fields: <strong>${formCount}</strong> · authentication surfaces: <strong>${authCount}</strong></p><div class="profile-summary-grid"><section class="summary-panel"><h4>Detected technologies (${technologies.length})</h4>${technologyRows ? `<table><thead><tr><th>Technology</th><th>Category</th><th>Confidence</th><th>Score</th></tr></thead><tbody>${technologyRows}</tbody></table>` : '<p class="small muted">No technology signals were observed.</p>'}</section><section class="summary-panel"><h4>Start URLs and discovered routes (${startUrls.length})</h4><p class="small muted">All in-scope URLs found by the crawler. Scroll to review the complete list; only safe GET requests are fetched.</p>${startUrls.length ? `<ol class="discovery-url-list">${startUrlRows}</ol><button class="secondary regex-prepare-open" type="button">Prepare regex rules</button><div class="regex-prepare-panel" hidden><p class="small muted">Choose a consolidation level. Drafts use ${regexUrls.length} distinct route and asset URLs, are Python-compatible, and are not applied to the ADC.</p><div class="regex-mode-options"><button class="secondary regex-mode-option" data-mode="basic" type="button"><strong>Basic</strong><span class="small">One rule for observed suffixes; broad rules per folder prefix with 4+ matching URLs.</span></button><button class="secondary regex-mode-option" data-mode="balanced" type="button"><strong>Balanced</strong><span class="small">Consolidated suffixes and exact route groups for folders with 3+ URLs.</span></button><button class="secondary regex-mode-option" data-mode="aggressive" type="button"><strong>Aggressive</strong><span class="small">Up to five exact-path rules, factored for brevity; no wildcard matching.</span></button></div><div class="regex-proposal-output"></div></div>` : '<p class="small muted">No URLs were recorded.</p>'}</section><section class="summary-panel"><h4>Signature applicability</h4><p class="small muted">Catalog matches are supporting applicability context, not independent technology detections.</p><p class="small">Status: <strong>${escapeHtml(signatureStatus)}</strong> · catalog rules: <strong>${signatureRuleCount}</strong> · matches: <strong>${signatureMatches.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Technology</th><th>Surface</th><th>Rules</th><th>Categories</th><th>Examples</th></tr></thead><tbody>${signatureRows}</tbody></table>` : '<p class="small muted">No technology-tagged signature matches were found for this profile.</p>'}</section></div><p class="small muted">Use Signature recommendations for protection decisions.</p></div>`;
+      setAnalyseStep('findings');
+      window.currentProfileJobId = profile.run_id;
+      host.innerHTML = `<div class="card"><h3>Findings summary <span class="small muted">${escapeHtml(profile.run_id)}</span></h3><p class="small">${technologies.length} technologies · ${profile.evidence_count || 0} evidence rows · <span class="high">${confidenceCounts.high || 0} high</span> · <span class="medium">${confidenceCounts.medium || 0} medium</span> · <span class="low">${confidenceCounts.low || 0} low</span></p><p class="small">Routes: <strong>${routeCount}</strong> · form fields: <strong>${formCount}</strong> · authentication surfaces: <strong>${authCount}</strong></p><div class="profile-summary-grid"><section class="summary-panel"><h4>Detected technologies (${technologies.length})</h4>${technologyRows ? `<table><thead><tr><th>Technology</th><th>Category</th><th>Confidence</th><th>Score</th></tr></thead><tbody>${technologyRows}</tbody></table>` : '<p class="small muted">No technology signals were observed.</p>'}</section><section class="summary-panel"><h4>Start URLs and discovered routes (${startUrls.length})</h4><p class="small muted">All in-scope URLs found by the crawler. Scroll to review the complete list; only safe GET requests are fetched.</p>${startUrls.length ? `<ol class="discovery-url-list">${startUrlRows}</ol><details class="url-list-panel"><summary>Advanced · Prepare path regex drafts</summary><button class="secondary regex-prepare-open" type="button">Prepare regex rules</button><div class="regex-prepare-panel" hidden><p class="small muted">Choose a consolidation level. Drafts use ${regexUrls.length} distinct route and asset URLs, are Python-compatible, and are not applied to the ADC.</p><div class="regex-mode-options"><button class="secondary regex-mode-option" data-mode="basic" type="button"><strong>Basic</strong><span class="small">One rule for observed suffixes; broad rules per folder prefix with 4+ matching URLs.</span></button><button class="secondary regex-mode-option" data-mode="balanced" type="button"><strong>Balanced</strong><span class="small">Consolidated suffixes and exact route groups for folders with 3+ URLs.</span></button><button class="secondary regex-mode-option" data-mode="aggressive" type="button"><strong>Aggressive</strong><span class="small">Up to five exact-path rules, factored for brevity; no wildcard matching.</span></button></div><div class="regex-proposal-output"></div></div></details>` : '<p class="small muted">No URLs were recorded.</p>'}</section><section class="summary-panel"><h4>Signature applicability</h4><p class="small muted">Catalog matches are supporting applicability context, not independent technology detections.</p><p class="small">Status: ${statusHtml(signatureStatus)} · catalog rules: <strong>${signatureRuleCount}</strong> · matches: <strong>${signatureMatches.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Technology</th><th>Surface</th><th>Rules</th><th>Categories</th><th>Examples</th></tr></thead><tbody>${signatureRows}</tbody></table>` : '<p class="small muted">No technology-tagged signature matches were found for this profile.</p>'}</section></div><div class="findings-cta"><button class="primary-cta signature-recommendations-button" data-job="${escapeHtml(profile.run_id)}" type="button">Review recommended signatures</button><button class="secondary adc-path-button" data-job="${escapeHtml(profile.run_id)}" type="button">Check ADC path</button><button class="secondary analysis-button" data-job="${escapeHtml(profile.run_id)}" type="button">Advanced analysis</button></div></div>`;
     }
     function renderAnalysisSummary(analysis) {
       const host = document.querySelector('#profile');
@@ -619,7 +771,7 @@
     function renderRuleConfidence(rule) { const confidence = rule?.confidence || {}; const applicability = confidence.applicability || 'unknown'; const accuracy = confidence.accuracy || rule?.accuracy || 'unknown'; const risk = confidence.risk || rule?.risk || 'unknown'; const readiness = confidence.enforcement_readiness || 'staged'; return `<span class="generic-signature-confidence small muted">Applicability: ${escapeHtml(applicability)}${confidence.applicability_score != null ? ` (${Number(confidence.applicability_score).toFixed(2)})` : ''} · Accuracy: ${escapeHtml(accuracy)} · Risk: ${escapeHtml(risk)} · Readiness: ${escapeHtml(readiness)}</span>`; }
     function renderGenericSignatureTree(groups) {
       if (!groups?.length) return '<p class="small muted">No matching CVE references or generic signature groups were resolved.</p>';
-      const renderRule = rule => { const ruleIcon = rule.vendor || rule.product ? technologyThumbprint(rule.product || rule.vendor, rule.product ? 'product' : 'vendor', rule.vendor || '') : ''; return `<label class="generic-signature-rule"><input type="checkbox" class="generic-signature-rule-select" data-rule-id="${escapeHtml(rule.rule_id || '')}"${rule.selected ? ' checked' : ''}>${ruleIcon}<span class="generic-signature-rule-title"><strong>${escapeHtml(rule.rule_id || '-')}</strong> · ${escapeHtml(rule.description || 'No description')}<span class="generic-signature-rule-meta small muted">${escapeHtml(rule.vendor || '')}${rule.product ? ` / ${rule.product}` : ''}${rule.vendor || rule.product ? ' · ' : ''}${escapeHtml(rule.category || 'uncategorized')} · ${escapeHtml((rule.attack_classes || []).join(', ') || 'unclassified')} · ${escapeHtml((rule.locations || []).join(', ') || 'location n/a')} · ${escapeHtml((rule.match_types || []).join(', ') || 'match type n/a')} · ${escapeHtml(rule.severity || 'severity n/a')}</span>${renderRuleConfidence(rule)}</span></label>`; };
+      const renderRule = rule => { const ruleIcon = rule.vendor || rule.product ? technologyThumbprint(rule.product || rule.vendor, rule.product ? 'product' : 'vendor', rule.vendor || '') : ''; const title = rule.description || rule.rule_id || 'No description'; return `<label class="generic-signature-rule"><input type="checkbox" class="generic-signature-rule-select" data-rule-id="${escapeHtml(rule.rule_id || '')}"${rule.selected ? ' checked' : ''}>${ruleIcon}<span class="generic-signature-rule-title"><strong>${escapeHtml(title)}</strong><span class="generic-signature-rule-meta small muted"><code>${escapeHtml(rule.rule_id || '-')}</code> · ${escapeHtml(rule.severity || 'severity n/a')} · action LOG</span><button class="rule-toggle-meta" type="button" data-rule-meta="${escapeHtml(rule.rule_id || '')}">Details</button><span class="compact-rule-meta small muted">${escapeHtml(rule.vendor || '')}${rule.product ? ` / ${rule.product}` : ''}${rule.vendor || rule.product ? ' · ' : ''}${escapeHtml(rule.category || 'uncategorized')} · ${escapeHtml((rule.attack_classes || []).join(', ') || 'unclassified')} · ${escapeHtml((rule.locations || []).join(', ') || 'location n/a')} · ${escapeHtml((rule.match_types || []).join(', ') || 'match type n/a')}<br>${renderRuleConfidence(rule)}</span></span></label>`; };
       const renderSubgroup = (subgroup, groupId, parentLabel = '') => {
         const rules = subgroup.rules || [];
         const children = subgroup.children || [];
@@ -735,11 +887,14 @@
       window.currentCveViewMode = cveViewMode;
       window.currentCveSearchMode = cveSearchMode;
       window.currentCveSearchQuery = cveSearchQuery;
-      const technologyFilterPanel = technologyOptions?.groups?.length ? renderTechnologyFilterPanel(technologyOptions, selectedFilters, includeGeneric, releaseYears) : '<p class="small muted">Technology filter catalog is unavailable.</p>';
-      const proposalControls = exactPlan?.recommendation_only && exactRules.length ? `<h4>Prepare editable signature proposal</h4><p class="small muted">This creates a review draft only. It does not export or enable anything on the ADC.</p><label class="small">Signature object name <input id="custom-signature-object-name" maxlength="31" value="${escapeHtml(exactPlan.signature_object_name || '')}"></label><label class="small">Enabled rule action <select id="custom-signature-action"><option value="LOG">LOG</option><option value="BLOCK">BLOCK</option></select></label><button class="secondary custom-signature-prepare-button" data-job="${escapeHtml(analysis.run_id || '')}">Prepare editable custom signature proposal</button><div id="custom-signature-set"></div>` : '';
-      const excludedNotice = excludedCount ? `<div class="notice"><strong>${excludedCount} technology-specific rules excluded automatically.</strong> They were tagged for technologies not evidenced by this scan. ${excludedRules.length ? `<details><summary>Show excluded technology tags</summary><p class="small">${escapeHtml([...new Set(excludedRules.flatMap(item => item.technology_tags || []))].sort().join(', '))}</p></details>` : ''}</div>` : '';
+      const technologyFilterPanel = technologyOptions?.groups?.length ? `<details class="url-list-panel"><summary>Advanced · Technology and release filters</summary>${renderTechnologyFilterPanel(technologyOptions, selectedFilters, includeGeneric, releaseYears)}</details>` : '<p class="small muted">Technology filter catalog is unavailable.</p>';
+      const proposalControls = exactPlan?.recommendation_only && exactRules.length ? `<div class="recommendation-sticky"><div><strong>${exactRules.length}</strong> rules selected · default action <strong>${escapeHtml(exactPlan?.action || 'LOG')}</strong></div><div class="job-actions"><label class="small">Object name <input id="custom-signature-object-name" maxlength="31" value="${escapeHtml(exactPlan.signature_object_name || '')}"></label><label class="small">Action <select id="custom-signature-action"><option value="LOG">LOG</option><option value="BLOCK">BLOCK</option></select></label><button class="custom-signature-prepare-button" data-job="${escapeHtml(analysis.run_id || '')}" type="button">Prepare proposal</button></div></div><div id="custom-signature-set"></div>` : (exactRules.length ? '' : '<p class="notice">No exact rules matched. Adjust technology filters or rerun discovery.</p>');
+      const excludedNotice = excludedCount ? `<div class="notice"><strong>${excludedCount} technology-specific rules excluded as irrelevant.</strong> They were tagged for technologies not evidenced by this scan. ${excludedRules.length ? `<details><summary>Show excluded technology tags</summary><p class="small">${escapeHtml([...new Set(excludedRules.flatMap(item => item.technology_tags || []))].sort().join(', '))}</p></details>` : ''}</div>` : '';
       const productExclusionNotice = productExclusionCount ? `<div class="notice"><strong>${productExclusionCount} product-specific rules excluded from generic selection.</strong> CVE-linked and vendor/product-fingerprinted rules require a matching detected technology or explicit product selection. ${productExclusions.length ? `<details><summary>Show exclusion examples</summary><p class="small">${escapeHtml(productExclusions.slice(0, 20).map(item => `${item.rule_id}: ${item.reason}`).join(' · '))}</p></details>` : ''}</div>` : '';
-      host.innerHTML = `<div class="card"><h3>Direct WAF signature recommendations <span class="small muted">${escapeHtml(analysis.run_id || '-')}</span></h3><p class="small muted">Exact rules selected from the latest verified catalog. Status: <strong>${escapeHtml(exactPlan?.status || 'not resolved')}</strong> · catalog version: <strong>${escapeHtml(exactPlan?.technology_context?.catalog_version || '-')}</strong> · default action: <strong>${escapeHtml(exactPlan?.action || 'LOG')}</strong></p>${technologyFilterPanel}<div class="recommendation-hero"><div class="metric"><span class="small muted">Selected rules</span><strong>${exactRules.length}</strong></div><div class="metric"><span class="small muted">Catalog rules</span><strong>${technologyContext.catalog_rule_count || exactPlan?.technology_context?.catalog_rule_count || 0}</strong></div><div class="metric"><span class="small muted">Excluded by technology</span><strong>${excludedCount}</strong></div><div class="metric"><span class="small muted">Applicability confidence</span><strong class="small">${confidenceSummaryText}</strong></div><div class="metric"><span class="small muted">Severity mix</span><strong class="small">${severitySummary || 'not classified'}</strong></div></div>${excludedNotice}${productExclusionNotice}<div class="profile-summary-grid"><section class="summary-panel"><h4>Detection context</h4><p class="small">Detected technologies/surfaces: <strong>${escapeHtml(detectedPlatforms.join(', ') || 'none')}</strong></p><p class="small">Catalog applicability: <strong>${escapeHtml(technologyContext.status || 'not available')}</strong> · catalog rules: <strong>${technologyContext.catalog_rule_count || exactPlan?.technology_context?.catalog_rule_count || 0}</strong></p>${intents ? `<p><strong>Included protection intents:</strong></p><ul>${intents}</ul>` : '<p class="small muted">No generic protection intents were included.</p>'}</section><section class="summary-panel"><h4>Exact rule categories</h4>${categoryRows ? `<table><thead><tr><th>Category</th><th>Rules</th></tr></thead><tbody>${categoryRows}</tbody></table>` : '<p class="small muted">No exact rule-level recommendations were resolved.</p>'}</section></div>${signatureSelectionGroups.length ? `<h4>Signature selection groups</h4><p class="small muted">Each rule shows Applicability, Accuracy, Risk, and Readiness. Expand a group, then a subgroup, to select or deselect individual rules. CVE references are cross-listed only from the current proposal and share the same selection state as their original protection group.</p>${genericRuleTree}<div class="job-actions"><button class="secondary generic-signature-select-all" type="button">Select all visible signature rules</button><button class="secondary generic-signature-clear" type="button">Clear all visible signature rules</button><button class="secondary generic-signature-apply" type="button">Apply signature selection</button></div><p id="generic-signature-status" class="small muted">${window.currentSelectedRuleIds.length} exact rule(s) selected.</p>` : ''}${recommendationRows ? `<h4>Protection groups</h4><table><thead><tr><th>Group</th><th>Priority</th><th>Mode</th><th>Status</th><th>Reason</th></tr></thead><tbody>${recommendationRows}</tbody></table>` : ''}${exactRuleRows ? `<details class="url-list-panel"><summary>Show first ${Math.min(50, exactRules.length)} exact WAF rules</summary><table><thead><tr><th>Rule ID</th><th>Category</th><th>Attack classes</th><th>Locations</th><th>Description</th><th>Confidence</th><th>Selection source</th></tr></thead><tbody>${exactRuleRows}</tbody></table></details>` : ''}${exactRuleIds.length ? `<details class="url-list-panel"><summary>Show all exact rule IDs (${exactRuleIds.length})</summary><textarea readonly>${escapeHtml(exactRuleIds.join('\n'))}</textarea></details>` : ''}${proposalControls}<p class="small muted">Rules are proposal-only. Review applicability, accuracy, risk, staging readiness, false-positive impact, and LOG/BLOCK action before approval, preflight, and export.</p></div>`;
+      const whyPanel = `<div class="why-panel"><strong>Why these rules</strong><p class="small">Detected: <strong>${escapeHtml(detectedPlatforms.join(', ') || 'none')}</strong> · Catalog: ${statusHtml(technologyContext.status || 'not available')} · ${technologyContext.catalog_rule_count || exactPlan?.technology_context?.catalog_rule_count || 0} catalog rules</p>${intents ? `<p class="small"><strong>Protection intents included:</strong></p><ul>${intents}</ul>` : '<p class="small muted">No generic protection intents were included.</p>'}${excludedCount ? `<p class="small">${excludedCount} rules excluded because their technology tags were not evidenced.</p>` : ''}</div>`;
+      setAnalyseStep('recommendations');
+      setCatalogFreshness(`Catalog version: ${exactPlan?.technology_context?.catalog_version || technologyContext.catalog_version || 'unknown'}`);
+      host.innerHTML = `<div class="card"><h3>Recommended signatures <span class="small muted">${escapeHtml(analysis.run_id || '-')}</span></h3><p class="small muted">${exactRules.length} rules recommended · ${excludedCount} excluded as irrelevant · default action <strong>${escapeHtml(exactPlan?.action || 'LOG')}</strong> · status ${statusHtml(exactPlan?.status || 'not resolved')}</p><div class="recommendation-hero"><div class="metric"><span class="small muted">Recommended</span><strong>${exactRules.length}</strong></div><div class="metric"><span class="small muted">Excluded</span><strong>${excludedCount}</strong></div><div class="metric"><span class="small muted">Catalog rules</span><strong>${technologyContext.catalog_rule_count || exactPlan?.technology_context?.catalog_rule_count || 0}</strong></div><div class="metric"><span class="small muted">Applicability</span><strong class="small">${confidenceSummaryText}</strong></div><div class="metric"><span class="small muted">Severity mix</span><strong class="small">${severitySummary || 'not classified'}</strong></div></div>${whyPanel}${excludedNotice}${productExclusionNotice}${technologyFilterPanel}<div class="profile-summary-grid"><section class="summary-panel"><h4>Exact rule categories</h4>${categoryRows ? `<table><thead><tr><th>Category</th><th>Rules</th></tr></thead><tbody>${categoryRows}</tbody></table>` : '<p class="small muted">No exact rule-level recommendations were resolved.</p>'}</section><section class="summary-panel"><h4>How to review</h4><p class="small muted">Groups start collapsed. Open a family, then a subgroup. Rule rows show title and severity; use Details for full metadata. Deselected candidates stay visible for audit.</p></section></div>${signatureSelectionGroups.length ? `<h4>Signature selection</h4>${genericRuleTree}<div class="job-actions"><button class="secondary generic-signature-select-all" type="button">Select all visible</button><button class="secondary generic-signature-clear" type="button">Clear all visible</button><button class="secondary generic-signature-apply" type="button">Apply signature selection</button></div><p id="generic-signature-status" class="small muted">${window.currentSelectedRuleIds.length} exact rule(s) selected.</p>` : ''}${recommendationRows ? `<details class="url-list-panel"><summary>Protection groups (legacy summary)</summary><table><thead><tr><th>Group</th><th>Priority</th><th>Mode</th><th>Status</th><th>Reason</th></tr></thead><tbody>${recommendationRows}</tbody></table></details>` : ''}${exactRuleRows ? `<details class="url-list-panel"><summary>Show first ${Math.min(50, exactRules.length)} exact WAF rules</summary><table><thead><tr><th>Rule ID</th><th>Category</th><th>Attack classes</th><th>Locations</th><th>Description</th><th>Confidence</th><th>Selection source</th></tr></thead><tbody>${exactRuleRows}</tbody></table></details>` : ''}${exactRuleIds.length ? `<details class="url-list-panel"><summary>Show selected rule IDs (${exactRuleIds.length})</summary><textarea readonly>${escapeHtml(exactRuleIds.join('\n'))}</textarea></details>` : ''}${proposalControls}<p class="small muted">Proposal only until you approve, preflight, and confirm ENABLE WRITE.</p></div>`;
       syncGenericSignatureCheckboxes(window.currentSelectedRuleIds);
     }
     function renderAnalysis(analysis) {
@@ -788,7 +943,9 @@
       const edit = editable ? `<label class="small">Object name <input id="custom-signature-edit-name" maxlength="31" value="${escapeHtml(set.signature_object_name || '')}"></label><label class="small">Enabled rule action <select id="custom-signature-edit-action"><option value="LOG"${set.action === 'LOG' ? ' selected' : ''}>LOG</option><option value="BLOCK"${set.action === 'BLOCK' ? ' selected' : ''}>BLOCK</option></select></label><label class="small">Exact rule IDs, one per line <textarea id="custom-signature-rule-ids">${escapeHtml(selection.join('\n'))}</textarea></label><button class="secondary custom-signature-save-button">Save name, rules, and action</button><p id="custom-signature-save-status" class="small muted"></p>` : '';
       const stepState = (complete, current) => complete ? 'done' : current ? 'current' : '';
       const workflow = `<div class="workflow-steps"><div class="workflow-step ${stepState(selection.length > 0, editable)}"><strong>1. Select rules</strong><span class="step-state">${selection.length > 0 ? 'complete' : 'required'}</span></div><div class="workflow-step ${stepState(['approved', 'exported', 'rolled-back'].includes(set.status), set.status === 'approved')} "><strong>2. Approve</strong><span class="step-state">${['approved', 'exported', 'rolled-back'].includes(set.status) ? 'complete' : 'required'}</span></div><div class="workflow-step ${stepState(Boolean(set.preview_id), set.status === 'approved' && !set.preview_id)}"><strong>3. Preflight</strong><span class="step-state">${set.preview_id ? escapeHtml(set.preflight_status || 'complete') : 'required'}</span></div><div class="workflow-step ${stepState(set.status === 'exported', Boolean(set.preview_id) && set.status !== 'exported')} "><strong>4. Export</strong><span class="step-state">${set.status === 'exported' ? 'complete' : 'approval-gated'}</span></div></div>`;
-      return `<div class="card"><h4>Custom signature proposal</h4><p><strong>Status:</strong> ${escapeHtml(set.status || '-')} · <strong>Object:</strong> ${escapeHtml(set.signature_object_name || '-')} · <strong>Action:</strong> ${escapeHtml(set.action || '-')} · <strong>Rules:</strong> ${selection.length}</p>${workflow}<p class="small muted">Catalog version ${escapeHtml(context.catalog_version || '-')} · integrity ${escapeHtml(context.catalog_integrity_status || '-')} · fingerprint <code>${escapeHtml(set.catalog_fingerprint || '-')}</code></p><p class="small muted">No ADC change is made until exact rule selection, action, approval, preflight, and export confirmation succeed.</p>${edit}${sampleRows ? `<details class="url-list-panel"><summary>Show first ${Math.min(50, selection.length)} selected rules</summary><table><thead><tr><th>Rule ID</th><th>Category</th><th>Attack classes</th><th>Technology tags</th><th>Selection source</th></tr></thead><tbody>${sampleRows}</tbody></table></details>` : ''}${approval}${preflight}${exportControls}${rollbackControls}</div>`;
+      setAnalyseStep('export');
+      const nextHint = editable ? 'Next: review the selected rules, then type APPROVE CUSTOM SIGNATURE SET.' : set.status === 'approved' && !set.preview_id ? 'Next: run preflight to validate the catalog fingerprint and ADC state.' : set.status === 'approved' && set.preflight?.preview_id ? 'Next: type ENABLE WRITE to export (or leave as a reviewed draft).' : set.status === 'exported' ? 'Exported. Rollback remains available with ENABLE WRITE.' : '';
+      return `<div class="card"><h4>Export · Custom signature proposal</h4><p><strong>Status:</strong> ${statusHtml(set.status || '-')} · <strong>Object:</strong> ${escapeHtml(set.signature_object_name || '-')} · <strong>Action:</strong> ${escapeHtml(set.action || '-')} · <strong>Rules:</strong> ${selection.length}</p>${workflow}${nextHint ? `<p class="notice">${escapeHtml(nextHint)}</p>` : ''}<p class="small muted">Catalog version ${escapeHtml(context.catalog_version || '-')} · integrity ${escapeHtml(context.catalog_integrity_status || '-')} · fingerprint <code>${escapeHtml(set.catalog_fingerprint || '-')}</code></p><p class="small muted">No ADC change is made until exact rule selection, action, approval, preflight, and export confirmation succeed.</p>${edit}${sampleRows ? `<details class="url-list-panel"><summary>Show first ${Math.min(50, selection.length)} selected rules</summary><table><thead><tr><th>Rule ID</th><th>Category</th><th>Attack classes</th><th>Technology tags</th><th>Selection source</th></tr></thead><tbody>${sampleRows}</tbody></table></details>` : ''}${selection.length ? `<details class="url-list-panel"><summary>Show selected rule IDs (${selection.length})</summary><textarea readonly>${escapeHtml(selection.join('\n'))}</textarea></details>` : ''}${approval}${preflight}${exportControls}${rollbackControls}</div>`;
     }
     function renderCustomSignatureReview(customList) {
       const sources = customList.source_catalogs || [];
@@ -998,7 +1155,7 @@
           }
           const host = document.querySelector('#browser-lab-selected');
           host.hidden = false;
-          host.innerHTML = `<strong>Page element selected</strong><pre>${escapeHtml(JSON.stringify(result.element, null, 2))}</pre><span class="small">Selection does not activate the element and does not read its current value.</span>`;
+          const el = result.element || {}; host.innerHTML = `<strong>Page element selected</strong><dl class="structured-summary"><dt>Tag / type</dt><dd>${escapeHtml(el.tag || '-')} ${el.type ? `· ${escapeHtml(el.type)}` : ''}</dd><dt>Name / id</dt><dd>${escapeHtml(el.name || el.id || el.aria_label || '(unnamed)')}</dd><dt>Text</dt><dd>${escapeHtml(el.text || '—')}</dd></dl><details class="url-list-panel"><summary>Advanced · Raw metadata</summary><pre>${escapeHtml(JSON.stringify(el, null, 2))}</pre></details><span class="small">Selection does not activate the element and does not read its current value.</span>`;
           document.querySelector('#browser-lab-status').textContent = 'Selected page metadata; no page action was triggered.';
           host.scrollIntoView({behavior:'smooth', block:'center'});
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Screenshot selection failed: ${error.message}`; }
@@ -1008,7 +1165,7 @@
           const result = await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}/select`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({element_index:Number(select.dataset.index)})});
           const host = document.querySelector('#browser-lab-selected');
           host.hidden = false;
-          host.innerHTML = `<strong>Selected DOM metadata</strong><pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre><span class="small">Selection is a candidate observation only. No control is activated and no input value is read.</span>`;
+          host.innerHTML = `<strong>Selected DOM metadata</strong><dl class="structured-summary"><dt>Index</dt><dd>${escapeHtml(result.index ?? select.dataset.index)}</dd><dt>Tag / type</dt><dd>${escapeHtml(result.tag || '-')} ${result.type ? `· ${escapeHtml(result.type)}` : ''}</dd><dt>Name / id</dt><dd>${escapeHtml(result.name || result.id || result.aria_label || '(unnamed)')}</dd></dl><details class="url-list-panel"><summary>Advanced · Raw metadata</summary><pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre></details><span class="small">Selection is a candidate observation only. No control is activated and no input value is read.</span>`;
           document.querySelector('#browser-lab-status').textContent = 'Selected DOM metadata; no page action was triggered.';
           host.scrollIntoView({behavior:'smooth', block:'center'});
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Element selection failed: ${error.message}`; }
@@ -1019,7 +1176,7 @@
           const result = await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}/focus`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({element_index:Number(focus.dataset.index)})});
           const host = document.querySelector('#browser-lab-selected');
           host.hidden = false;
-          host.innerHTML = `<strong>Focus-to-request correlation: ${escapeHtml(result.correlation_status)}</strong><p class="small">${escapeHtml(result.capture_policy)}</p><pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre><span class="small">Correlation is evidence, not proof of causation. No input value or request body was captured.</span>`;
+          host.innerHTML = `<strong>Focus observation: ${escapeHtml(humanStatus(result.correlation_status))}</strong><p class="small">${escapeHtml(result.capture_policy || '')}</p><dl class="structured-summary"><dt>Correlated requests</dt><dd>${Number((result.correlated_requests || []).length)} safe request(s)</dd></dl><details class="url-list-panel"><summary>Advanced · Raw correlation</summary><pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre></details><span class="small">Correlation is evidence, not proof of causation. No input value or request body was captured.</span>`;
           document.querySelector('#browser-lab-status').textContent = `Focus observation complete: ${result.correlation_status}.`;
           host.scrollIntoView({behavior:'smooth', block:'center'});
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Focus observation failed: ${error.message}`; }
@@ -1031,7 +1188,7 @@
           const result = await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}/probe-input`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({element_index:Number(probe.dataset.index)})});
           const host = document.querySelector('#browser-lab-selected');
           host.hidden = false;
-          host.innerHTML = `<strong>Synthetic input correlation: ${escapeHtml(result.correlation_status)}</strong><p class="small">${escapeHtml(result.capture_policy)}</p><pre>${escapeHtml(JSON.stringify(result.correlated_requests, null, 2))}</pre><span class="small">The test value was not returned or stored; close the session to discard the ephemeral page state.</span>`;
+          host.innerHTML = `<strong>Synthetic probe: ${escapeHtml(humanStatus(result.correlation_status))}</strong><p class="small">${escapeHtml(result.capture_policy || '')}</p><dl class="structured-summary"><dt>Correlated requests</dt><dd>${Number((result.correlated_requests || []).length)} safe request(s)</dd></dl><details class="url-list-panel"><summary>Advanced · Request metadata</summary><pre>${escapeHtml(JSON.stringify(result.correlated_requests, null, 2))}</pre></details><span class="small">The test value was not returned or stored; close the session to discard the ephemeral page state.</span>`;
           document.querySelector('#browser-lab-status').textContent = `Synthetic probe complete: ${result.correlation_status}.`;
           host.scrollIntoView({behavior:'smooth', block:'center'});
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Synthetic input probe failed: ${error.message}`; }
@@ -1044,7 +1201,7 @@
           renderBrowserLabSnapshot(result.snapshot);
           const host = document.querySelector('#browser-lab-selected');
           host.hidden = false;
-          host.innerHTML = `<strong>Click-to-request correlation: ${escapeHtml(result.correlation_status)}</strong><p class="small">${escapeHtml(result.capture_policy)}</p><pre>${escapeHtml(JSON.stringify(result.correlated_requests, null, 2))}</pre><span class="small">This was an explicit, non-submit click. Causality remains a candidate; no request body or field value was captured.</span>`;
+          host.innerHTML = `<strong>Click observation: ${escapeHtml(humanStatus(result.correlation_status))}</strong><p class="small">${escapeHtml(result.capture_policy || '')}</p><dl class="structured-summary"><dt>Correlated requests</dt><dd>${Number((result.correlated_requests || []).length)} safe request(s)</dd></dl><details class="url-list-panel"><summary>Advanced · Request metadata</summary><pre>${escapeHtml(JSON.stringify(result.correlated_requests, null, 2))}</pre></details><span class="small">This was an explicit, non-submit click. Causality remains a candidate; no request body or field value was captured.</span>`;
           document.querySelector('#browser-lab-status').textContent = `Click observation complete: ${result.correlation_status}.`;
           host.scrollIntoView({behavior:'smooth', block:'center'});
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Observed click failed: ${error.message}`; }
@@ -1059,7 +1216,7 @@
           const host = document.querySelector('#browser-lab-candidate');
           host.hidden = false;
           const cookieRows = (result.cookie_metadata || []).map(item => `${item.name} · ${item.path}${item.secure ? ' · Secure' : ''}${item.http_only ? ' · HttpOnly' : ''}${item.same_site ? ` · SameSite=${item.same_site}` : ''}`).join('\n');
-          host.innerHTML = `<strong>Observe-only positive-model candidate · not saved · ${Number(result.summary?.endpoint_count || 0)} endpoints · ${Number(result.summary?.field_count || 0)} fields</strong><p class="small">${escapeHtml(result.summary?.confidence_note || '')}</p><p class="small">Cookie names and attributes (values excluded):<br><code>${escapeHtml(cookieRows || 'No scoped cookies observed')}</code></p><button id="browser-lab-candidate-save" type="button">Save draft for review</button><pre>${escapeHtml(JSON.stringify(result.candidate, null, 2))}</pre>`;
+          host.innerHTML = `<strong>Observe-only candidate · not saved</strong><dl class="structured-summary"><dt>Endpoints</dt><dd>${Number(result.summary?.endpoint_count || 0)}</dd><dt>Fields</dt><dd>${Number(result.summary?.field_count || 0)}</dd><dt>Confidence note</dt><dd>${escapeHtml(result.summary?.confidence_note || '—')}</dd><dt>Cookies (names only)</dt><dd><code>${escapeHtml(cookieRows || 'No scoped cookies observed')}</code></dd></dl><button id="browser-lab-candidate-save" type="button">Save draft for review</button><details class="url-list-panel"><summary>Advanced · Candidate JSON</summary><pre>${escapeHtml(JSON.stringify(result.candidate, null, 2))}</pre></details>`;
         } catch (error) { document.querySelector('#browser-lab-status').textContent = `Candidate generation failed: ${error.message}`; }
         finally { candidateButton.disabled = false; }
       }
@@ -1093,8 +1250,13 @@
         else body.status = statusButton.dataset.status;
         const result = await api(`/api/positive-model/candidates/${encodeURIComponent(item.candidate_id)}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
         await loadPositiveCandidates();
-        if (result.status === 'accepted') document.querySelector('#browser-lab-status').textContent = 'Candidate accepted for observe-only review; no enforcement was enabled.';
-      } catch (error) { button.disabled = false; document.querySelector('#browser-lab-status').textContent = `Candidate review failed: ${error.message}`; }
+        const msg = document.querySelector(`.positive-candidate-status-msg[data-id="${CSS.escape(item.candidate_id)}"]`) || document.querySelector('#positive-candidate-list');
+        if (result.status === 'accepted' && msg) msg.textContent = 'Candidate accepted for observe-only review; no enforcement was enabled.';
+      } catch (error) {
+        button.disabled = false;
+        const msg = button.closest('details')?.querySelector('.positive-candidate-status-msg') || document.querySelector('#positive-candidate-list');
+        if (msg) msg.textContent = `Candidate review failed: ${error.message}`;
+      }
     });
     document.querySelector('#positive-model-validation-form').addEventListener('submit', async event => {
       event.preventDefault();
@@ -1129,9 +1291,24 @@
       document.querySelector('#connected-nsip').innerHTML = `<strong>${escapeHtml(result.nsip || 'unknown')}</strong>`;
       document.querySelector('#connected-hostname').textContent = result.hostname || 'Unavailable';
       document.querySelector('#connected-version').textContent = result.version && result.version !== 'unknown' ? result.version : 'Unavailable';
+      document.querySelector('#bar-nsip').textContent = result.nsip || 'unknown';
+      document.querySelector('#bar-hostname').textContent = result.hostname ? `· ${result.hostname}` : '';
       document.querySelector('#connection-identity-status').textContent = result.identity_status === 'available' ? 'Hostname and version read from the appliance over SSH.' : `SSH identity lookup: ${result.identity_status || 'unavailable'}.`;
       document.querySelector('#connection-screen').hidden = true;
       document.querySelector('#workspace').hidden = false;
+      document.querySelector('#connection-summary').hidden = false;
+      document.querySelector('#main-actions').hidden = false;
+      setWriteModeBadge(null, 'Open Signature profile to refresh live write mode from inventory.');
+      setCatalogFreshness('Catalog: open Signature profile or run recommendations to refresh');
+      showTool(null);
+      // Best-effort refresh of write mode without blocking connect UX.
+      api('/api/adc/inventory').then(inventory => {
+        const writeEnabled = inventory.write_enabled === true || inventory.capabilities?.waf_cli_writes === true;
+        window.currentWriteEnabled = writeEnabled;
+        setWriteModeBadge(writeEnabled);
+        const signatures = inventory.waf?.resources?.signature_catalog?.entries || inventory.signatureCatalog?.entries || [];
+        setCatalogFreshness(`Catalog objects on ADC: ${Array.isArray(signatures) ? signatures.length : 0}`);
+      }).catch(() => setWriteModeBadge(null, 'Could not refresh write mode yet. Open Signature profile after the ADC is reachable.'));
     }
     document.querySelector('#disconnect-button').addEventListener('click', async () => {
       const message = document.querySelector('#connection-success-message');
@@ -1139,34 +1316,34 @@
       try { if (window.currentConnectionId) await api(`/api/netscalers/${encodeURIComponent(window.currentConnectionId)}/disconnect`, {method: 'POST'}); } catch (error) {}
       window.currentConnectionId = null;
       window.wafInventoryLoaded = false;
+      window.currentTool = null;
       document.querySelector('#connection-screen').hidden = false;
       document.querySelector('#workspace').hidden = true;
       document.querySelector('#waf-section').hidden = true;
       document.querySelector('#discovery-section').hidden = true;
       document.querySelector('#positive-model-workbench').hidden = true;
-      document.querySelector('#regex-rulz-section').hidden = true;
       document.querySelector('#waf-inventory').textContent = '';
       document.querySelector('#profile').textContent = '';
+      document.querySelector('#adc-correlation').textContent = '';
+      document.querySelector('#analysis').textContent = '';
+      setWriteModeBadge(null);
+      setCatalogFreshness('Catalog: not loaded');
     });
     document.querySelector('#load-waf-inventory').addEventListener('click', loadWafInventory);
+    document.querySelectorAll('.back-to-tools').forEach(btn => btn.addEventListener('click', backToTools));
     document.querySelector('#analyse-application').addEventListener('click', () => {
-      document.querySelector('#discovery-section').hidden = false;
-      document.querySelector('#positive-model-workbench').hidden = false;
-      document.querySelector('#discovery-section').scrollIntoView({behavior: 'smooth', block: 'start'});
+      setAnalyseStep('scan');
+      showTool('analyse');
     });
     document.querySelector('#create-signature-profile').addEventListener('click', async () => {
-      const section = document.querySelector('#waf-section');
-      section.hidden = false;
+      showTool('inventory');
       if (!window.wafInventoryLoaded) await loadWafInventory();
-      const wizard = document.querySelector('#waf-inventory .create-profile-plan-button')?.closest('.card');
-      const profileActions = document.querySelector('#appfw-profile-actions-panel');
-      if (profileActions) profileActions.open = true;
-      (wizard || section).scrollIntoView({behavior: 'smooth', block: 'start'});
+      const wizard = document.querySelector('#create-plan-card') || document.querySelector('#waf-inventory .create-profile-plan-button')?.closest('.card');
+      (wizard || document.querySelector('#waf-section'))?.scrollIntoView({behavior: 'smooth', block: 'start'});
     });
-    document.querySelector('#open-regex-rulz').addEventListener('click', () => {
-      const section = document.querySelector('#regex-rulz-section');
-      section.hidden = false;
-      section.scrollIntoView({behavior: 'smooth', block: 'start'});
+    document.querySelector('#open-positive-security').addEventListener('click', () => {
+      showTool('positive');
+      loadPositiveCandidates();
     });
     document.querySelector('#waf-inventory').addEventListener('change', event => {
       const typeFilter = event.target.closest('#vserver-type-filter');
@@ -1182,6 +1359,13 @@
     });
     document.querySelector('#waf-inventory').addEventListener('input', event => { if (event.target.closest('#vserver-search')) renderClassicVserverTable(); const productSearch = event.target.closest('#signature-product-search'); if (productSearch) { const tree = document.querySelector('#signature-product-tree'); if (tree) tree.innerHTML = renderSignatureProductTree(window.currentProductIndex || {}, productSearch.value); } });
     document.querySelector('#waf-inventory').addEventListener('click', async event => {
+      const tab = event.target.closest('.inventory-tab');
+      if (tab) {
+        const name = tab.dataset.inventoryTab;
+        document.querySelectorAll('.inventory-tab').forEach(item => item.classList.toggle('active', item === tab));
+        document.querySelectorAll('.inventory-pane').forEach(pane => { pane.hidden = pane.id !== `inventory-pane-${name}`; });
+        return;
+      }
       const button = event.target.closest('.duplicate-profile-button');
       const createButton = event.target.closest('.create-profile-plan-button');
       const approveButton = event.target.closest('.duplicate-approve-button');
@@ -1261,24 +1445,84 @@
       button.disabled = false;
       button.textContent = 'Prepare duplicate plan';
     });
+    async function loadSignatureRecommendations(jobId, triggerButton) {
+      const host = document.querySelector('#profile');
+      if (triggerButton) { triggerButton.disabled = true; triggerButton.textContent = 'Loading...'; }
+      if (host) host.textContent = 'Loading exact WAF signature recommendations...';
+      try {
+        const encoded = encodeURIComponent(jobId);
+        const [analysis, exactPlan, technologyCatalog] = await Promise.all([
+          api(`/api/discovery/jobs/${encoded}/analysis`),
+          api('/api/custom-signature-sets/recommendations', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({job_id: jobId, action: 'LOG'})}),
+          api('/api/signatures/technologies'),
+        ]);
+        renderSignatureRecommendationSummary(analysis, exactPlan, technologyCatalog);
+        host?.scrollIntoView({behavior: 'smooth', block: 'start'});
+      } catch (error) {
+        if (host) host.textContent = `Unable to load exact signature recommendations: ${error.message}`;
+      } finally {
+        if (triggerButton) { triggerButton.disabled = false; triggerButton.textContent = triggerButton.classList.contains('primary-cta') ? 'Review recommended signatures' : 'Signature recommendations'; }
+      }
+    }
+    async function loadAdcPath(jobId, triggerButton) {
+      const host = document.querySelector('#adc-correlation');
+      if (triggerButton) { triggerButton.disabled = true; triggerButton.textContent = 'Checking...'; }
+      if (host) host.textContent = 'Checking ADC path correlation...';
+      try {
+        const payload = await api(`/api/discovery/jobs/${encodeURIComponent(jobId)}/classic-correlation`);
+        renderClassicCorrelation(payload);
+        host?.scrollIntoView({behavior: 'smooth', block: 'start'});
+      } catch (error) {
+        if (host) host.textContent = `Unable to check ADC path: ${error.message}`;
+      } finally {
+        if (triggerButton) { triggerButton.disabled = false; triggerButton.textContent = 'Check ADC path'; }
+      }
+    }
+    async function loadAdvancedAnalysis(jobId, triggerButton) {
+      const host = document.querySelector('#analysis');
+      if (triggerButton) { triggerButton.disabled = true; triggerButton.textContent = 'Loading...'; }
+      if (host) host.textContent = 'Loading advanced evidence analysis...';
+      try {
+        const analysis = await api(`/api/discovery/jobs/${encodeURIComponent(jobId)}/analysis`);
+        renderAnalysis(analysis);
+        setAnalyseStep('findings');
+        host?.scrollIntoView({behavior: 'smooth', block: 'start'});
+      } catch (error) {
+        if (host) host.textContent = `Unable to load advanced analysis: ${error.message}`;
+      } finally {
+        if (triggerButton) { triggerButton.disabled = false; triggerButton.textContent = 'Advanced analysis'; }
+      }
+    }
     document.querySelector('#jobs').addEventListener('click', async event => {
       const button = event.target.closest('.profile-button');
       const signatureRecommendationsButton = event.target.closest('.signature-recommendations-button');
+      const adcPathButton = event.target.closest('.adc-path-button');
+      const analysisButton = event.target.closest('.analysis-button');
       const cancelButton = event.target.closest('.cancel-button');
       const deleteButton = event.target.closest('.delete-button');
-      if (signatureRecommendationsButton) { const host = document.querySelector('#profile'); signatureRecommendationsButton.disabled = true; signatureRecommendationsButton.textContent = 'Loading...'; if (host) host.textContent = 'Loading exact WAF signature recommendations...'; try { const jobId = encodeURIComponent(signatureRecommendationsButton.dataset.job); const [analysis, exactPlan, technologyCatalog] = await Promise.all([api(`/api/discovery/jobs/${jobId}/analysis`), api('/api/custom-signature-sets/recommendations', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({job_id: signatureRecommendationsButton.dataset.job, action: 'LOG'})}), api('/api/signatures/technologies')]); renderSignatureRecommendationSummary(analysis, exactPlan, technologyCatalog); } catch (error) { if (host) host.textContent = `Unable to load exact signature recommendations: ${error.message}`; } finally { signatureRecommendationsButton.disabled = false; signatureRecommendationsButton.textContent = 'Signature recommendations'; } return; }
+      if (signatureRecommendationsButton) { await loadSignatureRecommendations(signatureRecommendationsButton.dataset.job, signatureRecommendationsButton); return; }
+      if (adcPathButton) { await loadAdcPath(adcPathButton.dataset.job, adcPathButton); return; }
+      if (analysisButton) { await loadAdvancedAnalysis(analysisButton.dataset.job, analysisButton); return; }
       if (cancelButton) { if (!window.confirm('Cancel this active discovery scan?')) return; cancelButton.disabled = true; cancelButton.textContent = 'Cancelling...'; try { await api(`/api/discovery/jobs/${encodeURIComponent(cancelButton.dataset.job)}/cancel`, {method: 'POST'}); document.querySelector('#discovery-status').textContent = 'Discovery scan cancelled.'; await loadJobs(); } catch (error) { cancelButton.disabled = false; cancelButton.textContent = 'Cancel'; document.querySelector('#discovery-status').textContent = 'Unable to cancel discovery scan.'; } return; }
-      if (deleteButton) { if (!window.confirm('Delete this past analysis and all stored evidence?')) return; try { await api(`/api/discovery/jobs/${encodeURIComponent(deleteButton.dataset.job)}`, {method: 'DELETE'}); document.querySelector('#discovery-status').textContent = 'Past analysis deleted.'; document.querySelector('#profile').textContent = ''; await loadJobs(); } catch (error) { document.querySelector('#discovery-status').textContent = 'Unable to delete past analysis.'; } return; }
+      if (deleteButton) { if (!window.confirm('Delete this past analysis and all stored evidence?')) return; try { await api(`/api/discovery/jobs/${encodeURIComponent(deleteButton.dataset.job)}`, {method: 'DELETE'}); document.querySelector('#discovery-status').textContent = 'Past analysis deleted.'; document.querySelector('#profile').textContent = ''; document.querySelector('#adc-correlation').textContent = ''; document.querySelector('#analysis').textContent = ''; setAnalyseStep('scan'); await loadJobs(); } catch (error) { document.querySelector('#discovery-status').textContent = 'Unable to delete past analysis.'; } return; }
       if (!button) return;
       document.querySelector('#profile').textContent = 'Loading technology profile...';
-      try { renderProfile(await api(`/api/discovery/jobs/${encodeURIComponent(button.dataset.job)}/profile`)); }
+      try { renderProfile(await api(`/api/discovery/jobs/${encodeURIComponent(button.dataset.job)}/profile`)); document.querySelector('#profile')?.scrollIntoView({behavior: 'smooth', block: 'start'}); }
       catch (error) { document.querySelector('#profile').textContent = 'Unable to load technology profile.'; }
     });
     document.querySelector('#profile').addEventListener('click', async event => {
+      const ruleMetaToggle = event.target.closest('.rule-toggle-meta');
+      if (ruleMetaToggle) { event.preventDefault(); event.stopPropagation(); ruleMetaToggle.closest('.generic-signature-rule')?.classList.toggle('expanded'); ruleMetaToggle.textContent = ruleMetaToggle.closest('.generic-signature-rule')?.classList.contains('expanded') ? 'Hide details' : 'Details'; return; }
+      const signatureRecommendationsButton = event.target.closest('.signature-recommendations-button');
+      const adcPathButton = event.target.closest('.adc-path-button');
+      const analysisButton = event.target.closest('.analysis-button');
+      if (signatureRecommendationsButton) { await loadSignatureRecommendations(signatureRecommendationsButton.dataset.job, signatureRecommendationsButton); return; }
+      if (adcPathButton) { await loadAdcPath(adcPathButton.dataset.job, adcPathButton); return; }
+      if (analysisButton) { await loadAdvancedAnalysis(analysisButton.dataset.job, analysisButton); return; }
       const regexPrepareOpenButton = event.target.closest('.regex-prepare-open');
       const regexModeButton = event.target.closest('.regex-mode-option');
       if (regexPrepareOpenButton) { const panel = regexPrepareOpenButton.parentElement.querySelector('.regex-prepare-panel'); if (panel) panel.hidden = false; regexPrepareOpenButton.hidden = true; return; }
-      if (regexModeButton) { const panel = regexModeButton.closest('.regex-prepare-panel'); const output = panel?.querySelector('.regex-proposal-output'); if (output) output.innerHTML = renderUrlRegexProposal(regexModeButton.dataset.mode, window.currentProfileStartUrls || []); panel?.querySelectorAll('.regex-mode-option').forEach(option => { option.setAttribute('aria-pressed', String(option === regexModeButton)); }); return; }
+      if (regexModeButton) { const panel = regexModeButton.closest('.regex-prepare-panel'); const output = panel?.querySelector('.regex-proposal-output'); if (output) output.innerHTML = renderUrlRegexProposal(regexModeButton.dataset.mode, window.currentProfileRegexUrls || window.currentProfileStartUrls || []); panel?.querySelectorAll('.regex-mode-option').forEach(option => { option.setAttribute('aria-pressed', String(option === regexModeButton)); }); return; }
       const planButton = event.target.closest('.plan-button');
       const positiveModelDiscoveryButton = event.target.closest('.positive-model-discovery-button');
       const runtimeButton = event.target.closest('.runtime-button');
@@ -1309,7 +1553,7 @@
       const genericSignatureSubgroupToggle = event.target.closest('.generic-signature-subgroup-toggle');
       const genericSignatureRule = event.target.closest('.generic-signature-rule-select');
       const releaseYearAfterButton = event.target.closest('.recommendation-release-year-after');
-      if (positiveModelDiscoveryButton) { const status = document.querySelector('#positive-model-discovery-status'); positiveModelDiscoveryButton.disabled = true; positiveModelDiscoveryButton.textContent = 'Fusing passive evidence...'; if (status) status.textContent = 'Building a review-only draft; no target endpoints are being fetched.'; try { const candidate = await api(`/api/discovery/jobs/${encodeURIComponent(positiveModelDiscoveryButton.dataset.job)}/positive-model-candidate`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); if (status) status.textContent = `Draft saved (${candidate.model?.endpoints?.length || 0} observed endpoints). Review it in Saved positive-model candidates below.`; await loadPositiveCandidates(); } catch (error) { positiveModelDiscoveryButton.disabled = false; positiveModelDiscoveryButton.textContent = 'Generate positive-model draft'; if (status) status.textContent = `Unable to create draft: ${error.message}`; } return; }
+      if (positiveModelDiscoveryButton) { const status = document.querySelector('#positive-model-discovery-status'); positiveModelDiscoveryButton.disabled = true; positiveModelDiscoveryButton.textContent = 'Fusing passive evidence...'; if (status) status.textContent = 'Building a review-only draft; no target endpoints are being fetched.'; try { const candidate = await api(`/api/discovery/jobs/${encodeURIComponent(positiveModelDiscoveryButton.dataset.job)}/positive-model-candidate`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); if (status) status.textContent = `Draft saved (${candidate.model?.endpoints?.length || 0} observed endpoints). Open Positive security lab to review saved candidates.`; await loadPositiveCandidates(); } catch (error) { positiveModelDiscoveryButton.disabled = false; positiveModelDiscoveryButton.textContent = 'Generate positive-model draft'; if (status) status.textContent = `Unable to create draft: ${error.message}`; } return; }
       if (releaseYearAfterButton) { const selectedYear = Number(releaseYearAfterButton.dataset.year); window.currentSelectedReleaseYears = (window.currentTechnologyCatalog?.years || []).map(item => Number(item.year)).filter(year => year >= selectedYear); const host = document.querySelector('#recommendation-release-years'); if (host) host.innerHTML = renderReleaseYearOptions(window.currentTechnologyCatalog || {years: []}, window.currentSelectedReleaseYears); const allYears = (window.currentTechnologyCatalog?.years || []).map(item => Number(item.year)); const allCheckbox = document.querySelector('#recommendation-release-all'); if (allCheckbox) allCheckbox.checked = window.currentSelectedReleaseYears.length === allYears.length; return; }
       if (cveSearchApplyButton) { const jobId = window.currentRecommendationAnalysis?.run_id; const selected = [...new Set(window.currentSelectedRuleIds || [])]; const selectedYears = window.currentSelectedReleaseYears || []; const allYearsSelected = Boolean(document.querySelector('#recommendation-release-all')?.checked); const viewMode = document.querySelector('#cve-view-mode')?.value || 'vendor'; const searchMode = document.querySelector('input[name="cve-search-mode"]:checked')?.value || 'description'; const searchQuery = document.querySelector('#cve-search-query')?.value || ''; const status = document.querySelector('#cve-search-status'); cveSearchApplyButton.disabled = true; cveSearchApplyButton.textContent = 'Searching...'; if (status) status.textContent = 'Applying CVE view and search...'; window.currentCveViewMode = viewMode; window.currentCveSearchMode = searchMode; window.currentCveSearchQuery = searchQuery; try { const exactPlan = await api('/api/custom-signature-sets/recommendations', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({job_id: jobId, action: 'LOG', selected_rule_ids: selected, selected_technology_filters: window.currentSelectedTechnologyFilters || null, selected_release_years: allYearsSelected ? null : (selectedYears.length ? selectedYears : null), include_generic_signatures: window.currentIncludeGenericSignatures ?? true, cve_view_mode: viewMode, cve_search_mode: searchMode, cve_search_query: searchQuery})}); renderSignatureRecommendationSummary(window.currentRecommendationAnalysis, exactPlan, window.currentTechnologyCatalog || {groups: []}, window.currentSelectedTechnologyFilters || [], selectedYears); } catch (error) { if (status) status.textContent = `Unable to search CVEs: ${error.message}`; cveSearchApplyButton.disabled = false; cveSearchApplyButton.textContent = 'Search CVEs'; } return; }
       if (genericSignatureSelectAllButton || genericSignatureClearButton) { const ids = [...document.querySelectorAll('.generic-signature-rule-select')].map(item => String(item.dataset.ruleId || '')).filter(Boolean); const current = new Set(window.currentSelectedRuleIds || []); ids.forEach(id => genericSignatureSelectAllButton ? current.add(id) : current.delete(id)); window.currentSelectedRuleIds = [...current]; syncGenericSignatureCheckboxes(current); const status = document.querySelector('#generic-signature-status'); if (status) status.textContent = `${current.size} exact rule(s) selected.`; return; }
