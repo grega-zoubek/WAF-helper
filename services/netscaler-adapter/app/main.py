@@ -25,7 +25,7 @@ from app.nextgen import (
     write_enabled,
 )
 from app.rule_catalog import load_rule_catalog
-from app.ssh_inventory import collect_waf_inventory, execute_cli_commands, read_system_identity
+from app.ssh_inventory import collect_protection_status, collect_waf_inventory, execute_cli_commands, read_system_identity
 
 
 app = FastAPI(title="NetScaler Next-Gen Adapter", version="0.2.0")
@@ -434,6 +434,12 @@ async def signatures() -> Any:
     signatures_payload = inventory_payload.get("signatures", {}) if isinstance(inventory_payload, dict) else {}
     return {"appfwsignatures": signatures_payload.get("records", []), "provider": inventory_payload.get("provider"), "status": signatures_payload.get("status", inventory_payload.get("status")), "source": "cli-over-ssh", "automatic_apply_allowed": False}
 
+
+
+@app.get("/api/adc/protection-status")
+async def protection_status(signature_object_name: str | None = None) -> dict[str, Any]:
+    """Read-only AppFW binding and hit-counter snapshot for the LOG review loop."""
+    return await asyncio.to_thread(collect_protection_status, signature_object_name)
 
 @app.get("/api/adc/signatures/rules")
 async def signature_rules() -> dict[str, Any]:

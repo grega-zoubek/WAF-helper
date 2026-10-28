@@ -61,6 +61,9 @@
     .regex-proposal-rule { padding: .65rem; border: 1px solid #d9dee3; border-radius: 5px; background: #fafbfc; }
     .regex-proposal-rule code { display: block; margin-top: .4rem; overflow-wrap: anywhere; white-space: pre-wrap; }
     .recommendation-hero { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .6rem; margin: 1rem 0; }
+    .intent-card-grid { margin: .6rem 0 1rem; }
+    .intent-card h4 { margin: 0 0 .35rem; }
+    .intent-card .job-actions { flex-wrap: wrap; white-space: normal; }
     .metric { border: 1px solid #d9dee3; border-radius: 6px; padding: .7rem; background: #fafbfc; }
     .metric strong { display: block; font-size: 1.25rem; margin-top: .2rem; }
     .notice { border-left: 4px solid #9a6700; background: #fff8e1; padding: .7rem .9rem; margin: .8rem 0; }
@@ -246,7 +249,7 @@
         <button id="analyse-application" class="secondary tool-card" type="button"><strong>Analyse application</strong><span class="small">Passive crawl, technology findings, and signature recommendations.</span></button>
         <button id="create-signature-profile" class="secondary tool-card" type="button"><strong>Create signature profile</strong><span class="small">Inspect live AppFW inventory and prepare a guarded LOG proposal.</span></button>
         <button id="open-positive-security" class="secondary tool-card" type="button"><strong>Positive security lab</strong><span class="small">Build an observe-only allowlist from guided browsing.</span></button>
-        <button id="open-regex-rulz" class="secondary tool-card" type="button" disabled title="Coming soon — regex prepare is available under Findings after a scan"><strong>Regex Rulz</strong><span class="small">Coming soon. Path regex drafts are available under Findings for now.</span></button>
+        <button id="open-regex-rulz" class="secondary tool-card" type="button"><strong>Regex Rulz</strong><span class="small">Build path regex proposals from the latest completed discovery scan.</span></button>
       </div>
     </section>
     <section class="next card" id="waf-section" hidden data-tool-panel="inventory">
@@ -284,6 +287,24 @@
       <div id="adc-correlation" class="profile"></div>
       <div id="profile" class="profile"></div>
       <div id="analysis" class="profile"></div>
+      <div id="protection-status" class="profile"></div>
+      <div id="bind-wizard" class="profile"></div>
+    </section>
+    <section class="next card" id="regex-rulz-section" hidden data-tool-panel="regex">
+      <div class="panel-header">
+        <h2>Regex Rulz</h2>
+        <button id="back-from-regex" class="secondary back-to-tools" type="button">Back to tools</button>
+      </div>
+      <p class="small muted">Proposal-only path regex drafts from discovered routes and assets. Nothing is written to the ADC from this workspace.</p>
+      <p id="regex-rulz-status" class="small muted">Select a completed discovery job or open Findings first.</p>
+      <label class="small">Discovery job <select id="regex-rulz-job"></select></label>
+      <div class="regex-mode-options">
+        <button class="secondary regex-rulz-mode" data-mode="basic" type="button"><strong>Basic</strong><span class="small">Suffixes and broad folder prefixes.</span></button>
+        <button class="secondary regex-rulz-mode" data-mode="balanced" type="button"><strong>Balanced</strong><span class="small">Consolidated suffixes and exact folder groups.</span></button>
+        <button class="secondary regex-rulz-mode" data-mode="aggressive" type="button"><strong>Aggressive</strong><span class="small">Exact observed paths only.</span></button>
+      </div>
+      <div id="regex-rulz-output" class="profile"></div>
+      <p class="job-actions"><button class="secondary" id="regex-rulz-copy" type="button" hidden>Copy patterns</button></p>
     </section>
     <section class="next card" id="positive-model-workbench" hidden data-tool-panel="positive">
       <div class="panel-header">
@@ -403,6 +424,7 @@
         analyse: document.querySelector('#discovery-section'),
         inventory: document.querySelector('#waf-section'),
         positive: document.querySelector('#positive-model-workbench'),
+        regex: document.querySelector('#regex-rulz-section'),
       };
       Object.entries(panels).forEach(([name, el]) => { if (el) el.hidden = name !== tool; });
       const hub = document.querySelector('#main-actions');
@@ -410,11 +432,12 @@
       if (hub) hub.hidden = Boolean(tool);
       if (summary) summary.hidden = Boolean(tool);
       document.querySelectorAll('.tool-card').forEach(btn => {
-        const map = {'analyse-application':'analyse','create-signature-profile':'inventory','open-positive-security':'positive'};
+        const map = {'analyse-application':'analyse','create-signature-profile':'inventory','open-positive-security':'positive','open-regex-rulz':'regex'};
         btn.classList.toggle('active', map[btn.id] === tool);
       });
       window.currentTool = tool || null;
       if (tool === 'analyse') setAnalyseStep(window.currentAnalyseStep || 'scan');
+      if (tool === 'regex') refreshRegexRulzJobs();
       const target = tool ? panels[tool] : hub;
       target?.scrollIntoView({behavior: 'smooth', block: 'start'});
     }
@@ -428,7 +451,7 @@
       const host = document.querySelector('#positive-candidate-list');
       if (!host) return;
       if (!items?.length) { host.innerHTML = '<p class="small muted">No saved candidates yet.</p>'; return; }
-      host.innerHTML = items.map(item => { const summary = item.source_summary || {}; const applicability = (summary.generic_applicability || []).map(value => `${escapeHtml(value.intent_id)} ${Number(value.score || 0).toFixed(2)} (${escapeHtml(value.confidence || 'low')})`).join(' · '); const endpoints = item.model?.endpoints || []; const endpointPreview = endpoints.slice(0, 8).map(ep => `<li><code>${escapeHtml(ep.method || 'GET')}</code> ${escapeHtml(ep.path_template || ep.path || '-')} · ${escapeHtml(ep.decision_mode || 'observe')}</li>`).join(''); return `<details class="card"><summary><strong>${escapeHtml(item.hostname)}</strong> · ${statusHtml(item.status)} · v${Number(item.version)} · ${Number(endpoints.length)} endpoints</summary><p class="notice">Accepting keeps every endpoint observe-only. It does not enforce or change the ADC.</p><p class="small muted">Created by ${escapeHtml(item.created_by)} · updated ${escapeHtml(item.updated_at)}</p><dl class="structured-summary"><dt>Evidence</dt><dd>${escapeHtml((summary.evidence_sources || []).join(', ') || 'not recorded')} · ${Number(summary.runtime_auth_surface_count || 0)} auth surfaces · ${Number(summary.runtime_api_endpoint_count || 0)} runtime APIs · ${Number(summary.route_candidates_not_verified || 0)} unverified static candidates excluded</dd>${summary.auth_state ? `<dt>Authentication</dt><dd>${escapeHtml(summary.auth_state)}${summary.identity_label ? ` · identity ${escapeHtml(summary.identity_label)}` : ''}${summary.auth_result ? ` · ${escapeHtml(summary.auth_result)}` : ''}</dd>` : ''}${summary.technology_signals?.length ? `<dt>Technologies</dt><dd>${escapeHtml(summary.technology_signals.join(', '))}</dd>` : ''}${applicability ? `<dt>WAF applicability</dt><dd>${applicability}</dd>` : ''}<dt>ADC topology</dt><dd>${escapeHtml(humanStatus(summary.adc_topology_status || 'not checked'))}${summary.adc_vserver ? ` · matched ${escapeHtml(summary.adc_vserver)}` : ''}</dd></dl>${endpointPreview ? `<p class="small"><strong>Endpoints (observe-only)</strong></p><ul>${endpointPreview}${endpoints.length > 8 ? `<li class="small muted">…and ${endpoints.length - 8} more</li>` : ''}</ul>` : ''}<p class="small muted">${escapeHtml(summary.confidence_note || '')}</p><label>Review note<input class="positive-candidate-note" data-id="${escapeHtml(item.candidate_id)}" maxlength="2000" value="${escapeHtml(item.review_note || '')}"></label><p class="job-actions"><button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="accepted" type="button">Accept for observe-only review</button><button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="rejected" type="button">Reject</button>${item.status !== 'draft' ? `<button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="draft" type="button">Return to draft</button>` : ''}<button class="secondary positive-candidate-audit" data-id="${escapeHtml(item.candidate_id)}" type="button">Review history</button></p><details class="url-list-panel"><summary>Advanced · Edit model JSON (saves as a new draft)</summary><label>Model JSON<textarea class="positive-candidate-editor" data-id="${escapeHtml(item.candidate_id)}" spellcheck="false">${escapeHtml(JSON.stringify(item.model, null, 2))}</textarea></label><button class="secondary positive-candidate-save" data-id="${escapeHtml(item.candidate_id)}" type="button">Save edits as draft</button></details><p class="positive-candidate-status-msg small muted" data-id="${escapeHtml(item.candidate_id)}"></p><div class="positive-candidate-audit-result small"></div></details>`; }).join('');
+      host.innerHTML = items.map(item => { const summary = item.source_summary || {}; const applicability = (summary.generic_applicability || []).map(value => `${escapeHtml(value.intent_id)} ${Number(value.score || 0).toFixed(2)} (${escapeHtml(value.confidence || 'low')})`).join(' · '); const endpoints = item.model?.endpoints || []; const endpointPreview = endpoints.slice(0, 8).map(ep => `<li><code>${escapeHtml(ep.method || 'GET')}</code> ${escapeHtml(ep.path_template || ep.path || '-')} · ${escapeHtml(ep.decision_mode || 'observe')}</li>`).join(''); return `<details class="card"><summary><strong>${escapeHtml(item.hostname)}</strong> · ${statusHtml(item.status)} · v${Number(item.version)} · ${Number(endpoints.length)} endpoints</summary><p class="notice">Accepting keeps every endpoint observe-only. It does not enforce or change the ADC.</p><p class="small muted">Created by ${escapeHtml(item.created_by)} · updated ${escapeHtml(item.updated_at)}</p><dl class="structured-summary"><dt>Evidence</dt><dd>${escapeHtml((summary.evidence_sources || []).join(', ') || 'not recorded')} · ${Number(summary.runtime_auth_surface_count || 0)} auth surfaces · ${Number(summary.runtime_api_endpoint_count || 0)} runtime APIs · ${Number(summary.route_candidates_not_verified || 0)} unverified static candidates excluded</dd>${summary.auth_state ? `<dt>Authentication</dt><dd>${escapeHtml(summary.auth_state)}${summary.identity_label ? ` · identity ${escapeHtml(summary.identity_label)}` : ''}${summary.auth_result ? ` · ${escapeHtml(summary.auth_result)}` : ''}</dd>` : ''}${summary.technology_signals?.length ? `<dt>Technologies</dt><dd>${escapeHtml(summary.technology_signals.join(', '))}</dd>` : ''}${applicability ? `<dt>WAF applicability</dt><dd>${applicability}</dd>` : ''}<dt>ADC topology</dt><dd>${escapeHtml(humanStatus(summary.adc_topology_status || 'not checked'))}${summary.adc_vserver ? ` · matched ${escapeHtml(summary.adc_vserver)}` : ''}</dd></dl>${endpointPreview ? `<p class="small"><strong>Endpoints (observe-only)</strong></p><ul>${endpointPreview}${endpoints.length > 8 ? `<li class="small muted">…and ${endpoints.length - 8} more</li>` : ''}</ul>` : ''}<p class="small muted">${escapeHtml(summary.confidence_note || '')}</p><label>Review note<input class="positive-candidate-note" data-id="${escapeHtml(item.candidate_id)}" maxlength="2000" value="${escapeHtml(item.review_note || '')}"></label><div class="structured-endpoint-editor" data-id="${escapeHtml(item.candidate_id)}">${endpoints.slice(0, 12).map((ep, index) => `<div class="browser-item"><label class="small">Method <input class="positive-ep-method" data-id="${escapeHtml(item.candidate_id)}" data-index="${index}" value="${escapeHtml(ep.method || 'GET')}" maxlength="16"></label><label class="small">Path template <input class="positive-ep-path" data-id="${escapeHtml(item.candidate_id)}" data-index="${index}" value="${escapeHtml(ep.path_template || ep.path || '')}" maxlength="512"></label><label class="small">Decision <select class="positive-ep-mode" data-id="${escapeHtml(item.candidate_id)}" data-index="${index}"><option value="observe"${(ep.decision_mode || 'observe') === 'observe' ? ' selected' : ''}>observe</option><option value="alert"${ep.decision_mode === 'alert' ? ' selected' : ''}>alert</option></select></label></div>`).join('') || '<p class="small muted">No endpoints in this model.</p>'}</div><p class="job-actions"><button class="secondary positive-candidate-structure-save" data-id="${escapeHtml(item.candidate_id)}" type="button">Save structured endpoint edits</button><button class="secondary positive-candidate-compile" data-id="${escapeHtml(item.candidate_id)}" type="button">Compile observe-only preview</button><button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="accepted" type="button">Accept for observe-only review</button><button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="rejected" type="button">Reject</button>${item.status !== 'draft' ? `<button class="secondary positive-candidate-status" data-id="${escapeHtml(item.candidate_id)}" data-status="draft" type="button">Return to draft</button>` : ''}<button class="secondary positive-candidate-audit" data-id="${escapeHtml(item.candidate_id)}" type="button">Review history</button></p><div class="positive-compile-result small"></div><details class="url-list-panel"><summary>Advanced · Edit model JSON (saves as a new draft)</summary><label>Model JSON<textarea class="positive-candidate-editor" data-id="${escapeHtml(item.candidate_id)}" spellcheck="false">${escapeHtml(JSON.stringify(item.model, null, 2))}</textarea></label><button class="secondary positive-candidate-save" data-id="${escapeHtml(item.candidate_id)}" type="button">Save edits as draft</button></details><p class="positive-candidate-status-msg small muted" data-id="${escapeHtml(item.candidate_id)}"></p><div class="positive-candidate-audit-result small"></div></details>`; }).join('');
     }
     async function loadPositiveCandidates() {
       const host = document.querySelector('#positive-candidate-list');
@@ -470,6 +493,134 @@
     const samplePositiveTransaction = {method:'GET',path:'/products/12',authentication:'public',fields:[{name:'page',location:'query',value_type:'integer',length:2,count:1}]};
     document.querySelector('#positive-model-json').value = JSON.stringify(samplePositiveModel, null, 2);
     document.querySelector('#positive-transaction-json').value = JSON.stringify(samplePositiveTransaction, null, 2);
+    function intentCardsFromPlan(exactPlan, analysis) {
+      const selection = exactPlan?.technology_context?.selection || {};
+      const groups = selection.generic_signature_groups || exactPlan?.generic_signature_groups || [];
+      const intents = (analysis?.generic_protection_intents || []).filter(item => item.decision === 'include');
+      if (groups.length) {
+        return groups.map(group => ({
+          id: group.group_id,
+          name: group.name || group.group_id,
+          priority: group.priority || 'P0',
+          confidence: group.applicability_confidence || '-',
+          selected: Number(group.selected_rule_count || 0),
+          total: Number(group.candidate_rule_count || group.rule_count || 0),
+          rationale: group.rationale || '',
+        }));
+      }
+      return intents.map(item => ({
+        id: item.intent_id || item.name,
+        name: item.name || item.intent_id,
+        priority: item.priority || '',
+        confidence: item.applicability_confidence || '-',
+        selected: null,
+        total: null,
+        rationale: item.rationale || '',
+      }));
+    }
+    function renderIntentCards(cards) {
+      if (!cards?.length) return '';
+      return `<div class="profile-summary-grid intent-card-grid">${cards.map(card => `<section class="summary-panel intent-card" data-intent-id="${escapeHtml(card.id || '')}"><h4>${escapeHtml(card.name || '-')}</h4><p class="small"><span class="${card.priority === 'P0' || card.priority === 'high' ? 'high' : 'medium'}">${escapeHtml(card.priority || '')}</span> · confidence ${escapeHtml(card.confidence || '-')}</p>${card.selected != null ? `<p class="small"><strong>${card.selected}</strong> / ${card.total} rules selected</p>` : ''}<p class="small muted">${escapeHtml(card.rationale || '')}</p><div class="job-actions"><button class="secondary intent-select-all" data-group-id="${escapeHtml(card.id || '')}" type="button">Select intent</button><button class="secondary intent-clear" data-group-id="${escapeHtml(card.id || '')}" type="button">Deselect intent</button></div></section>`).join('')}</div>`;
+    }
+    function renderProtectionStatus(payload) {
+      const host = document.querySelector('#protection-status');
+      if (!host) return;
+      const hits = payload.hit_counters || [];
+      const policies = payload.policies || [];
+      const sets = payload.sets || [];
+      const hitRows = hits.map(item => `<tr><td>${escapeHtml(item.name || '-')}</td><td>${escapeHtml(item.kind || '-')}</td><td><strong>${Number(item.hits || 0)}</strong></td><td>${escapeHtml(item.last_seen || '—')}</td></tr>`).join('');
+      const policyRows = policies.map(item => `<tr><td>${escapeHtml(item.name || '-')}</td><td>${escapeHtml(item.profile || '-')}</td><td>${escapeHtml((item.bound_vservers || []).join(', ') || '—')}</td><td>${item.hits != null ? Number(item.hits) : '—'}</td></tr>`).join('');
+      const setId = payload.custom_signature_set_id || '';
+      const action = payload.action || 'LOG';
+      host.innerHTML = `<div class="card"><h3>Protection status</h3><p class="small">Object: <strong>${escapeHtml(payload.signature_object_name || '—')}</strong> · action ${statusHtml(action)} · binding ${statusHtml(payload.binding_state || 'unbound')} · ADC ${statusHtml(payload.status || 'unavailable')}</p><p class="small">Bound vServers: <strong>${escapeHtml((payload.bound_vservers || []).join(', ') || 'none')}</strong></p>${payload.hits_available ? '' : '<p class="notice">Hit counters were not returned by the ADC. You can still prepare BLOCK promotion or exceptions from the exported rule set.</p>'}<div class="profile-summary-grid"><section class="summary-panel"><h4>Hit counters</h4>${hitRows ? `<table><thead><tr><th>Name</th><th>Kind</th><th>Hits</th><th>Last seen</th></tr></thead><tbody>${hitRows}</tbody></table>` : '<p class="small muted">No hit rows available.</p>'}</section><section class="summary-panel"><h4>Policies</h4>${policyRows ? `<table><thead><tr><th>Policy</th><th>Profile</th><th>vServers</th><th>Hits</th></tr></thead><tbody>${policyRows}</tbody></table>` : '<p class="small muted">No AppFW policies correlated yet.</p>'}</section></div><div class="findings-cta"><button class="secondary protection-refresh" data-set="${escapeHtml(setId)}" data-object="${escapeHtml(payload.signature_object_name || '')}" data-job="${escapeHtml(payload.job_id || '')}" type="button">Refresh status</button><button class="secondary keep-log-button" type="button">Keep LOG</button><button class="secondary promote-block-button" data-set="${escapeHtml(setId)}" type="button">Prepare BLOCK promotion</button><button class="secondary exception-plan-button" data-set="${escapeHtml(setId)}" type="button">Prepare exception</button>${payload.binding_state !== 'bound' && setId ? `<button class="primary-cta open-bind-wizard" data-set="${escapeHtml(setId)}" data-job="${escapeHtml(payload.job_id || '')}" data-object="${escapeHtml(payload.signature_object_name || '')}" type="button">Bind LOG protection</button>` : ''}</div><label class="small">Rule IDs for promotion/exception (optional, one per line)<textarea id="lifecycle-rule-ids" placeholder="Leave blank to promote all exported rules, or list noisy IDs to disable for exceptions"></textarea></label><p id="protection-status-msg" class="small muted"></p><div id="lifecycle-plan"></div></div>`;
+    }
+    async function loadProtectionStatus({jobId = null, setId = null, objectName = null} = {}) {
+      const host = document.querySelector('#protection-status');
+      if (host) host.textContent = 'Refreshing protection status…';
+      try {
+        let resolvedObject = objectName;
+        let resolvedJob = jobId;
+        if (setId && (!resolvedObject || !resolvedJob)) {
+          const set = await api(`/api/custom-signature-sets/${encodeURIComponent(setId)}`);
+          resolvedObject = resolvedObject || set.signature_object_name;
+          resolvedJob = resolvedJob || set.job_id;
+          window.currentCustomSignatureSet = set;
+        }
+        const query = new URLSearchParams();
+        if (resolvedObject) query.set('signature_object_name', resolvedObject);
+        if (resolvedJob) query.set('job_id', resolvedJob);
+        const payload = await api(`/api/adc/protection-status${query.toString() ? `?${query}` : ''}`);
+        if (setId && !payload.custom_signature_set_id) payload.custom_signature_set_id = setId;
+        if (resolvedJob && !payload.job_id) payload.job_id = resolvedJob;
+        renderProtectionStatus(payload);
+        setAnalyseStep('export');
+        host?.scrollIntoView({behavior: 'smooth', block: 'start'});
+      } catch (error) {
+        if (host) host.textContent = `Unable to load protection status: ${error.message}`;
+      }
+    }
+    function renderBindWizard({setId, jobId, objectName, profiles = [], vservers = []}) {
+      const host = document.querySelector('#bind-wizard');
+      if (!host) return;
+      const profileOptions = profiles.map(item => `<option value="${escapeHtml(item.name || '')}">${escapeHtml(item.name || '-')}</option>`).join('');
+      const vserverOptions = vservers.map(item => `<option value="${escapeHtml(item.name || '')}">${escapeHtml(item.name || '-')} · ${escapeHtml(item.host || '')}:${escapeHtml(item.port || '')}</option>`).join('');
+      host.innerHTML = `<div class="card"><h3>Bind LOG protection</h3><p class="small muted">Create a LOG-only AppFW profile, attach exported signature object <code>${escapeHtml(objectName || '')}</code>, create a policy, and bind the matched LB vServer. Approval, preflight, and ENABLE WRITE still apply.</p><label class="small">Base profile <select id="bind-source-profile">${profileOptions || '<option value="">No profiles loaded</option>'}</select></label><label class="small">New profile name <input id="bind-dest-profile" maxlength="128" placeholder="waf-scan-auto"></label><label class="small">Policy name (optional) <input id="bind-policy-name" maxlength="31" placeholder="auto"></label><label class="small">Target LB vServer <select id="bind-vserver">${vserverOptions || '<option value="">No LB vServers loaded</option>'}</select></label><button class="secondary prepare-bind-plan" data-set="${escapeHtml(setId || '')}" data-job="${escapeHtml(jobId || '')}" data-object="${escapeHtml(objectName || '')}" type="button">Prepare bind plan</button><div id="bind-plan-result"></div></div>`;
+    }
+    async function openBindWizard(setId, jobId, objectName) {
+      const host = document.querySelector('#bind-wizard');
+      if (host) host.textContent = 'Loading profiles and vServers…';
+      try {
+        const inventory = await api('/api/adc/inventory');
+        const asRows = value => Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : [];
+        const profiles = asRows(inventory.profiles?.appfwprofile || inventory.waf?.resources?.appfw_profiles?.records);
+        const vservers = asRows(inventory.classic?.vservers?.records).filter(item => item.vserver_type === 'lb');
+        // Prefer correlated vServer from adc-correlation if present
+        renderBindWizard({setId, jobId, objectName, profiles, vservers});
+        host?.scrollIntoView({behavior: 'smooth', block: 'start'});
+      } catch (error) {
+        if (host) host.textContent = `Unable to open bind wizard: ${error.message}`;
+      }
+    }
+    async function refreshRegexRulzJobs() {
+      const select = document.querySelector('#regex-rulz-job');
+      const status = document.querySelector('#regex-rulz-status');
+      if (!select) return;
+      try {
+        const jobs = await api('/api/discovery/jobs');
+        const completed = (jobs || []).filter(job => job.status === 'completed');
+        select.innerHTML = completed.length ? completed.map(job => `<option value="${escapeHtml(job.id)}">${escapeHtml(job.scope?.seed_url || job.id)} · ${escapeHtml(job.id.slice(0, 8))}</option>`).join('') : '<option value="">No completed jobs</option>';
+        if (window.currentProfileJobId && [...select.options].some(opt => opt.value === window.currentProfileJobId)) select.value = window.currentProfileJobId;
+        if (status) status.textContent = completed.length ? `${completed.length} completed job(s) available. Choose a mode to generate proposals.` : 'No completed discovery jobs yet. Run Analyse application first.';
+        document.querySelector('#regex-rulz-copy').hidden = true;
+        document.querySelector('#regex-rulz-output').innerHTML = '';
+      } catch (error) {
+        if (status) status.textContent = `Unable to load jobs: ${error.message}`;
+      }
+    }
+    async function loadRegexRulzProposal(mode) {
+      const jobId = document.querySelector('#regex-rulz-job')?.value;
+      const status = document.querySelector('#regex-rulz-status');
+      const output = document.querySelector('#regex-rulz-output');
+      if (!jobId) { if (status) status.textContent = 'Select a completed discovery job first.'; return; }
+      if (status) status.textContent = 'Loading discovery profile for regex proposals…';
+      try {
+        const profile = await api(`/api/discovery/jobs/${encodeURIComponent(jobId)}/profile`);
+        const routeByUrl = new Map();
+        for (const route of profile.route_inventory || []) {
+          const url = String(route.source_url || '').trim();
+          if (!url) continue;
+          routeByUrl.set(url, url);
+        }
+        const urls = [...new Set([...routeByUrl.keys(), ...(profile.evidence || []).filter(item => item.evidence_type === 'asset' && item.source_url).map(item => item.source_url)])];
+        window.currentRegexRulzUrls = urls;
+        output.innerHTML = renderUrlRegexProposal(mode, urls);
+        document.querySelector('#regex-rulz-copy').hidden = false;
+        if (status) status.textContent = `Generated ${mode} proposal from ${urls.length} URL(s). Proposal-only — not applied to the ADC.`;
+      } catch (error) {
+        if (status) status.textContent = `Unable to build regex proposal: ${error.message}`;
+      }
+    }
+
     function renderJobs(jobs) {
       const host = document.querySelector('#jobs');
       if (!jobs.length) { host.innerHTML = '<p class="muted">No scans yet — start with a seed URL above.</p>'; return; }
@@ -579,7 +730,29 @@
       const proposal = correlation.proposal || {};
       const blocking = correlation.blocking_conditions || proposal.blocking_conditions || [];
       const protectionLabel = humanStatus(correlation.protection_status || correlation.status || '-');
-      host.innerHTML = `<div class="card"><h3>ADC path correlation</h3><p class="small">Target: <strong>${escapeHtml(correlation.target?.hostname || '-')}</strong>:${escapeHtml(correlation.target?.port || '-')} · status: ${statusHtml(correlation.status || '-')} · protection: ${statusHtml(correlation.protection_status || '-', protectionLabel)}</p>${correlation.protection_status === 'feature-enabled-no-policy-binding-evidenced' ? '<p class="notice"><strong>AppFW is enabled, but this vServer has no WAF policy yet.</strong> You can still prepare a LOG proposal and bind it later.</p>' : ''}${matches ? `<table><thead><tr><th>LB vserver</th><th>VIP</th><th>State</th><th>Match</th><th>Backend</th></tr></thead><tbody>${matches}</tbody></table>` : '<p class="small muted">No exact ADC path match.</p>'}<p class="small">AppFW policies: <strong>${escapeHtml(correlation.appfw_policy_count ?? 0)}</strong> · automatic apply: <strong>${correlation.automatic_apply_allowed ? 'allowed' : 'disabled'}</strong></p><p class="small">Proposal: ${statusHtml(proposal.status || 'blocked')}${proposal.source_profile ? ` · source profile: <strong>${escapeHtml(proposal.source_profile)}</strong> · proposed profile: <strong>${escapeHtml(proposal.proposed_custom_profile || '-')}</strong> · mode: <strong>${escapeHtml(proposal.initial_enforcement_mode || '-')}</strong>` : ''}</p>${blocking.length ? `<p class="small"><strong>Blocking conditions:</strong></p><ul>${blocking.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}</div>`;
+      const jobId = payload?.job_id || window.currentProfileJobId || '';
+      const needsBind = correlation.protection_status === 'feature-enabled-no-policy-binding-evidenced';
+      const bindCta = needsBind
+        ? `<p class="notice"><strong>AppFW is enabled, but this vServer has no WAF policy yet.</strong> Next action: bind LOG protection after an exported signature object exists for this job.</p><p class="findings-cta"><button class="primary-cta open-bind-from-job" data-job="${escapeHtml(jobId)}" type="button">Bind LOG protection</button><button class="secondary signature-recommendations-button" data-job="${escapeHtml(jobId)}" type="button">Review recommended signatures</button></p>`
+        : '';
+      host.innerHTML = `<div class="card"><h3>ADC path correlation</h3><p class="small">Target: <strong>${escapeHtml(correlation.target?.hostname || '-')}</strong>:${escapeHtml(correlation.target?.port || '-')} · status: ${statusHtml(correlation.status || '-')} · protection: ${statusHtml(correlation.protection_status || '-', protectionLabel)}</p>${bindCta}${matches ? `<table><thead><tr><th>LB vserver</th><th>VIP</th><th>State</th><th>Match</th><th>Backend</th></tr></thead><tbody>${matches}</tbody></table>` : '<p class="small muted">No exact ADC path match.</p>'}<p class="small">AppFW policies: <strong>${escapeHtml(correlation.appfw_policy_count ?? 0)}</strong> · automatic apply: <strong>${correlation.automatic_apply_allowed ? 'allowed' : 'disabled'}</strong></p><p class="small">Proposal: ${statusHtml(proposal.status || 'blocked')}${proposal.source_profile ? ` · source profile: <strong>${escapeHtml(proposal.source_profile)}</strong> · proposed profile: <strong>${escapeHtml(proposal.proposed_custom_profile || '-')}</strong> · mode: <strong>${escapeHtml(proposal.initial_enforcement_mode || '-')}</strong>` : ''}</p>${blocking.length ? `<p class="small"><strong>Blocking conditions:</strong></p><ul>${blocking.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}</div>`;
+    }
+    async function openBindWizardForJob(jobId) {
+      if (!jobId) return;
+      try {
+        const sets = await api(`/api/custom-signature-sets?job_id=${encodeURIComponent(jobId)}`);
+        const exported = (sets || []).find(item => item.status === 'exported') || (sets || []).find(item => item.signature_object_name);
+        if (!exported) {
+          const host = document.querySelector('#bind-wizard');
+          if (host) host.innerHTML = `<div class="notice"><strong>No exported signature object for this job yet.</strong> Review recommended signatures, prepare a LOG proposal, approve, preflight, and export — then return here to bind LOG protection.</div><p class="findings-cta"><button class="primary-cta signature-recommendations-button" data-job="${escapeHtml(jobId)}" type="button">Review recommended signatures</button></p>`;
+          host?.scrollIntoView({behavior: 'smooth', block: 'start'});
+          return;
+        }
+        await openBindWizard(exported.custom_signature_set_id, exported.job_id || jobId, exported.signature_object_name);
+      } catch (error) {
+        const host = document.querySelector('#bind-wizard');
+        if (host) host.textContent = `Unable to open bind wizard: ${error.message}`;
+      }
     }
     function renderEvidenceRows(items, filter = 'all') {
       return items.filter(item => filter === 'all' || item.evidence_type === filter).map(item => {
@@ -659,7 +832,7 @@
       window.currentProfileRegexUrls = regexUrls;
       setAnalyseStep('findings');
       window.currentProfileJobId = profile.run_id;
-      host.innerHTML = `<div class="card"><h3>Findings summary <span class="small muted">${escapeHtml(profile.run_id)}</span></h3><p class="small">${technologies.length} technologies · ${profile.evidence_count || 0} evidence rows · <span class="high">${confidenceCounts.high || 0} high</span> · <span class="medium">${confidenceCounts.medium || 0} medium</span> · <span class="low">${confidenceCounts.low || 0} low</span></p><p class="small">Routes: <strong>${routeCount}</strong> · form fields: <strong>${formCount}</strong> · authentication surfaces: <strong>${authCount}</strong></p><div class="profile-summary-grid"><section class="summary-panel"><h4>Detected technologies (${technologies.length})</h4>${technologyRows ? `<table><thead><tr><th>Technology</th><th>Category</th><th>Confidence</th><th>Score</th></tr></thead><tbody>${technologyRows}</tbody></table>` : '<p class="small muted">No technology signals were observed.</p>'}</section><section class="summary-panel"><h4>Start URLs and discovered routes (${startUrls.length})</h4><p class="small muted">All in-scope URLs found by the crawler. Scroll to review the complete list; only safe GET requests are fetched.</p>${startUrls.length ? `<ol class="discovery-url-list">${startUrlRows}</ol><details class="url-list-panel"><summary>Advanced · Prepare path regex drafts</summary><button class="secondary regex-prepare-open" type="button">Prepare regex rules</button><div class="regex-prepare-panel" hidden><p class="small muted">Choose a consolidation level. Drafts use ${regexUrls.length} distinct route and asset URLs, are Python-compatible, and are not applied to the ADC.</p><div class="regex-mode-options"><button class="secondary regex-mode-option" data-mode="basic" type="button"><strong>Basic</strong><span class="small">One rule for observed suffixes; broad rules per folder prefix with 4+ matching URLs.</span></button><button class="secondary regex-mode-option" data-mode="balanced" type="button"><strong>Balanced</strong><span class="small">Consolidated suffixes and exact route groups for folders with 3+ URLs.</span></button><button class="secondary regex-mode-option" data-mode="aggressive" type="button"><strong>Aggressive</strong><span class="small">Up to five exact-path rules, factored for brevity; no wildcard matching.</span></button></div><div class="regex-proposal-output"></div></div></details>` : '<p class="small muted">No URLs were recorded.</p>'}</section><section class="summary-panel"><h4>Signature applicability</h4><p class="small muted">Catalog matches are supporting applicability context, not independent technology detections.</p><p class="small">Status: ${statusHtml(signatureStatus)} · catalog rules: <strong>${signatureRuleCount}</strong> · matches: <strong>${signatureMatches.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Technology</th><th>Surface</th><th>Rules</th><th>Categories</th><th>Examples</th></tr></thead><tbody>${signatureRows}</tbody></table>` : '<p class="small muted">No technology-tagged signature matches were found for this profile.</p>'}</section></div><div class="findings-cta"><button class="primary-cta signature-recommendations-button" data-job="${escapeHtml(profile.run_id)}" type="button">Review recommended signatures</button><button class="secondary adc-path-button" data-job="${escapeHtml(profile.run_id)}" type="button">Check ADC path</button><button class="secondary analysis-button" data-job="${escapeHtml(profile.run_id)}" type="button">Advanced analysis</button></div></div>`;
+      host.innerHTML = `<div class="card"><h3>Findings summary <span class="small muted">${escapeHtml(profile.run_id)}</span></h3><p class="small">${technologies.length} technologies · ${profile.evidence_count || 0} evidence rows · <span class="high">${confidenceCounts.high || 0} high</span> · <span class="medium">${confidenceCounts.medium || 0} medium</span> · <span class="low">${confidenceCounts.low || 0} low</span></p><p class="small">Routes: <strong>${routeCount}</strong> · form fields: <strong>${formCount}</strong> · authentication surfaces: <strong>${authCount}</strong></p><div class="profile-summary-grid"><section class="summary-panel"><h4>Detected technologies (${technologies.length})</h4>${technologyRows ? `<table><thead><tr><th>Technology</th><th>Category</th><th>Confidence</th><th>Score</th></tr></thead><tbody>${technologyRows}</tbody></table>` : '<p class="small muted">No technology signals were observed.</p>'}</section><section class="summary-panel"><h4>Start URLs and discovered routes (${startUrls.length})</h4><p class="small muted">All in-scope URLs found by the crawler. Scroll to review the complete list; only safe GET requests are fetched.</p>${startUrls.length ? `<ol class="discovery-url-list">${startUrlRows}</ol><details class="url-list-panel"><summary>Advanced · Prepare path regex drafts</summary><button class="secondary regex-prepare-open" type="button">Prepare regex rules</button><div class="regex-prepare-panel" hidden><p class="small muted">Choose a consolidation level. Drafts use ${regexUrls.length} distinct route and asset URLs, are Python-compatible, and are not applied to the ADC.</p><div class="regex-mode-options"><button class="secondary regex-mode-option" data-mode="basic" type="button"><strong>Basic</strong><span class="small">One rule for observed suffixes; broad rules per folder prefix with 4+ matching URLs.</span></button><button class="secondary regex-mode-option" data-mode="balanced" type="button"><strong>Balanced</strong><span class="small">Consolidated suffixes and exact route groups for folders with 3+ URLs.</span></button><button class="secondary regex-mode-option" data-mode="aggressive" type="button"><strong>Aggressive</strong><span class="small">Up to five exact-path rules, factored for brevity; no wildcard matching.</span></button></div><div class="regex-proposal-output"></div></div></details>` : '<p class="small muted">No URLs were recorded.</p>'}</section><section class="summary-panel"><h4>Signature applicability</h4><p class="small muted">Catalog matches are supporting applicability context, not independent technology detections.</p><p class="small">Status: ${statusHtml(signatureStatus)} · catalog rules: <strong>${signatureRuleCount}</strong> · matches: <strong>${signatureMatches.length}</strong></p>${signatureRows ? `<table><thead><tr><th>Technology</th><th>Surface</th><th>Rules</th><th>Categories</th><th>Examples</th></tr></thead><tbody>${signatureRows}</tbody></table>` : '<p class="small muted">No technology-tagged signature matches were found for this profile.</p>'}</section></div><div class="findings-cta"><button class="primary-cta signature-recommendations-button" data-job="${escapeHtml(profile.run_id)}" type="button">Review recommended signatures</button><button class="secondary adc-path-button" data-job="${escapeHtml(profile.run_id)}" type="button">Check ADC path</button><button class="secondary analysis-button" data-job="${escapeHtml(profile.run_id)}" type="button">Advanced analysis</button><button class="secondary open-regex-from-findings" data-job="${escapeHtml(profile.run_id)}" type="button">Open Regex Rulz</button></div><p class="small muted" id="findings-bind-hint">If AppFW is enabled without a policy on the matched vServer, export LOG signatures then use <strong>Bind LOG protection</strong>.</p></div>`;
     }
     function renderAnalysisSummary(analysis) {
       const host = document.querySelector('#profile');
@@ -892,9 +1065,10 @@
       const excludedNotice = excludedCount ? `<div class="notice"><strong>${excludedCount} technology-specific rules excluded as irrelevant.</strong> They were tagged for technologies not evidenced by this scan. ${excludedRules.length ? `<details><summary>Show excluded technology tags</summary><p class="small">${escapeHtml([...new Set(excludedRules.flatMap(item => item.technology_tags || []))].sort().join(', '))}</p></details>` : ''}</div>` : '';
       const productExclusionNotice = productExclusionCount ? `<div class="notice"><strong>${productExclusionCount} product-specific rules excluded from generic selection.</strong> CVE-linked and vendor/product-fingerprinted rules require a matching detected technology or explicit product selection. ${productExclusions.length ? `<details><summary>Show exclusion examples</summary><p class="small">${escapeHtml(productExclusions.slice(0, 20).map(item => `${item.rule_id}: ${item.reason}`).join(' · '))}</p></details>` : ''}</div>` : '';
       const whyPanel = `<div class="why-panel"><strong>Why these rules</strong><p class="small">Detected: <strong>${escapeHtml(detectedPlatforms.join(', ') || 'none')}</strong> · Catalog: ${statusHtml(technologyContext.status || 'not available')} · ${technologyContext.catalog_rule_count || exactPlan?.technology_context?.catalog_rule_count || 0} catalog rules</p>${intents ? `<p class="small"><strong>Protection intents included:</strong></p><ul>${intents}</ul>` : '<p class="small muted">No generic protection intents were included.</p>'}${excludedCount ? `<p class="small">${excludedCount} rules excluded because their technology tags were not evidenced.</p>` : ''}</div>`;
+      const intentCardHtml = renderIntentCards(intentCardsFromPlan(exactPlan, analysis));
       setAnalyseStep('recommendations');
       setCatalogFreshness(`Catalog version: ${exactPlan?.technology_context?.catalog_version || technologyContext.catalog_version || 'unknown'}`);
-      host.innerHTML = `<div class="card"><h3>Recommended signatures <span class="small muted">${escapeHtml(analysis.run_id || '-')}</span></h3><p class="small muted">${exactRules.length} rules recommended · ${excludedCount} excluded as irrelevant · default action <strong>${escapeHtml(exactPlan?.action || 'LOG')}</strong> · status ${statusHtml(exactPlan?.status || 'not resolved')}</p><div class="recommendation-hero"><div class="metric"><span class="small muted">Recommended</span><strong>${exactRules.length}</strong></div><div class="metric"><span class="small muted">Excluded</span><strong>${excludedCount}</strong></div><div class="metric"><span class="small muted">Catalog rules</span><strong>${technologyContext.catalog_rule_count || exactPlan?.technology_context?.catalog_rule_count || 0}</strong></div><div class="metric"><span class="small muted">Applicability</span><strong class="small">${confidenceSummaryText}</strong></div><div class="metric"><span class="small muted">Severity mix</span><strong class="small">${severitySummary || 'not classified'}</strong></div></div>${whyPanel}${excludedNotice}${productExclusionNotice}${technologyFilterPanel}<div class="profile-summary-grid"><section class="summary-panel"><h4>Exact rule categories</h4>${categoryRows ? `<table><thead><tr><th>Category</th><th>Rules</th></tr></thead><tbody>${categoryRows}</tbody></table>` : '<p class="small muted">No exact rule-level recommendations were resolved.</p>'}</section><section class="summary-panel"><h4>How to review</h4><p class="small muted">Groups start collapsed. Open a family, then a subgroup. Rule rows show title and severity; use Details for full metadata. Deselected candidates stay visible for audit.</p></section></div>${signatureSelectionGroups.length ? `<h4>Signature selection</h4>${genericRuleTree}<div class="job-actions"><button class="secondary generic-signature-select-all" type="button">Select all visible</button><button class="secondary generic-signature-clear" type="button">Clear all visible</button><button class="secondary generic-signature-apply" type="button">Apply signature selection</button></div><p id="generic-signature-status" class="small muted">${window.currentSelectedRuleIds.length} exact rule(s) selected.</p>` : ''}${recommendationRows ? `<details class="url-list-panel"><summary>Protection groups (legacy summary)</summary><table><thead><tr><th>Group</th><th>Priority</th><th>Mode</th><th>Status</th><th>Reason</th></tr></thead><tbody>${recommendationRows}</tbody></table></details>` : ''}${exactRuleRows ? `<details class="url-list-panel"><summary>Show first ${Math.min(50, exactRules.length)} exact WAF rules</summary><table><thead><tr><th>Rule ID</th><th>Category</th><th>Attack classes</th><th>Locations</th><th>Description</th><th>Confidence</th><th>Selection source</th></tr></thead><tbody>${exactRuleRows}</tbody></table></details>` : ''}${exactRuleIds.length ? `<details class="url-list-panel"><summary>Show selected rule IDs (${exactRuleIds.length})</summary><textarea readonly>${escapeHtml(exactRuleIds.join('\n'))}</textarea></details>` : ''}${proposalControls}<p class="small muted">Proposal only until you approve, preflight, and confirm ENABLE WRITE.</p></div>`;
+      host.innerHTML = `<div class="card"><h3>Recommended signatures <span class="small muted">${escapeHtml(analysis.run_id || '-')}</span></h3><p class="small muted">${exactRules.length} rules recommended · ${excludedCount} excluded as irrelevant · default action <strong>${escapeHtml(exactPlan?.action || 'LOG')}</strong> · status ${statusHtml(exactPlan?.status || 'not resolved')}</p><div class="recommendation-hero"><div class="metric"><span class="small muted">Recommended</span><strong>${exactRules.length}</strong></div><div class="metric"><span class="small muted">Excluded</span><strong>${excludedCount}</strong></div><div class="metric"><span class="small muted">Catalog rules</span><strong>${technologyContext.catalog_rule_count || exactPlan?.technology_context?.catalog_rule_count || 0}</strong></div><div class="metric"><span class="small muted">Applicability</span><strong class="small">${confidenceSummaryText}</strong></div><div class="metric"><span class="small muted">Severity mix</span><strong class="small">${severitySummary || 'not classified'}</strong></div></div>${whyPanel}<h4>Protection intents</h4><p class="small muted">Start here — select or deselect an entire intent, then expand groups below for exact rules.</p>${intentCardHtml || '<p class="small muted">No intent summary available for this recommendation.</p>'}${excludedNotice}${productExclusionNotice}${technologyFilterPanel}<div class="profile-summary-grid"><section class="summary-panel"><h4>Exact rule categories</h4>${categoryRows ? `<table><thead><tr><th>Category</th><th>Rules</th></tr></thead><tbody>${categoryRows}</tbody></table>` : '<p class="small muted">No exact rule-level recommendations were resolved.</p>'}</section><section class="summary-panel"><h4>How to review</h4><p class="small muted">Groups start collapsed. Open a family, then a subgroup. Rule rows show title and severity; use Details for full metadata. Deselected candidates stay visible for audit.</p></section></div>${signatureSelectionGroups.length ? `<h4>Signature selection</h4>${genericRuleTree}<div class="job-actions"><button class="secondary generic-signature-select-all" type="button">Select all visible</button><button class="secondary generic-signature-clear" type="button">Clear all visible</button><button class="secondary generic-signature-apply" type="button">Apply signature selection</button></div><p id="generic-signature-status" class="small muted">${window.currentSelectedRuleIds.length} exact rule(s) selected.</p>` : ''}${recommendationRows ? `<details class="url-list-panel"><summary>Protection groups (legacy summary)</summary><table><thead><tr><th>Group</th><th>Priority</th><th>Mode</th><th>Status</th><th>Reason</th></tr></thead><tbody>${recommendationRows}</tbody></table></details>` : ''}${exactRuleRows ? `<details class="url-list-panel"><summary>Show first ${Math.min(50, exactRules.length)} exact WAF rules</summary><table><thead><tr><th>Rule ID</th><th>Category</th><th>Attack classes</th><th>Locations</th><th>Description</th><th>Confidence</th><th>Selection source</th></tr></thead><tbody>${exactRuleRows}</tbody></table></details>` : ''}${exactRuleIds.length ? `<details class="url-list-panel"><summary>Show selected rule IDs (${exactRuleIds.length})</summary><textarea readonly>${escapeHtml(exactRuleIds.join('\n'))}</textarea></details>` : ''}${proposalControls}<p class="small muted">Proposal only until you approve, preflight, and confirm ENABLE WRITE.</p></div>`;
       syncGenericSignatureCheckboxes(window.currentSelectedRuleIds);
     }
     function renderAnalysis(analysis) {
@@ -944,8 +1118,9 @@
       const stepState = (complete, current) => complete ? 'done' : current ? 'current' : '';
       const workflow = `<div class="workflow-steps"><div class="workflow-step ${stepState(selection.length > 0, editable)}"><strong>1. Select rules</strong><span class="step-state">${selection.length > 0 ? 'complete' : 'required'}</span></div><div class="workflow-step ${stepState(['approved', 'exported', 'rolled-back'].includes(set.status), set.status === 'approved')} "><strong>2. Approve</strong><span class="step-state">${['approved', 'exported', 'rolled-back'].includes(set.status) ? 'complete' : 'required'}</span></div><div class="workflow-step ${stepState(Boolean(set.preview_id), set.status === 'approved' && !set.preview_id)}"><strong>3. Preflight</strong><span class="step-state">${set.preview_id ? escapeHtml(set.preflight_status || 'complete') : 'required'}</span></div><div class="workflow-step ${stepState(set.status === 'exported', Boolean(set.preview_id) && set.status !== 'exported')} "><strong>4. Export</strong><span class="step-state">${set.status === 'exported' ? 'complete' : 'approval-gated'}</span></div></div>`;
       setAnalyseStep('export');
-      const nextHint = editable ? 'Next: review the selected rules, then type APPROVE CUSTOM SIGNATURE SET.' : set.status === 'approved' && !set.preview_id ? 'Next: run preflight to validate the catalog fingerprint and ADC state.' : set.status === 'approved' && set.preflight?.preview_id ? 'Next: type ENABLE WRITE to export (or leave as a reviewed draft).' : set.status === 'exported' ? 'Exported. Rollback remains available with ENABLE WRITE.' : '';
-      return `<div class="card"><h4>Export · Custom signature proposal</h4><p><strong>Status:</strong> ${statusHtml(set.status || '-')} · <strong>Object:</strong> ${escapeHtml(set.signature_object_name || '-')} · <strong>Action:</strong> ${escapeHtml(set.action || '-')} · <strong>Rules:</strong> ${selection.length}</p>${workflow}${nextHint ? `<p class="notice">${escapeHtml(nextHint)}</p>` : ''}<p class="small muted">Catalog version ${escapeHtml(context.catalog_version || '-')} · integrity ${escapeHtml(context.catalog_integrity_status || '-')} · fingerprint <code>${escapeHtml(set.catalog_fingerprint || '-')}</code></p><p class="small muted">No ADC change is made until exact rule selection, action, approval, preflight, and export confirmation succeed.</p>${edit}${sampleRows ? `<details class="url-list-panel"><summary>Show first ${Math.min(50, selection.length)} selected rules</summary><table><thead><tr><th>Rule ID</th><th>Category</th><th>Attack classes</th><th>Technology tags</th><th>Selection source</th></tr></thead><tbody>${sampleRows}</tbody></table></details>` : ''}${selection.length ? `<details class="url-list-panel"><summary>Show selected rule IDs (${selection.length})</summary><textarea readonly>${escapeHtml(selection.join('\n'))}</textarea></details>` : ''}${approval}${preflight}${exportControls}${rollbackControls}</div>`;
+      const nextHint = editable ? 'Next: review the selected rules, then type APPROVE CUSTOM SIGNATURE SET.' : set.status === 'approved' && !set.preview_id ? 'Next: run preflight to validate the catalog fingerprint and ADC state.' : set.status === 'approved' && set.preflight?.preview_id ? 'Next: type ENABLE WRITE to export (or leave as a reviewed draft).' : set.status === 'exported' ? 'Exported. Refresh protection status to review hits, bind LOG protection, or prepare BLOCK/exceptions.' : '';
+      const lifecycleCta = set.status === 'exported' ? `<div class="findings-cta"><button class="primary-cta protection-refresh" data-set="${escapeHtml(set.custom_signature_set_id || '')}" data-object="${escapeHtml(set.signature_object_name || '')}" data-job="${escapeHtml(set.job_id || '')}" type="button">Open protection status</button><button class="secondary open-bind-wizard" data-set="${escapeHtml(set.custom_signature_set_id || '')}" data-job="${escapeHtml(set.job_id || '')}" data-object="${escapeHtml(set.signature_object_name || '')}" type="button">Bind LOG protection</button></div>` : '';
+      return `<div class="card"><h4>Export · Custom signature proposal</h4><p><strong>Status:</strong> ${statusHtml(set.status || '-')} · <strong>Object:</strong> ${escapeHtml(set.signature_object_name || '-')} · <strong>Action:</strong> ${escapeHtml(set.action || '-')} · <strong>Rules:</strong> ${selection.length}</p>${workflow}${nextHint ? `<p class="notice">${escapeHtml(nextHint)}</p>` : ''}<p class="small muted">Catalog version ${escapeHtml(context.catalog_version || '-')} · integrity ${escapeHtml(context.catalog_integrity_status || '-')} · fingerprint <code>${escapeHtml(set.catalog_fingerprint || '-')}</code></p><p class="small muted">No ADC change is made until exact rule selection, action, approval, preflight, and export confirmation succeed.</p>${edit}${sampleRows ? `<details class="url-list-panel"><summary>Show first ${Math.min(50, selection.length)} selected rules</summary><table><thead><tr><th>Rule ID</th><th>Category</th><th>Attack classes</th><th>Technology tags</th><th>Selection source</th></tr></thead><tbody>${sampleRows}</tbody></table></details>` : ''}${selection.length ? `<details class="url-list-panel"><summary>Show selected rule IDs (${selection.length})</summary><textarea readonly>${escapeHtml(selection.join('\n'))}</textarea></details>` : ''}${approval}${preflight}${exportControls}${rollbackControls}${lifecycleCta}</div>`;
     }
     function renderCustomSignatureReview(customList) {
       const sources = customList.source_catalogs || [];
@@ -1233,13 +1408,50 @@
     });
     document.querySelector('#positive-candidate-refresh').addEventListener('click', loadPositiveCandidates);
     document.querySelector('#positive-candidate-list').addEventListener('click', async event => {
+      const compileButton = event.target.closest('.positive-candidate-compile');
+      const structureSave = event.target.closest('.positive-candidate-structure-save');
       const save = event.target.closest('.positive-candidate-save');
       const statusButton = event.target.closest('.positive-candidate-status');
       const auditButton = event.target.closest('.positive-candidate-audit');
-      const button = save || statusButton || auditButton;
+      const button = compileButton || structureSave || save || statusButton || auditButton;
       if (!button) return;
       const item = window.positiveCandidates.find(candidate => candidate.candidate_id === button.dataset.id);
       if (!item) return;
+      if (compileButton) {
+        compileButton.disabled = true;
+        const target = button.closest('details')?.querySelector('.positive-compile-result');
+        try {
+          const preview = await api(`/api/positive-model/candidates/${encodeURIComponent(item.candidate_id)}/compile-preview`, {method:'POST'});
+          if (target) target.innerHTML = `<div class="notice"><strong>Observe-only compile preview</strong> · ${Number(preview.endpoint_count || 0)} endpoints · enforcement disabled</div><p class="small muted">${escapeHtml(preview.appfw_relaxation_preview?.summary || preview.note || '')}</p><details class="url-list-panel"><summary>Show compiled endpoints</summary><table><thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Fields</th></tr></thead><tbody>${(preview.endpoints || []).map(ep => `<tr><td>${escapeHtml(ep.method)}</td><td><code>${escapeHtml(ep.path_template)}</code></td><td>${escapeHtml(ep.authentication || '-')}</td><td>${Number(ep.field_count || 0)}</td></tr>`).join('')}</tbody></table></details>`;
+        } catch (error) {
+          if (target) target.textContent = `Compile failed: ${error.message}`;
+        } finally { compileButton.disabled = false; }
+        return;
+      }
+      if (structureSave) {
+        structureSave.disabled = true;
+        try {
+          const model = structuredClone(item.model || {});
+          const endpoints = Array.isArray(model.endpoints) ? model.endpoints : [];
+          document.querySelectorAll(`.positive-ep-method[data-id="${CSS.escape(item.candidate_id)}"]`).forEach(input => {
+            const index = Number(input.dataset.index);
+            if (!endpoints[index] || typeof endpoints[index] !== 'object') return;
+            endpoints[index].method = input.value.trim().toUpperCase() || 'GET';
+            const path = document.querySelector(`.positive-ep-path[data-id="${CSS.escape(item.candidate_id)}"][data-index="${index}"]`);
+            const mode = document.querySelector(`.positive-ep-mode[data-id="${CSS.escape(item.candidate_id)}"][data-index="${index}"]`);
+            if (path) { endpoints[index].path_template = path.value.trim(); }
+            if (mode) { endpoints[index].decision_mode = mode.value; }
+          });
+          model.endpoints = endpoints;
+          await api(`/api/positive-model/candidates/${encodeURIComponent(item.candidate_id)}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({expected_version:Number(item.version), model, status:'draft', review_note:document.querySelector(`.positive-candidate-note[data-id="${CSS.escape(item.candidate_id)}"]`)?.value || ''})});
+          await loadPositiveCandidates();
+        } catch (error) {
+          structureSave.disabled = false;
+          const msg = button.closest('details')?.querySelector('.positive-candidate-status-msg');
+          if (msg) msg.textContent = `Structured save failed: ${error.message}`;
+        }
+        return;
+      }
       if (statusButton?.dataset.status === 'accepted' && !window.confirm('Accept this model for reviewed, observe-only use? This will not enable enforcement or change the ADC.')) return;
       if (statusButton?.dataset.status === 'rejected' && !window.confirm('Reject this positive-model candidate?')) return;
       button.disabled = true;
@@ -1322,10 +1534,13 @@
       document.querySelector('#waf-section').hidden = true;
       document.querySelector('#discovery-section').hidden = true;
       document.querySelector('#positive-model-workbench').hidden = true;
+      document.querySelector('#regex-rulz-section').hidden = true;
       document.querySelector('#waf-inventory').textContent = '';
       document.querySelector('#profile').textContent = '';
       document.querySelector('#adc-correlation').textContent = '';
       document.querySelector('#analysis').textContent = '';
+      document.querySelector('#protection-status').textContent = '';
+      document.querySelector('#bind-wizard').textContent = '';
       setWriteModeBadge(null);
       setCatalogFreshness('Catalog: not loaded');
     });
@@ -1345,6 +1560,88 @@
       showTool('positive');
       loadPositiveCandidates();
     });
+    document.querySelector('#open-regex-rulz').addEventListener('click', () => {
+      showTool('regex');
+    });
+    document.querySelector('#regex-rulz-section')?.addEventListener('click', async event => {
+      const mode = event.target.closest('.regex-rulz-mode');
+      if (mode) { await loadRegexRulzProposal(mode.dataset.mode); return; }
+      if (event.target.closest('#regex-rulz-copy')) {
+        const patterns = [...document.querySelectorAll('#regex-rulz-output code')].map(node => node.textContent).filter(Boolean);
+        try { await navigator.clipboard.writeText(patterns.join('\n')); document.querySelector('#regex-rulz-status').textContent = `Copied ${patterns.length} pattern(s).`; }
+        catch (error) { document.querySelector('#regex-rulz-status').textContent = 'Unable to copy patterns from this browser context.'; }
+      }
+    });
+    document.querySelector('#adc-correlation')?.addEventListener('click', async event => {
+      const signatureRecommendationsButton = event.target.closest('.signature-recommendations-button');
+      if (signatureRecommendationsButton) { await loadSignatureRecommendations(signatureRecommendationsButton.dataset.job, signatureRecommendationsButton); return; }
+      const openBindJob = event.target.closest('.open-bind-from-job');
+      if (openBindJob) { await openBindWizardForJob(openBindJob.dataset.job); return; }
+      const openBind = event.target.closest('.open-bind-wizard');
+      if (openBind) { await openBindWizard(openBind.dataset.set, openBind.dataset.job, openBind.dataset.object); return; }
+    });
+    document.querySelector('#protection-status')?.addEventListener('click', async event => {
+      const protectionRefresh = event.target.closest('.protection-refresh');
+      if (protectionRefresh) { await loadProtectionStatus({setId: protectionRefresh.dataset.set, objectName: protectionRefresh.dataset.object, jobId: protectionRefresh.dataset.job}); return; }
+      const openBind = event.target.closest('.open-bind-wizard');
+      if (openBind) { await openBindWizard(openBind.dataset.set, openBind.dataset.job, openBind.dataset.object); return; }
+      const promoteBtn = event.target.closest('.promote-block-button');
+      if (promoteBtn) {
+        const status = document.querySelector('#protection-status-msg');
+        const ids = (document.querySelector('#lifecycle-rule-ids')?.value || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean);
+        promoteBtn.disabled = true;
+        try {
+          const result = await api(`/api/custom-signature-sets/${encodeURIComponent(promoteBtn.dataset.set)}/promote-plan`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({selected_rule_ids: ids.length ? ids : null})});
+          document.querySelector('#lifecycle-plan').innerHTML = renderCustomSignatureSet(result);
+          if (status) status.textContent = `BLOCK promotion draft ${result.custom_signature_set_id} ready for approval.`;
+        } catch (error) { if (status) status.textContent = `Promote failed: ${error.message}`; promoteBtn.disabled = false; }
+        return;
+      }
+      const exceptionBtn = event.target.closest('.exception-plan-button');
+      if (exceptionBtn) {
+        const status = document.querySelector('#protection-status-msg');
+        const ids = (document.querySelector('#lifecycle-rule-ids')?.value || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean);
+        if (!ids.length) { if (status) status.textContent = 'List noisy rule IDs to disable before preparing an exception.'; return; }
+        exceptionBtn.disabled = true;
+        try {
+          const result = await api(`/api/custom-signature-sets/${encodeURIComponent(exceptionBtn.dataset.set)}/exception-plan`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({disable_rule_ids: ids})});
+          document.querySelector('#lifecycle-plan').innerHTML = renderCustomSignatureSet(result);
+          if (status) status.textContent = `Exception draft ${result.custom_signature_set_id} ready for approval.`;
+        } catch (error) { if (status) status.textContent = `Exception plan failed: ${error.message}`; exceptionBtn.disabled = false; }
+        return;
+      }
+      if (event.target.closest('.keep-log-button')) {
+        const status = document.querySelector('#protection-status-msg');
+        if (status) status.textContent = 'Keeping LOG. No change prepared.';
+      }
+    });
+    document.querySelector('#bind-wizard')?.addEventListener('click', async event => {
+      const signatureRecommendationsButton = event.target.closest('.signature-recommendations-button');
+      if (signatureRecommendationsButton) { await loadSignatureRecommendations(signatureRecommendationsButton.dataset.job, signatureRecommendationsButton); return; }
+      const prepare = event.target.closest('.prepare-bind-plan');
+      if (!prepare) return;
+      const panel = document.querySelector('#bind-plan-result');
+      prepare.disabled = true;
+      prepare.textContent = 'Preparing bind plan…';
+      try {
+        const plan = await api('/api/protection/bind-plan', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+          job_id: prepare.dataset.job,
+          custom_signature_set_id: prepare.dataset.set,
+          source_profile: document.querySelector('#bind-source-profile')?.value || '',
+          destination_profile: document.querySelector('#bind-dest-profile')?.value.trim() || null,
+          policy_name: document.querySelector('#bind-policy-name')?.value.trim() || null,
+          vserver_name: document.querySelector('#bind-vserver')?.value || '',
+          priority: 100,
+        })});
+        if (panel) panel.innerHTML = renderDuplicateProfilePlan(plan);
+      } catch (error) {
+        if (panel) panel.textContent = `Unable to prepare bind plan: ${error.message}`;
+      } finally {
+        prepare.disabled = false;
+        prepare.textContent = 'Prepare bind plan';
+      }
+    });
+
     document.querySelector('#waf-inventory').addEventListener('change', event => {
       const typeFilter = event.target.closest('#vserver-type-filter');
       const pageSize = event.target.closest('#vserver-page-size');
@@ -1503,6 +1800,57 @@
       if (signatureRecommendationsButton) { await loadSignatureRecommendations(signatureRecommendationsButton.dataset.job, signatureRecommendationsButton); return; }
       if (adcPathButton) { await loadAdcPath(adcPathButton.dataset.job, adcPathButton); return; }
       if (analysisButton) { await loadAdvancedAnalysis(analysisButton.dataset.job, analysisButton); return; }
+      const openRegexFindings = event.target.closest('.open-regex-from-findings');
+      if (openRegexFindings) { window.currentProfileJobId = openRegexFindings.dataset.job; showTool('regex'); return; }
+      const intentSelect = event.target.closest('.intent-select-all, .intent-clear');
+      if (intentSelect) {
+        const groupId = intentSelect.dataset.groupId;
+        const group = [...document.querySelectorAll('.generic-signature-node')].find(node => node.querySelector(`.generic-signature-group-toggle[data-group-id="${CSS.escape(groupId)}"]`));
+        if (group) {
+          const ids = [...group.querySelectorAll('.generic-signature-rule-select')].map(item => String(item.dataset.ruleId || '')).filter(Boolean);
+          const current = new Set(window.currentSelectedRuleIds || []);
+          ids.forEach(id => intentSelect.classList.contains('intent-select-all') ? current.add(id) : current.delete(id));
+          window.currentSelectedRuleIds = [...current];
+          syncGenericSignatureCheckboxes(current);
+          const status = document.querySelector('#generic-signature-status');
+          if (status) status.textContent = `${current.size} exact rule(s) selected.`;
+        }
+        return;
+      }
+      const protectionRefresh = event.target.closest('.protection-refresh');
+      if (protectionRefresh) { await loadProtectionStatus({setId: protectionRefresh.dataset.set, objectName: protectionRefresh.dataset.object, jobId: protectionRefresh.dataset.job}); return; }
+      const openBind = event.target.closest('.open-bind-wizard');
+      if (openBind) { await openBindWizard(openBind.dataset.set, openBind.dataset.job, openBind.dataset.object); return; }
+      const promoteBtn = event.target.closest('.promote-block-button');
+      if (promoteBtn) {
+        const status = document.querySelector('#protection-status-msg');
+        const ids = (document.querySelector('#lifecycle-rule-ids')?.value || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean);
+        promoteBtn.disabled = true;
+        try {
+          const result = await api(`/api/custom-signature-sets/${encodeURIComponent(promoteBtn.dataset.set)}/promote-plan`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({selected_rule_ids: ids.length ? ids : null})});
+          document.querySelector('#lifecycle-plan').innerHTML = renderCustomSignatureSet(result);
+          if (status) status.textContent = `BLOCK promotion draft ${result.custom_signature_set_id} ready for approval.`;
+        } catch (error) { if (status) status.textContent = `Promote failed: ${error.message}`; promoteBtn.disabled = false; }
+        return;
+      }
+      const exceptionBtn = event.target.closest('.exception-plan-button');
+      if (exceptionBtn) {
+        const status = document.querySelector('#protection-status-msg');
+        const ids = (document.querySelector('#lifecycle-rule-ids')?.value || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean);
+        if (!ids.length) { if (status) status.textContent = 'List noisy rule IDs to disable before preparing an exception.'; return; }
+        exceptionBtn.disabled = true;
+        try {
+          const result = await api(`/api/custom-signature-sets/${encodeURIComponent(exceptionBtn.dataset.set)}/exception-plan`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({disable_rule_ids: ids})});
+          document.querySelector('#lifecycle-plan').innerHTML = renderCustomSignatureSet(result);
+          if (status) status.textContent = `Exception draft ${result.custom_signature_set_id} ready for approval.`;
+        } catch (error) { if (status) status.textContent = `Exception plan failed: ${error.message}`; exceptionBtn.disabled = false; }
+        return;
+      }
+      if (event.target.closest('.keep-log-button')) {
+        const status = document.querySelector('#protection-status-msg');
+        if (status) status.textContent = 'Keeping LOG. No change prepared.';
+        return;
+      }
       if (cancelButton) { if (!window.confirm('Cancel this active discovery scan?')) return; cancelButton.disabled = true; cancelButton.textContent = 'Cancelling...'; try { await api(`/api/discovery/jobs/${encodeURIComponent(cancelButton.dataset.job)}/cancel`, {method: 'POST'}); document.querySelector('#discovery-status').textContent = 'Discovery scan cancelled.'; await loadJobs(); } catch (error) { cancelButton.disabled = false; cancelButton.textContent = 'Cancel'; document.querySelector('#discovery-status').textContent = 'Unable to cancel discovery scan.'; } return; }
       if (deleteButton) { if (!window.confirm('Delete this past analysis and all stored evidence?')) return; try { await api(`/api/discovery/jobs/${encodeURIComponent(deleteButton.dataset.job)}`, {method: 'DELETE'}); document.querySelector('#discovery-status').textContent = 'Past analysis deleted.'; document.querySelector('#profile').textContent = ''; document.querySelector('#adc-correlation').textContent = ''; document.querySelector('#analysis').textContent = ''; setAnalyseStep('scan'); await loadJobs(); } catch (error) { document.querySelector('#discovery-status').textContent = 'Unable to delete past analysis.'; } return; }
       if (!button) return;
@@ -1519,6 +1867,57 @@
       if (signatureRecommendationsButton) { await loadSignatureRecommendations(signatureRecommendationsButton.dataset.job, signatureRecommendationsButton); return; }
       if (adcPathButton) { await loadAdcPath(adcPathButton.dataset.job, adcPathButton); return; }
       if (analysisButton) { await loadAdvancedAnalysis(analysisButton.dataset.job, analysisButton); return; }
+      const openRegexFindings = event.target.closest('.open-regex-from-findings');
+      if (openRegexFindings) { window.currentProfileJobId = openRegexFindings.dataset.job; showTool('regex'); return; }
+      const intentSelect = event.target.closest('.intent-select-all, .intent-clear');
+      if (intentSelect) {
+        const groupId = intentSelect.dataset.groupId;
+        const group = [...document.querySelectorAll('.generic-signature-node')].find(node => node.querySelector(`.generic-signature-group-toggle[data-group-id="${CSS.escape(groupId)}"]`));
+        if (group) {
+          const ids = [...group.querySelectorAll('.generic-signature-rule-select')].map(item => String(item.dataset.ruleId || '')).filter(Boolean);
+          const current = new Set(window.currentSelectedRuleIds || []);
+          ids.forEach(id => intentSelect.classList.contains('intent-select-all') ? current.add(id) : current.delete(id));
+          window.currentSelectedRuleIds = [...current];
+          syncGenericSignatureCheckboxes(current);
+          const status = document.querySelector('#generic-signature-status');
+          if (status) status.textContent = `${current.size} exact rule(s) selected.`;
+        }
+        return;
+      }
+      const protectionRefresh = event.target.closest('.protection-refresh');
+      if (protectionRefresh) { await loadProtectionStatus({setId: protectionRefresh.dataset.set, objectName: protectionRefresh.dataset.object, jobId: protectionRefresh.dataset.job}); return; }
+      const openBind = event.target.closest('.open-bind-wizard');
+      if (openBind) { await openBindWizard(openBind.dataset.set, openBind.dataset.job, openBind.dataset.object); return; }
+      const promoteBtn = event.target.closest('.promote-block-button');
+      if (promoteBtn) {
+        const status = document.querySelector('#protection-status-msg');
+        const ids = (document.querySelector('#lifecycle-rule-ids')?.value || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean);
+        promoteBtn.disabled = true;
+        try {
+          const result = await api(`/api/custom-signature-sets/${encodeURIComponent(promoteBtn.dataset.set)}/promote-plan`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({selected_rule_ids: ids.length ? ids : null})});
+          document.querySelector('#lifecycle-plan').innerHTML = renderCustomSignatureSet(result);
+          if (status) status.textContent = `BLOCK promotion draft ${result.custom_signature_set_id} ready for approval.`;
+        } catch (error) { if (status) status.textContent = `Promote failed: ${error.message}`; promoteBtn.disabled = false; }
+        return;
+      }
+      const exceptionBtn = event.target.closest('.exception-plan-button');
+      if (exceptionBtn) {
+        const status = document.querySelector('#protection-status-msg');
+        const ids = (document.querySelector('#lifecycle-rule-ids')?.value || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean);
+        if (!ids.length) { if (status) status.textContent = 'List noisy rule IDs to disable before preparing an exception.'; return; }
+        exceptionBtn.disabled = true;
+        try {
+          const result = await api(`/api/custom-signature-sets/${encodeURIComponent(exceptionBtn.dataset.set)}/exception-plan`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({disable_rule_ids: ids})});
+          document.querySelector('#lifecycle-plan').innerHTML = renderCustomSignatureSet(result);
+          if (status) status.textContent = `Exception draft ${result.custom_signature_set_id} ready for approval.`;
+        } catch (error) { if (status) status.textContent = `Exception plan failed: ${error.message}`; exceptionBtn.disabled = false; }
+        return;
+      }
+      if (event.target.closest('.keep-log-button')) {
+        const status = document.querySelector('#protection-status-msg');
+        if (status) status.textContent = 'Keeping LOG. No change prepared.';
+        return;
+      }
       const regexPrepareOpenButton = event.target.closest('.regex-prepare-open');
       const regexModeButton = event.target.closest('.regex-mode-option');
       if (regexPrepareOpenButton) { const panel = regexPrepareOpenButton.parentElement.querySelector('.regex-prepare-panel'); if (panel) panel.hidden = false; regexPrepareOpenButton.hidden = true; return; }

@@ -360,3 +360,103 @@ def build_waf_inventory(outputs: dict[str, str]) -> dict[str, Any]:
         "automatic_apply_allowed": False,
         "writes": {"enabled": False, "reason": "CLI inventory integration is read-only; WAF writes remain separately guarded."},
     }
+
+
+def parse_appfw_stats(text: str) -> list[dict[str, Any]]:
+    """Parse hit counters from `stat appfw` / policy / profile CLI output.
+
+    Accepts common NetScaler tabular forms and key/value Hits lines. Missing
+    or unrecognized output yields an empty list rather than inventing counts.
+    """
+    records: list[dict[str, Any]] = []
+    if not text or not str(text).strip():
+        return records
+    # Key/value style: Name: foo ... Hits: 12
+    for block in re.split(r"\n\s*\n", text):
+        name = _value(block, r"(?im)^\s*(?:Policy|Profile|Name)\s*:\s*(.+)$")
+        hits = _value(block, r"(?im)^\s*Hits?\s*:\s*([0-9]+)")
+        if name and hits is not None:
+            records.append({
+                "name": name[:200],
+                "hits": int(hits),
+                "kind": "policy" if re.search(r"(?i)policy", block.splitlines()[0] if block.splitlines() else "") else "object",
+                "last_seen": _value(block, r"(?im)^\s*Last\s*(?:Hit|Seen)\s*:\s*(.+)$"),
+            })
+    # Tabular style: Name ... Hits
+    for line in text.splitlines():
+        match = re.match(
+            r"^\s*(?P<name>[A-Za-z0-9_./#-][A-Za-z0-9_./# @=-]{0,127}?)\s+(?P<hits>\d+)\s*(?:$|\s+\S)",
+            line,
+        )
+        if not match:
+            continue
+        name = match.group("name").strip()
+        if name.lower() in {"name", "policy", "profile", "entity", "-----", "done"}:
+            continue
+        if any(item["name"] == name for item in records):
+            continue
+        records.append({"name": name[:200], "hits": int(match.group("hits")), "kind": "stat-row", "last_seen": None})
+    return records
+
+
+def build_protection_status(outputs: dict[str, str], *, signature_object_name: str | None = None) -> dict[str, Any]:
+    """Correlate signature objects, AppFW bindings, and available hit counters."""
+    inventory = build_waf_inventory(outputs)
+    signatures = list((inventory.get("signatures") or {}).get("records") or [])
+    profiles = list((inventory.get("profiles") or {}).get("records") or [])
+    policies = list((inventory.get("policies") or {}).get("records") or [])
+    needle = str(signature_object_name or "").strip()
+    if needle:
+        signatures = [item for item in signatures if str(item.get("name", "")) == needle]
+        profiles = [
+            item for item in profiles
+            if needle and needle in str(item.get("signatures") or "")
+        ]
+        profile_names = {str(item.get("name", "")) for item in profiles}
+        policies = [
+            item for item in policies
+            if str(item.get("profilename") or item.get("profile") or "") in profile_names
+            or needle in str(item)
+        ]
+    stats = parse_appfw_stats(outputs.get("stat appfw", "") or "")
+    stats += parse_appfw_stats(outputs.get("stat appfw policy", "") or "")
+    stats += parse_appfw_stats(outputs.get("stat appfw profile", "") or "")
+    # Deduplicate by name keeping highest hits.
+    by_name: dict[str, dict[str, Any]] = {}
+    for item in stats:
+        prior = by_name.get(item["name"])
+        if not prior or int(item.get("hits") or 0) >= int(prior.get("hits") or 0):
+            by_name[item["name"]] = item
+    hit_rows = list(by_name.values())
+    # Attach hits onto matching policies/profiles when names align.
+    hit_lookup = {item["name"]: item for item in hit_rows}
+    for policy in policies:
+        name = str(policy.get("name") or policy.get("policyname") or "")
+        if name in hit_lookup:
+            policy["hits"] = hit_lookup[name]["hits"]
+            policy["last_seen"] = hit_lookup[name].get("last_seen")
+    for profile in profiles:
+        name = str(profile.get("name") or "")
+        if name in hit_lookup:
+            profile["hits"] = hit_lookup[name]["hits"]
+            profile["last_seen"] = hit_lookup[name].get("last_seen")
+    bound_vservers: list[str] = []
+    for policy in policies:
+        for value in policy.get("bound_vservers") or []:
+            if value and value not in bound_vservers:
+                bound_vservers.append(str(value))
+    return {
+        "provider": "netscaler-cli-over-ssh",
+        "status": inventory.get("status"),
+        "signature_object_name": needle or None,
+        "feature": inventory.get("feature"),
+        "signatures": signatures,
+        "profiles": profiles,
+        "policies": policies,
+        "bound_vservers": bound_vservers,
+        "hit_counters": hit_rows,
+        "hits_available": bool(hit_rows),
+        "refreshed_commands": [key for key in outputs.keys() if key.startswith("stat ") or key.startswith("show appfw")],
+        "automatic_apply_allowed": False,
+        "note": "Hit counters come from read-only ADC stat output when the appliance exposes them; zero rows means stats were unavailable, not that traffic was idle.",
+    }

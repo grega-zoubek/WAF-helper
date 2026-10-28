@@ -11,7 +11,7 @@ from typing import Any
 
 import paramiko
 
-from app.cli_inventory import build_waf_inventory, parse_policies, parse_servicegroups, parse_virtual_servers
+from app.cli_inventory import build_protection_status, build_waf_inventory, parse_policies, parse_servicegroups, parse_virtual_servers
 
 
 CLI_COMMANDS = (
@@ -216,5 +216,62 @@ def collect_waf_inventory() -> dict[str, Any]:
         return {"provider": "netscaler-cli-over-ssh", "status": "authentication-failed", "automatic_apply_allowed": False, "reason": "The ADC rejected the configured SSH CLI credentials or host key."}
     except (paramiko.SSHException, socket.timeout, TimeoutError, OSError) as exc:
         return {"provider": "netscaler-cli-over-ssh", "status": "unavailable", "automatic_apply_allowed": False, "reason": f"SSH CLI inventory failed with {type(exc).__name__}."}
+    finally:
+        client.close()
+
+
+def collect_protection_status(signature_object_name: str | None = None) -> dict[str, Any]:
+    """Read-only protection status with optional AppFW hit counters."""
+    if os.getenv("NETSCALER_SSH_ENABLED", "false").strip().lower() != "true":
+        return {"provider": "netscaler-cli-over-ssh", "status": "not-configured", "hits_available": False, "hit_counters": [], "automatic_apply_allowed": False, "reason": "SSH CLI inventory is disabled by configuration."}
+    host = os.getenv("NETSCALER_SSH_HOST", os.getenv("NETSCALER_HOST", ""))
+    username = os.getenv("NETSCALER_SSH_USERNAME", os.getenv("NETSCALER_USERNAME", ""))
+    password = _read_secret()
+    if not host or not username or not password:
+        return {"provider": "netscaler-cli-over-ssh", "status": "credential-not-configured", "hits_available": False, "hit_counters": [], "automatic_apply_allowed": False, "reason": "SSH CLI host, username, or password file is not configured."}
+    port = int(os.getenv("NETSCALER_SSH_PORT", "22"))
+    timeout = float(os.getenv("NETSCALER_SSH_TIMEOUT_SECONDS", "30"))
+    client = paramiko.SSHClient()
+    known_hosts = os.getenv("NETSCALER_SSH_KNOWN_HOSTS_FILE", "")
+    if known_hosts and Path(known_hosts).is_file():
+        client.load_host_keys(known_hosts)
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    elif os.getenv("NETSCALER_SSH_STRICT_HOST_KEY", "true").strip().lower() == "true":
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    else:
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    commands = (
+        "show ns feature",
+        "show appfw profile",
+        "show appfw policy",
+        "show appfw signatures",
+        "show appfw settings",
+        "show appfw policylabel",
+        "stat appfw",
+        "stat appfw policy",
+        "stat appfw profile",
+    )
+    try:
+        client.connect(host, port=port, username=username, password=password, look_for_keys=False, allow_agent=False, timeout=timeout, banner_timeout=timeout, auth_timeout=timeout)
+        channel = client.invoke_shell(width=240, height=2000)
+        _read_until_prompt(channel, timeout)
+        outputs: dict[str, str] = {}
+        for command in commands:
+            channel.send(command + "\n")
+            outputs[command] = _read_until_prompt(channel, timeout)
+        for policy in parse_policies(outputs.get("show appfw policy", ""), True):
+            name = str(policy.get("name", ""))
+            if re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                command = f"show appfw policy {name}"
+                channel.send(command + "\n")
+                outputs[command] = _read_until_prompt(channel, timeout)
+        channel.send("exit\n")
+        payload = build_protection_status(outputs, signature_object_name=signature_object_name)
+        payload["source"] = {"transport": "ssh", "host": host, "username": username, "commands": list(commands)}
+        return payload
+    except (paramiko.AuthenticationException, paramiko.BadHostKeyException):
+        return {"provider": "netscaler-cli-over-ssh", "status": "authentication-failed", "hits_available": False, "hit_counters": [], "automatic_apply_allowed": False, "reason": "The ADC rejected the configured SSH CLI credentials or host key."}
+    except (paramiko.SSHException, socket.timeout, TimeoutError, OSError) as exc:
+        return {"provider": "netscaler-cli-over-ssh", "status": "unavailable", "hits_available": False, "hit_counters": [], "automatic_apply_allowed": False, "reason": f"SSH CLI protection status failed with {type(exc).__name__}."}
     finally:
         client.close()
