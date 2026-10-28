@@ -28,6 +28,8 @@ from app.nextgen_correlation import correlate_scope_to_nextgen
 from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
 from app.signature_workflow import ACTION_VALUES, OBJECT_NAME_RE, cli_import_commands, default_object_name, load_upstream_catalog, select_rules_for_detection, workflow_fingerprint
+from app.protection_lifecycle import build_exception_selection, build_promote_selection, summarize_protection_status
+from app.positive_compile import compile_observe_only_preview, structured_endpoint_editor_payload
 from app.positive_model import DecisionMode, Lifecycle, PositiveModelDocument, positive_model_json_schema
 from app.positive_learning import build_discovery_candidate, build_guided_candidate
 from app.operator_auth import AuthConfigurationError, COOKIE_NAME, SESSION_TTL_SECONDS, create_session, request_is_secure_same_origin, verify_credentials, verify_session
@@ -290,6 +292,26 @@ class CustomSignatureSetExportRequest(CustomSignatureSetPreflightRequest):
 
 class CustomSignatureSetRollbackRequest(CustomSignatureSetExportRequest):
     pass
+
+
+class CustomSignaturePromoteRequest(BaseModel):
+    selected_rule_ids: list[str] | None = Field(default=None, max_length=5000)
+    signature_object_name: str | None = Field(default=None, max_length=31)
+
+
+class CustomSignatureExceptionRequest(BaseModel):
+    disable_rule_ids: list[str] = Field(default_factory=list, max_length=5000)
+    signature_object_name: str | None = Field(default=None, max_length=31)
+
+
+class ProtectionBindPlanRequest(BaseModel):
+    job_id: str = Field(min_length=1, max_length=128)
+    custom_signature_set_id: str = Field(min_length=1, max_length=128)
+    source_profile: str = Field(min_length=1, max_length=128)
+    destination_profile: str | None = Field(default=None, max_length=128)
+    policy_name: str | None = Field(default=None, max_length=31)
+    vserver_name: str = Field(min_length=1, max_length=128)
+    priority: int = Field(default=100, ge=1, le=65535)
 
 
 def provider_records(payload: Any, key: str) -> list[dict[str, Any]]:
@@ -3069,6 +3091,120 @@ async def rollback_custom_signature_set(set_id: str, request: CustomSignatureSet
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail="NetScaler adapter unavailable") from exc
     return {"custom_signature_set_id": set_id, "signature_object_name": record["signature_object_name"], "rolled_back": True, "changes_applied": True, "adapter_result": result}
+
+
+
+
+@app.get("/api/adc/protection-status")
+async def adc_protection_status(signature_object_name: str | None = Query(default=None, max_length=64), job_id: str | None = Query(default=None, max_length=128)) -> dict[str, Any]:
+    """Combine ADC bindings/hit counters with exported custom signature-set metadata."""
+    try:
+        from urllib.parse import quote
+        query = f"?signature_object_name={quote(signature_object_name)}" if signature_object_name else ""
+        adc_status = await adapter_read(f"/api/adc/protection-status{query}")
+    except HTTPException:
+        # adapter_read already raises; mirror inventory-style soft failure for UI
+        adc_status = {"status": "unavailable", "hits_available": False, "hit_counters": [], "signatures": [], "profiles": [], "policies": [], "bound_vservers": [], "signature_object_name": signature_object_name}
+    try:
+        sets = await asyncio.to_thread(list_custom_signature_sets_sync, job_id)
+    except Exception:
+        sets = []
+    if signature_object_name:
+        sets = [item for item in sets if item.get("signature_object_name") == signature_object_name]
+    # Prefer exported sets for the summary header.
+    exported_first = [item for item in sets if item.get("status") == "exported"] + [item for item in sets if item.get("status") != "exported"]
+    summary = summarize_protection_status(adc_status if isinstance(adc_status, dict) else {}, exported_first)
+    return {"adc": adc_status, **summary}
+
+
+@app.post("/api/custom-signature-sets/{set_id}/promote-plan", status_code=201)
+async def promote_custom_signature_set(set_id: str, request: CustomSignaturePromoteRequest) -> dict[str, Any]:
+    record = await asyncio.to_thread(load_custom_signature_set_sync, set_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Custom signature set was not found")
+    if record.get("status") not in {"exported", "approved", "edited", "draft"}:
+        raise HTTPException(status_code=409, detail="Promotion requires a reviewable or exported custom signature set")
+    selection = build_promote_selection(record, request.selected_rule_ids)
+    if selection.get("missing_requested_rule_ids"):
+        raise HTTPException(status_code=422, detail={"message": "One or more rule IDs are not part of the source set", "missing_requested_rule_ids": selection["missing_requested_rule_ids"]})
+    if not selection.get("selected_rule_ids"):
+        raise HTTPException(status_code=422, detail="Select at least one rule to promote to BLOCK")
+    name = (request.signature_object_name or selection["signature_object_name"]).strip()
+    plan = await build_custom_signature_set_plan(record["job_id"], name, selection["selected_rule_ids"], "BLOCK")
+    plan["lifecycle"] = selection
+    try:
+        new_id = await asyncio.to_thread(save_custom_signature_set_sync, plan)
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Custom signature-set database unavailable") from exc
+    return {**custom_signature_set_response({**(await asyncio.to_thread(load_custom_signature_set_sync, new_id) or {}), **plan, "custom_signature_set_id": new_id}), "lifecycle": selection, "source_custom_signature_set_id": set_id}
+
+
+@app.post("/api/custom-signature-sets/{set_id}/exception-plan", status_code=201)
+async def exception_custom_signature_set(set_id: str, request: CustomSignatureExceptionRequest) -> dict[str, Any]:
+    record = await asyncio.to_thread(load_custom_signature_set_sync, set_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Custom signature set was not found")
+    if not request.disable_rule_ids:
+        raise HTTPException(status_code=422, detail="disable_rule_ids must include at least one noisy rule ID")
+    selection = build_exception_selection(record, request.disable_rule_ids)
+    if selection.get("missing_requested_rule_ids"):
+        raise HTTPException(status_code=422, detail={"message": "One or more disable_rule_ids are not part of the source set", "missing_requested_rule_ids": selection["missing_requested_rule_ids"]})
+    if not selection.get("selected_rule_ids"):
+        raise HTTPException(status_code=422, detail="Exception would remove every rule; keep at least one enabled rule")
+    name = (request.signature_object_name or selection["signature_object_name"]).strip()
+    plan = await build_custom_signature_set_plan(record["job_id"], name, selection["selected_rule_ids"], selection["action"])
+    plan["lifecycle"] = selection
+    try:
+        new_id = await asyncio.to_thread(save_custom_signature_set_sync, plan)
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Custom signature-set database unavailable") from exc
+    return {**custom_signature_set_response({**(await asyncio.to_thread(load_custom_signature_set_sync, new_id) or {}), **plan, "custom_signature_set_id": new_id}), "lifecycle": selection, "source_custom_signature_set_id": set_id}
+
+
+@app.post("/api/protection/bind-plan")
+async def protection_bind_plan(request: ProtectionBindPlanRequest) -> dict[str, Any]:
+    """Job-scoped LOG bind plan: attach an exported signature object to a new AppFW profile/policy/vServer."""
+    record = await asyncio.to_thread(load_custom_signature_set_sync, request.custom_signature_set_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Custom signature set was not found")
+    if record.get("job_id") != request.job_id:
+        raise HTTPException(status_code=409, detail="Signature set does not belong to this discovery job")
+    if record.get("status") != "exported":
+        raise HTTPException(status_code=409, detail="Bind plan requires an exported signature object")
+    plan = await duplicate_appfw_profile_plan(ProfileDuplicateRequest(
+        profile_name=request.source_profile,
+        duplicate_name=request.destination_profile,
+        signature_object_name=record["signature_object_name"],
+        policy_name=request.policy_name,
+        vserver_name=request.vserver_name,
+        priority=request.priority,
+    ))
+    plan["protection_bind"] = {
+        "job_id": request.job_id,
+        "custom_signature_set_id": request.custom_signature_set_id,
+        "signature_object_name": record["signature_object_name"],
+        "action": record.get("action") or "LOG",
+        "note": "LOG-only bind plan. Approval, preflight, and ENABLE WRITE remain required.",
+    }
+    return plan
+
+
+@app.post("/api/positive-model/candidates/{candidate_id}/compile-preview")
+async def compile_positive_candidate_preview(candidate_id: str) -> dict[str, Any]:
+    try:
+        with db_connect() as conn:
+            row = conn.execute("SELECT candidate_id,hostname,status,model,source_summary,review_note,version,created_by,reviewed_by,created_at,updated_at FROM positive_model_candidates WHERE candidate_id=%s", (candidate_id,)).fetchone()
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Positive-model database unavailable") from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="Positive-model candidate was not found")
+    columns = ["candidate_id","hostname","status","model","source_summary","review_note","version","created_by","reviewed_by","created_at","updated_at"]
+    record = dict(zip(columns, row))
+    model = record.get("model") or {}
+    preview = compile_observe_only_preview(model, candidate_id=candidate_id, status=record.get("status"))
+    preview["editor_endpoints"] = structured_endpoint_editor_payload(model)
+    preview["hostname"] = record.get("hostname")
+    return preview
 
 
 @app.post("/api/adc/writes/appfw-profile-signature")
