@@ -5,7 +5,13 @@ from pathlib import Path
 RUNTIME_INSPECTOR = Path(__file__).resolve().parents[1] / "services" / "runtime-inspector"
 sys.path.insert(0, str(RUNTIME_INSPECTOR))
 
-from app.main import InspectionRequest, correlate_focus_to_requests, guard_guided_route, redact_url
+from app.main import (
+    InspectionRequest,
+    classify_manual_browse_target,
+    correlate_focus_to_requests,
+    guard_guided_route,
+    redact_url,
+)
 
 
 class GuidedCorrelationTests(unittest.TestCase):
@@ -56,6 +62,54 @@ class GuidedCorrelationTests(unittest.TestCase):
         self.assertEqual(result[0]["confidence"], 0.25)
         self.assertEqual(result[0]["matched_parameter_names"], [])
         self.assertIn("unconfirmed", result[0]["reason"])
+
+
+class ManualBrowseTargetTests(unittest.TestCase):
+    def test_allows_in_scope_link(self):
+        decision = classify_manual_browse_target(
+            {"tag": "a", "href": "https://example.test/app/products", "disabled": False, "target": ""},
+            "example.test",
+            ["/app"],
+        )
+        self.assertTrue(decision["allowed"])
+        self.assertEqual(decision["kind"], "link")
+
+    def test_rejects_out_of_scope_link(self):
+        decision = classify_manual_browse_target(
+            {"tag": "a", "href": "https://example.test/private", "disabled": False, "target": ""},
+            "example.test",
+            ["/app"],
+        )
+        self.assertFalse(decision["allowed"])
+        self.assertEqual(decision["reason"], "out-of-scope")
+
+    def test_rejects_submit_button(self):
+        decision = classify_manual_browse_target(
+            {"tag": "button", "effective_type": "submit", "disabled": False, "form_associated": True},
+            "example.test",
+            ["/"],
+        )
+        self.assertFalse(decision["allowed"])
+        self.assertEqual(decision["reason"], "submit")
+
+    def test_allows_non_submit_button(self):
+        decision = classify_manual_browse_target(
+            {"tag": "button", "effective_type": "button", "disabled": False, "form_associated": False},
+            "example.test",
+            ["/"],
+        )
+        self.assertTrue(decision["allowed"])
+        self.assertEqual(decision["kind"], "button")
+
+    def test_rejects_plain_text_and_inputs(self):
+        for element in (
+            {"tag": "div", "disabled": False},
+            {"tag": "input", "effective_type": "text", "disabled": False, "form_associated": True},
+            {"tag": "input", "effective_type": "password", "disabled": False, "form_associated": True},
+        ):
+            decision = classify_manual_browse_target(element, "example.test", ["/"])
+            self.assertFalse(decision["allowed"], element)
+            self.assertEqual(decision["reason"], "not-navigational")
 
 
 class GuidedNetworkGuardTests(unittest.IsolatedAsyncioTestCase):

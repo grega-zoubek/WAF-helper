@@ -189,6 +189,60 @@ def redacted_route_template(value: str) -> str:
     return path if path.startswith("/") else "/" + path
 
 
+def classify_manual_browse_target(
+    element: dict[str, Any],
+    hostname: str,
+    allowed_paths: list[str],
+) -> dict[str, Any]:
+    """Decide whether a screenshot hit may be clicked for manual browsing.
+
+    Same safety rules as explicit Observe click: in-scope links and non-submit
+    buttons only. Form submits, credentials fields, and out-of-scope targets
+    are refused without activating the element.
+    """
+    tag = str(element.get("tag") or "").casefold()
+    effective_type = str(element.get("effective_type") or element.get("type") or "").casefold()
+    role = str(element.get("role") or "").casefold()
+    disabled = bool(element.get("disabled"))
+    href = str(element.get("href") or "")
+    target = str(element.get("target") or "").casefold()
+    form_associated = bool(element.get("form_associated"))
+
+    if disabled:
+        return {"allowed": False, "reason": "disabled", "detail": "Disabled controls cannot be browsed"}
+    if target and target != "_self":
+        return {"allowed": False, "reason": "new-window", "detail": "New-window controls cannot be activated during manual browse"}
+    if tag in {"input", "button"} and effective_type in {"submit", "image", "reset"}:
+        return {"allowed": False, "reason": "submit", "detail": "Form submission is blocked; use guided login for one authorized HTTPS POST"}
+    if tag == "button" and effective_type in {"", "submit"}:
+        return {"allowed": False, "reason": "submit", "detail": "Submit buttons cannot be activated during manual browse"}
+
+    is_link = tag == "a" and bool(href)
+    is_non_submit_button = tag == "button" and effective_type == "button"
+    is_input_button = tag == "input" and effective_type == "button"
+    is_role_button = role == "button" and not form_associated
+    if not (is_link or is_non_submit_button or is_input_button or is_role_button):
+        return {
+            "allowed": False,
+            "reason": "not-navigational",
+            "detail": "Manual browse only activates in-scope links and non-submit buttons; use selection mode to inspect other elements",
+        }
+    if is_link:
+        scope = InspectionRequest(urls=[href], hostname=hostname, allowed_paths=allowed_paths)
+        if urlparse(href).username or urlparse(href).password:
+            return {"allowed": False, "reason": "credentials-in-url", "detail": "Links with embedded credentials cannot be opened"}
+        if not in_scope(href, scope):
+            return {"allowed": False, "reason": "out-of-scope", "detail": "Link is outside the guided session host/path scope"}
+        kind = "link"
+    elif is_input_button:
+        kind = "input-button"
+    elif is_non_submit_button:
+        kind = "button"
+    else:
+        kind = "role-button"
+    return {"allowed": True, "reason": "ok", "detail": f"Safe {kind} click", "kind": kind}
+
+
 def correlate_focus_to_requests(
     element: dict[str, Any], event_started: float, requests: list[dict[str, Any]], hostname: str,
     resource_types: set[str] | None = None,
@@ -967,6 +1021,30 @@ async def probe_guided_input(session_id: str, request: GuidedSelectRequest) -> d
         }
 
 
+POINT_HIT_SCRIPT = """({x, y}) => {
+  const hit = document.elementFromPoint(x, y);
+  if (!hit) return null;
+  const el = hit.closest('input,button,select,textarea,a,form,[role="button"],[role="textbox"]') || hit;
+  const form = el.tagName === 'FORM' ? el : el.form;
+  const r = el.getBoundingClientRect();
+  const text = ((el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()).slice(0, 120);
+  return {
+    tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', effective_type: el.type || '',
+    name: el.getAttribute('name') || '', id: el.id || '', role: el.getAttribute('role') || '',
+    aria_label: el.getAttribute('aria-label') || '', placeholder: el.getAttribute('placeholder') || '',
+    required: el.hasAttribute('required'), disabled: el.hasAttribute('disabled') || Boolean(el.disabled),
+    href: el.href || '', target: el.getAttribute('target') || '',
+    form_associated: Boolean(form),
+    selector: el.id ? `#${CSS.escape(el.id)}` : `${el.tagName.toLowerCase()}${el.getAttribute('name') ? `[name="${CSS.escape(el.getAttribute('name'))}"]` : ''}`,
+    labels: Array.from(el.labels || []).map(label => (label.innerText || label.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 120)),
+    text,
+    form_id: form ? (form.id || form.getAttribute('name') || '') : '',
+    form_method: form ? (form.method || 'get').toUpperCase() : '', form_action: form ? form.action : '',
+    bounds: {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height)}
+  };
+}"""
+
+
 @app.post("/guided/sessions/{session_id}/select-at")
 async def select_guided_point(session_id: str, request: GuidedPointSelectRequest) -> dict[str, Any]:
     """Select a visible page element from screenshot coordinates without activating it."""
@@ -975,26 +1053,10 @@ async def select_guided_point(session_id: str, request: GuidedPointSelectRequest
         session = browser_sessions.get(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
-        selected = await session["page"].evaluate("""({x, y}) => {
-          const hit = document.elementFromPoint(x, y);
-          if (!hit) return null;
-          const el = hit.closest('input,button,select,textarea,a,form,[role="button"],[role="textbox"]') || hit;
-          const form = el.tagName === 'FORM' ? el : el.form;
-          const r = el.getBoundingClientRect();
-          return {
-            tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', effective_type: el.type || '',
-            name: el.getAttribute('name') || '', id: el.id || '', role: el.getAttribute('role') || '',
-            aria_label: el.getAttribute('aria-label') || '', placeholder: el.getAttribute('placeholder') || '',
-            required: el.hasAttribute('required'), disabled: el.hasAttribute('disabled'),
-            selector: el.id ? `#${CSS.escape(el.id)}` : `${el.tagName.toLowerCase()}${el.getAttribute('name') ? `[name="${CSS.escape(el.getAttribute('name'))}"]` : ''}`,
-            labels: Array.from(el.labels || []).map(label => (label.innerText || label.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 120)),
-            form_id: form ? (form.id || form.getAttribute('name') || '') : '',
-            form_method: form ? (form.method || 'get').toUpperCase() : '', form_action: form ? form.action : '',
-            bounds: {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height)}
-          };
-        }""", {"x": request.x, "y": request.y})
+        selected = await session["page"].evaluate(POINT_HIT_SCRIPT, {"x": request.x, "y": request.y})
         if selected is None:
             raise HTTPException(status_code=422, detail="No page element exists at the selected coordinate")
+        selected["href"] = redact_url(selected.get("href", ""))
         selected["form_action"] = redact_url(selected.get("form_action", ""))
         stored_keys = ("tag", "type", "effective_type", "name", "id", "role", "form_id", "form_method", "form_action")
         session["selected_elements"].append({key: selected.get(key) for key in stored_keys})
@@ -1002,6 +1064,63 @@ async def select_guided_point(session_id: str, request: GuidedPointSelectRequest
         session["touched"] = time.monotonic()
         snapshot = await guided_snapshot(session)
         return {"element": selected, "snapshot": snapshot, "evidence_kind": "screenshot_point_selection", "raw_value_captured": False}
+
+
+@app.post("/guided/sessions/{session_id}/click-at")
+async def click_guided_point(session_id: str, request: GuidedPointSelectRequest) -> dict[str, Any]:
+    """Manual browse: activate an in-scope link or non-submit button at screenshot coordinates."""
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        session = browser_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
+        selected = await session["page"].evaluate(POINT_HIT_SCRIPT, {"x": request.x, "y": request.y})
+        if selected is None:
+            raise HTTPException(status_code=422, detail="No page element exists at the selected coordinate")
+        decision = classify_manual_browse_target(selected, session["hostname"], session["allowed_paths"])
+        if not decision.get("allowed"):
+            raise HTTPException(status_code=422, detail=decision.get("detail") or "This element cannot be activated during manual browse")
+        if selected.get("bounds"):
+            bounds = selected["bounds"]
+            if bounds.get("width", 0) <= 0 or bounds.get("height", 0) <= 0:
+                raise HTTPException(status_code=422, detail="The target control is not visible at the selected coordinate")
+        event_started = time.monotonic()
+        try:
+            await session["page"].mouse.click(request.x, request.y, delay=20)
+            await session["page"].wait_for_timeout(1_200)
+        except PlaywrightTimeoutError:
+            raise HTTPException(status_code=422, detail="The visible control could not be clicked; no successful browse action was recorded")
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Manual browse click failed: {type(exc).__name__}") from exc
+        correlated = correlate_focus_to_requests(selected, event_started, session["network_sequence"], session["hostname"], {"document", "xhr", "fetch"})
+        click_event = next((item for item in reversed(session["interaction_events"]) if item.get("type") == "click" and item.get("started_at", 0) >= event_started), None)
+        if click_event is None:
+            click_event = {
+                "id": str(uuid4()), "type": "click", "source": "manual-browse",
+                "tag": selected.get("tag", ""), "input_type": selected.get("effective_type", ""),
+                "name": selected.get("name", ""), "id_attribute": selected.get("id", ""),
+                "role": selected.get("role", ""), "form_method": selected.get("form_method", ""),
+                "form_action": redact_url(selected.get("form_action", "")), "started_at": event_started,
+            }
+            session["interaction_events"].append(click_event)
+            session["interaction_events"] = session["interaction_events"][-MAX_INTERACTION_EVENTS:]
+        click_event["correlated_request_ids"] = [item.get("request_id") for item in correlated if item.get("request_id")]
+        click_event["matched_parameter_names"] = sorted({name for item in correlated for name in item.get("matched_parameter_names", [])})
+        session["touched"] = time.monotonic()
+        safe_element = {
+            **selected,
+            "href": redact_url(selected.get("href", "")),
+            "form_action": redact_url(selected.get("form_action", "")),
+        }
+        return {
+            "page_url": redact_url(session["page"].url),
+            "event": {"type": "click", "source": "manual-browse", "element": safe_element, "decision": decision},
+            "correlation_status": "matched" if correlated else "no_request_observed",
+            "correlated_requests": correlated,
+            "capture_policy": "manual browse click on an in-scope link or non-submit button; only same-host, in-scope GET/HEAD requests are allowed; form submission, keyboard input, request bodies, and raw field values are blocked/not captured",
+            "raw_value_captured": False,
+            "snapshot": await guided_snapshot(session),
+        }
 
 
 @app.get("/guided/sessions/{session_id}/candidate-source")
