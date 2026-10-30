@@ -1437,6 +1437,20 @@ async def browser_lab_select_at(session_id: str, request: BrowserLabPointSelectR
         raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
 
 
+@app.post("/api/browser-lab/sessions/{session_id}/click-at")
+async def browser_lab_click_at(session_id: str, request: BrowserLabPointSelectRequest) -> dict[str, Any]:
+    """Forward a manual-browse screenshot click; inspector refuses submits and out-of-scope targets."""
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.post(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}/click-at", json=request.model_dump())
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Manual browse click was rejected")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+
+
 @app.get("/api/browser-lab/sessions/{session_id}/candidate")
 async def browser_lab_candidate(session_id: str) -> dict[str, Any]:
     try:

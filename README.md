@@ -42,11 +42,11 @@ and the contract schema at `GET /api/positive-model/schema`; dry runs are
 in-memory and do not persist or enforce a policy. Phase 3 adds an isolated,
 short-lived Guided Browser Lab in the GUI, with same-host/path GET/HEAD-only
 navigation, temporary screenshots, selectable DOM metadata, and redacted
-network metadata. It does not submit forms or capture raw values/bodies.
-Authenticated journeys and arbitrary pointer interaction remain future work.
-The current browser can report a low-confidence DOM name/id-to-query-key match
-for already observed safe GET requests, but full event correlation, candidate
-generation, policy compilation, and persistence remain future work.
+network metadata. Manual browse mode lets operators click the screenshot to
+follow in-scope links and non-submit buttons; form submits and arbitrary
+keyboard input remain blocked. It does not capture raw values/bodies.
+Authenticated journeys support one explicitly confirmed HTTPS login POST per
+session. Full policy compilation and ADC enforcement remain future work.
 
 Each generic group is also returned as a closed-by-default selection tree. The tree is
 grouped into catalog-derived subgroups (for example SQL/command/LDAP/NoSQL injection,
