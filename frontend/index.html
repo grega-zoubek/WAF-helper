@@ -312,7 +312,7 @@
         <h2>Positive security lab</h2>
         <button id="back-from-positive" class="secondary back-to-tools" type="button">Back to tools</button>
       </div>
-      <p class="small muted">Build an observe-only allowlist from guided or manual browsing. Capture is isolated and temporary: same-host in-scope GET/HEAD, screenshot click-to-browse for safe links/buttons, and only after a separate confirmation on an HTTPS login form, one matching login POST. Credentials are cleared after that attempt and never become candidate data. Sessions expire after 15 minutes.</p>
+      <p class="small muted">Build an observe-only allowlist from guided or manual browsing. Capture is isolated and temporary: same-host in-scope GET/HEAD, mouse click-to-browse (links, page widgets, and click-into fields), typing into non-sensitive focused fields, and only after a separate confirmation on an HTTPS login form, one matching login POST. Credentials and typed values are never candidate data. Sessions expire after 15 minutes.</p>
     <form id="browser-lab-start-form">
       <input id="browser-lab-url" required type="url" maxlength="2048" placeholder="Application URL, e.g. http://192.168.11.91/">
       <input id="browser-lab-paths" value="/" maxlength="1000" placeholder="Allowed paths, comma-separated">
@@ -463,6 +463,7 @@
     }
     window.browserLabSessionId = null;
     window.browserLabPointerMode = null;
+    window.browserLabFocus = null;
     function syncBrowserLabPointerMode() {
       const image = document.querySelector('#browser-lab-preview');
       const selectButton = document.querySelector('.browser-selection-mode');
@@ -470,7 +471,23 @@
       image?.classList.toggle('selecting', window.browserLabPointerMode === 'select');
       image?.classList.toggle('browsing', window.browserLabPointerMode === 'browse');
       if (selectButton) selectButton.textContent = window.browserLabPointerMode === 'select' ? 'Selection mode on · click page' : 'Enable page selection';
-      if (browseButton) browseButton.textContent = window.browserLabPointerMode === 'browse' ? 'Browse mode on · click links/buttons' : 'Enable browse mode';
+      if (browseButton) browseButton.textContent = window.browserLabPointerMode === 'browse' ? 'Browse mode on · click to navigate or enter fields' : 'Enable browse mode';
+    }
+    function renderBrowserLabFocusPanel(focus, host) {
+      if (!host) return;
+      if (!focus) { host.querySelector('#browser-lab-type-panel')?.remove(); return; }
+      const label = focus.name || focus.id || focus.aria_label || focus.placeholder || `${focus.tag || 'field'}${focus.type ? ` · ${focus.type}` : ''}`;
+      const typeable = Boolean(focus.typeable) && !focus.sensitive;
+      let panel = host.querySelector('#browser-lab-type-panel');
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'browser-lab-type-panel';
+        panel.className = 'notice';
+        host.appendChild(panel);
+      }
+      panel.innerHTML = typeable
+        ? `<strong>Field focused · ${escapeHtml(label)}</strong><p class="small muted">Type into this field with the mouse-focused control. The typed value is sent only to the isolated browser and is never stored in the candidate.</p><form id="browser-lab-type-form" class="job-actions" style="align-items:end"><label class="small" style="flex:1;min-width:12rem">Value to type<input id="browser-lab-type-value" maxlength="256" autocomplete="off" placeholder="Search text, filter, etc."></label><label class="small"><input id="browser-lab-type-enter" type="checkbox"> Press Enter after typing</label><button type="submit">Type into field</button></form>`
+        : `<strong>Field focused · ${escapeHtml(label)}</strong><p class="small muted">${focus.sensitive ? 'Sensitive/credential fields can be focused for observation but not typed here. Use guided login for one authorized HTTPS password POST.' : 'This control is focused but is not a typeable text field.'}</p>`;
     }
     function renderBrowserLabSnapshot(snapshot) {
       window.currentBrowserLabSnapshot = snapshot;
@@ -494,7 +511,7 @@
       const auth = snapshot.authentication || {};
       const authForm = snapshot.url?.startsWith('https://') && userOptions.length && passwordOptions.length && submitOptions.length
         ? `<section class="next card"><h4>Guided login · ${escapeHtml(auth.state || 'anonymous')}</h4><p class="small muted">One explicitly confirmed HTTPS POST to the selected same-host, in-scope form action is allowed. Credentials are sent through the isolated browser, never stored in the candidate, and cleared after the attempt. Other unsafe requests remain blocked. Certificate bypass applies only if enabled when this session was opened.</p><form id="browser-lab-auth-form"><label>Username field<select id="browser-lab-auth-user">${userOptions.map(item => `<option value="${Number(item.index)}">${escapeHtml(optionLabel(item))}</option>`).join('')}</select></label><label>Password field<select id="browser-lab-auth-password">${passwordOptions.map(item => `<option value="${Number(item.index)}">${escapeHtml(optionLabel(item))}</option>`).join('')}</select></label><label>Submit control<select id="browser-lab-auth-submit">${submitOptions.map(item => `<option value="${Number(item.index)}">${escapeHtml(optionLabel(item))}</option>`).join('')}</select></label><label>Test identity label<input id="browser-lab-auth-label" value="test-user" maxlength="64" pattern="[A-Za-z0-9._-]+" required></label><label>Username<input id="browser-lab-auth-username" autocomplete="off" maxlength="256" required></label><label>Password<input id="browser-lab-auth-password-value" type="password" autocomplete="new-password" maxlength="512" required></label><label><input id="browser-lab-auth-confirm" type="checkbox" required> I authorize one login POST using these credentials.</label><button type="submit"${auth.attempted ? ' disabled' : ''}>${auth.attempted ? 'Login attempt already used' : 'Submit one login attempt'}</button></form><p class="small">State: ${escapeHtml(auth.state || 'anonymous')} · Result: ${escapeHtml(auth.result || 'not-attempted')} · Label: ${escapeHtml(auth.identity_label || '—')}</p></section>` : '';
-      document.querySelector('#browser-lab-snapshot').innerHTML = `<div class="card"><h3>${escapeHtml(snapshot.title || 'Guided browser')} <span class="small muted">HTTP ${escapeHtml(snapshot.status_code ?? '-')}</span></h3><p class="small"><code>${escapeHtml(snapshot.url)}</code></p><p class="small muted">${escapeHtml(snapshot.capture_policy)}</p><p class="small muted"><strong>Browse mode</strong> lets you click the screenshot to follow in-scope links and non-submit buttons. <strong>Selection mode</strong> inspects metadata without activating anything. “Probe with synthetic value” is blocked for sensitive/non-empty fields and never submits. Form submits stay blocked except the explicitly authorized single HTTPS login POST. Only same-host in-scope GET/HEAD traffic is allowed. DOM action results appear above this long snapshot.</p><div class="browser-lab-layout"><div><div class="browser-preview-shell"><img class="browser-preview" id="browser-lab-preview" data-vw="${Number(snapshot.viewport?.width || 1365)}" data-vh="${Number(snapshot.viewport?.height || 900)}" alt="Temporary screenshot of guided browser page" src="${snapshot.screenshot_data_uri}"></div><div class="browser-select-actions"><button class="secondary browser-browse-mode" type="button">Enable browse mode</button><button class="secondary browser-selection-mode" type="button">Enable page selection</button><button class="secondary" id="browser-lab-candidate-generate" type="button">Generate observe-only candidate</button></div><h4>Page headings</h4><p class="small">${escapeHtml((snapshot.headings || []).join(' · ') || 'No headings detected')}</p></div><div><h4>Select a DOM field or control</h4><div class="browser-list">${controlRows || '<p class="small muted">No controls found on this page.</p>'}</div><h4>Same-host links</h4><div class="browser-list">${linkRows || '<p class="small muted">No in-scope links found.</p>'}</div></div></div>${authForm}${formRows ? `<h4>Forms (observed; submissions blocked except the explicitly authorized single HTTPS login POST)</h4><table><thead><tr><th>Form</th><th>Method</th><th>Action</th><th>Fields</th></tr></thead><tbody>${formRows}</tbody></table>` : ''}${requestRows ? `<h4>Safe network metadata</h4><div class="browser-list"><table><thead><tr><th>Method</th><th>URL</th><th>Type</th><th>Status</th></tr></thead><tbody>${requestRows}</tbody></table></div>` : ''}<div id="browser-lab-candidate" class="notice" hidden></div></div>`;
+      document.querySelector('#browser-lab-snapshot').innerHTML = `<div class="card"><h3>${escapeHtml(snapshot.title || 'Guided browser')} <span class="small muted">HTTP ${escapeHtml(snapshot.status_code ?? '-')}</span></h3><p class="small"><code>${escapeHtml(snapshot.url)}</code></p><p class="small muted">${escapeHtml(snapshot.capture_policy)}</p><p class="small muted"><strong>Browse mode</strong> lets you mouse-click the screenshot to navigate (links, buttons, page widgets) and click into fields. After focusing a non-sensitive field, type into it from the panel above. <strong>Selection mode</strong> inspects metadata without activating anything. Form submits stay blocked except the explicitly authorized single HTTPS login POST. Only same-host in-scope GET/HEAD traffic is allowed.</p><div class="browser-lab-layout"><div><div class="browser-preview-shell"><img class="browser-preview" id="browser-lab-preview" data-vw="${Number(snapshot.viewport?.width || 1365)}" data-vh="${Number(snapshot.viewport?.height || 900)}" alt="Temporary screenshot of guided browser page" src="${snapshot.screenshot_data_uri}"></div><div class="browser-select-actions"><button class="secondary browser-browse-mode" type="button">Enable browse mode</button><button class="secondary browser-selection-mode" type="button">Enable page selection</button><button class="secondary" id="browser-lab-candidate-generate" type="button">Generate observe-only candidate</button></div><h4>Page headings</h4><p class="small">${escapeHtml((snapshot.headings || []).join(' · ') || 'No headings detected')}</p></div><div><h4>Select a DOM field or control</h4><div class="browser-list">${controlRows || '<p class="small muted">No controls found on this page.</p>'}</div><h4>Same-host links</h4><div class="browser-list">${linkRows || '<p class="small muted">No in-scope links found.</p>'}</div></div></div>${authForm}${formRows ? `<h4>Forms (observed; submissions blocked except the explicitly authorized single HTTPS login POST)</h4><table><thead><tr><th>Form</th><th>Method</th><th>Action</th><th>Fields</th></tr></thead><tbody>${formRows}</tbody></table>` : ''}${requestRows ? `<h4>Safe network metadata</h4><div class="browser-list"><table><thead><tr><th>Method</th><th>URL</th><th>Type</th><th>Status</th></tr></thead><tbody>${requestRows}</tbody></table></div>` : ''}<div id="browser-lab-candidate" class="notice" hidden></div></div>`;
       document.querySelector('#browser-lab-navigation-form').hidden = false;
       document.querySelector('#browser-lab-navigation-url').value = snapshot.url;
       syncBrowserLabPointerMode();
@@ -1250,6 +1267,7 @@
       if (!['http:', 'https:'].includes(parsed.protocol)) { status.textContent = 'Only HTTP and HTTPS URLs are supported.'; return; }
       status.textContent = 'Starting isolated browser session...';
       window.browserLabPointerMode = null;
+      window.browserLabFocus = null;
       document.querySelector('#browser-lab-selected').hidden = true;
       document.querySelector('#browser-lab-selected').innerHTML = '';
       try {
@@ -1267,6 +1285,32 @@
       catch (error) { status.textContent = `Navigation blocked or failed: ${error.message}`; }
     });
     document.addEventListener('submit', async event => {
+      if (event.target?.id === 'browser-lab-type-form') {
+        event.preventDefault();
+        if (!window.browserLabSessionId) return;
+        const status = document.querySelector('#browser-lab-status');
+        const valueInput = document.querySelector('#browser-lab-type-value');
+        const pressEnter = Boolean(document.querySelector('#browser-lab-type-enter')?.checked);
+        const button = event.target.querySelector('button[type="submit"]');
+        const typed = valueInput?.value || '';
+        if (button) button.disabled = true;
+        status.textContent = 'Typing into focused field…';
+        try {
+          const result = await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}/type`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:typed, press_enter:pressEnter, clear_first:true})});
+          window.browserLabFocus = result.browse_focus || window.browserLabFocus;
+          renderBrowserLabSnapshot(result.snapshot);
+          window.browserLabPointerMode = 'browse';
+          syncBrowserLabPointerMode();
+          const host = document.querySelector('#browser-lab-selected');
+          host.hidden = false;
+          host.innerHTML = `<strong>Typed into field: ${escapeHtml(humanStatus(result.correlation_status))}</strong><p class="small">${escapeHtml(result.capture_policy || '')}</p><dl class="structured-summary"><dt>Characters typed</dt><dd>${Number(result.event?.char_count || 0)} (value not retained)</dd><dt>Press Enter</dt><dd>${result.event?.press_enter ? 'yes' : 'no'}</dd><dt>Correlated requests</dt><dd>${Number((result.correlated_requests || []).length)} safe request(s)</dd></dl>`;
+          renderBrowserLabFocusPanel(window.browserLabFocus, host);
+          status.textContent = `Typing complete: ${result.correlation_status}.`;
+          host.scrollIntoView({behavior:'smooth', block:'center'});
+        } catch (error) { status.textContent = `Typing failed: ${error.message}`; }
+        finally { if (valueInput) valueInput.value = ''; if (button) button.disabled = false; }
+        return;
+      }
       if (event.target?.id !== 'browser-lab-auth-form') return;
       event.preventDefault();
       const status = document.querySelector('#browser-lab-status');
@@ -1291,6 +1335,7 @@
       if (window.browserLabSessionId) { try { await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}`, {method:'DELETE'}); } catch (error) {} }
       window.browserLabSessionId = null;
       window.browserLabPointerMode = null;
+      window.browserLabFocus = null;
       document.querySelector('#browser-lab-navigation-form').hidden = true;
       document.querySelector('#browser-lab-snapshot').innerHTML = '';
       document.querySelector('#browser-lab-selected').hidden = true;
@@ -1329,17 +1374,23 @@
         const x = (event.clientX - rect.left) / rect.width * Number(preview.dataset.vw || 1365);
         const y = (event.clientY - rect.top) / rect.height * Number(preview.dataset.vh || 900);
         const status = document.querySelector('#browser-lab-status');
-        status.textContent = 'Browsing: activating safe control at click point...';
+        status.textContent = 'Browsing: mouse click at page coordinates...';
         try {
           const result = await api(`/api/browser-lab/sessions/${encodeURIComponent(window.browserLabSessionId)}/click-at`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({x,y})});
+          window.browserLabFocus = result.browse_focus || null;
           renderBrowserLabSnapshot(result.snapshot);
           window.browserLabPointerMode = 'browse';
           syncBrowserLabPointerMode();
           const host = document.querySelector('#browser-lab-selected');
           host.hidden = false;
           const el = result.event?.element || {};
-          host.innerHTML = `<strong>Manual browse click: ${escapeHtml(humanStatus(result.correlation_status))}</strong><p class="small">${escapeHtml(result.capture_policy || '')}</p><dl class="structured-summary"><dt>Target</dt><dd>${escapeHtml(el.tag || '-')} ${el.href ? `· ${escapeHtml(el.href)}` : (el.text ? `· ${escapeHtml(el.text)}` : '')}</dd><dt>Correlated requests</dt><dd>${Number((result.correlated_requests || []).length)} safe request(s)</dd></dl><details class="url-list-panel"><summary>Advanced · Request metadata</summary><pre>${escapeHtml(JSON.stringify(result.correlated_requests, null, 2))}</pre></details><span class="small">Browse mode stays on so you can continue clicking in-scope links and non-submit buttons. Form submits remain blocked.</span>`;
-          status.textContent = `Manual browse click complete: ${result.correlation_status}.`;
+          const decision = result.event?.decision || {};
+          const actionLabel = decision.kind === 'field' ? 'Clicked into field' : 'Manual browse click';
+          host.innerHTML = `<strong>${escapeHtml(actionLabel)}: ${escapeHtml(humanStatus(result.correlation_status))}</strong><p class="small">${escapeHtml(result.capture_policy || '')}</p><dl class="structured-summary"><dt>Target</dt><dd>${escapeHtml(el.tag || '-')} ${el.href ? `· ${escapeHtml(el.href)}` : ''} ${el.name || el.id || el.placeholder || el.text ? `· ${escapeHtml(el.name || el.id || el.placeholder || el.text)}` : ''}</dd><dt>Action</dt><dd>${escapeHtml(decision.action || decision.kind || 'click')}</dd><dt>Correlated requests</dt><dd>${Number((result.correlated_requests || []).length)} safe request(s)</dd></dl><details class="url-list-panel"><summary>Advanced · Request metadata</summary><pre>${escapeHtml(JSON.stringify(result.correlated_requests, null, 2))}</pre></details><span class="small">Keep clicking the screenshot to navigate or enter fields. Form submits remain blocked.</span>`;
+          renderBrowserLabFocusPanel(window.browserLabFocus, host);
+          status.textContent = decision.kind === 'field'
+            ? (window.browserLabFocus?.typeable ? 'Field focused — type into it below, or keep browsing.' : `Field focused (${result.correlation_status}); typing blocked for this control.`)
+            : `Manual browse click complete: ${result.correlation_status}.`;
           host.scrollIntoView({behavior:'smooth', block:'center'});
         } catch (error) { status.textContent = `Manual browse click failed: ${error.message}`; }
         return;

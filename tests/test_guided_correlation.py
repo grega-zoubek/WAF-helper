@@ -73,6 +73,7 @@ class ManualBrowseTargetTests(unittest.TestCase):
         )
         self.assertTrue(decision["allowed"])
         self.assertEqual(decision["kind"], "link")
+        self.assertEqual(decision["action"], "click")
 
     def test_rejects_out_of_scope_link(self):
         decision = classify_manual_browse_target(
@@ -101,15 +102,38 @@ class ManualBrowseTargetTests(unittest.TestCase):
         self.assertTrue(decision["allowed"])
         self.assertEqual(decision["kind"], "button")
 
-    def test_rejects_plain_text_and_inputs(self):
-        for element in (
+    def test_allows_click_into_typeable_text_field(self):
+        decision = classify_manual_browse_target(
+            {"tag": "input", "effective_type": "search", "name": "q", "disabled": False, "form_associated": True},
+            "example.test",
+            ["/"],
+        )
+        self.assertTrue(decision["allowed"])
+        self.assertEqual(decision["kind"], "field")
+        self.assertEqual(decision["action"], "focus")
+        self.assertTrue(decision["typeable"])
+        self.assertFalse(decision["sensitive"])
+
+    def test_allows_focus_but_not_type_on_password(self):
+        decision = classify_manual_browse_target(
+            {"tag": "input", "effective_type": "password", "name": "password", "disabled": False, "form_associated": True},
+            "example.test",
+            ["/"],
+        )
+        self.assertTrue(decision["allowed"])
+        self.assertEqual(decision["kind"], "field")
+        self.assertFalse(decision["typeable"])
+        self.assertTrue(decision["sensitive"])
+
+    def test_allows_generic_page_widget_click(self):
+        decision = classify_manual_browse_target(
             {"tag": "div", "disabled": False},
-            {"tag": "input", "effective_type": "text", "disabled": False, "form_associated": True},
-            {"tag": "input", "effective_type": "password", "disabled": False, "form_associated": True},
-        ):
-            decision = classify_manual_browse_target(element, "example.test", ["/"])
-            self.assertFalse(decision["allowed"], element)
-            self.assertEqual(decision["reason"], "not-navigational")
+            "example.test",
+            ["/"],
+        )
+        self.assertTrue(decision["allowed"])
+        self.assertEqual(decision["kind"], "page")
+        self.assertEqual(decision["action"], "click")
 
 
 class GuidedNetworkGuardTests(unittest.IsolatedAsyncioTestCase):
