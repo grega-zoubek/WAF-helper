@@ -126,6 +126,12 @@ class BrowserLabPointSelectRequest(BaseModel):
     y: float = Field(ge=0, le=4096)
 
 
+class BrowserLabTypeRequest(BaseModel):
+    text: str = Field(default="", max_length=256)
+    press_enter: bool = False
+    clear_first: bool = True
+
+
 class BrowserLabAuthenticateRequest(BaseModel):
     username: SecretStr = Field(min_length=1, max_length=256)
     password: SecretStr = Field(min_length=1, max_length=512)
@@ -1447,6 +1453,20 @@ async def browser_lab_click_at(session_id: str, request: BrowserLabPointSelectRe
             return response.json()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Manual browse click was rejected")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+
+
+@app.post("/api/browser-lab/sessions/{session_id}/type")
+async def browser_lab_type(session_id: str, request: BrowserLabTypeRequest) -> dict[str, Any]:
+    """Forward typing into a focused non-sensitive field; typed values are never echoed."""
+    try:
+        async with httpx.AsyncClient(timeout=35) as client:
+            response = await client.post(f"{RUNTIME_INSPECTOR_URL}/guided/sessions/{session_id}/type", json=request.model_dump())
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Manual browse typing was rejected")) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
 

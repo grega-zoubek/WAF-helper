@@ -125,6 +125,12 @@ class GuidedPointSelectRequest(BaseModel):
     y: float = Field(ge=0, le=4096)
 
 
+class GuidedTypeRequest(BaseModel):
+    text: str = Field(default="", max_length=256)
+    press_enter: bool = False
+    clear_first: bool = True
+
+
 class GuidedAuthenticateRequest(BaseModel):
     username: SecretStr = Field(min_length=1, max_length=256)
     password: SecretStr = Field(min_length=1, max_length=512)
@@ -189,16 +195,31 @@ def redacted_route_template(value: str) -> str:
     return path if path.startswith("/") else "/" + path
 
 
+FIELD_INPUT_TYPES = {
+    "", "text", "search", "email", "url", "tel", "number", "password",
+    "date", "datetime-local", "month", "time", "week", "checkbox", "radio",
+}
+TYPEABLE_INPUT_TYPES = {"", "text", "search", "email", "url", "tel", "number"}
+
+
+def field_is_sensitive(element: dict[str, Any]) -> bool:
+    effective_type = str(element.get("effective_type") or element.get("type") or "").casefold()
+    if effective_type == "password":
+        return True
+    blob = " ".join(str(element.get(key, "")) for key in ("name", "id", "aria_label", "placeholder", "autocomplete"))
+    return bool(SENSITIVE_FIELD_NAME_RE.search(blob))
+
+
 def classify_manual_browse_target(
     element: dict[str, Any],
     hostname: str,
     allowed_paths: list[str],
 ) -> dict[str, Any]:
-    """Decide whether a screenshot hit may be clicked for manual browsing.
+    """Decide whether a screenshot hit may receive a mouse click during browse.
 
-    Same safety rules as explicit Observe click: in-scope links and non-submit
-    buttons only. Form submits, credentials fields, and out-of-scope targets
-    are refused without activating the element.
+    Allows navigation clicks, field focus (click into inputs), checkboxes/radios,
+    and generic in-page widgets. Refuses submits, file inputs, new windows, and
+    out-of-scope links. Network guards still block unsafe methods.
     """
     tag = str(element.get("tag") or "").casefold()
     effective_type = str(element.get("effective_type") or element.get("type") or "").casefold()
@@ -206,41 +227,72 @@ def classify_manual_browse_target(
     disabled = bool(element.get("disabled"))
     href = str(element.get("href") or "")
     target = str(element.get("target") or "").casefold()
-    form_associated = bool(element.get("form_associated"))
+    contenteditable = bool(element.get("contenteditable"))
+    sensitive = field_is_sensitive(element)
 
     if disabled:
-        return {"allowed": False, "reason": "disabled", "detail": "Disabled controls cannot be browsed"}
+        return {"allowed": False, "reason": "disabled", "detail": "Disabled controls cannot be browsed", "action": "none"}
     if target and target != "_self":
-        return {"allowed": False, "reason": "new-window", "detail": "New-window controls cannot be activated during manual browse"}
+        return {"allowed": False, "reason": "new-window", "detail": "New-window controls cannot be activated during manual browse", "action": "none"}
+    if effective_type == "file" or tag == "input" and effective_type == "file":
+        return {"allowed": False, "reason": "file", "detail": "File inputs cannot be activated during manual browse", "action": "none"}
     if tag in {"input", "button"} and effective_type in {"submit", "image", "reset"}:
-        return {"allowed": False, "reason": "submit", "detail": "Form submission is blocked; use guided login for one authorized HTTPS POST"}
+        return {"allowed": False, "reason": "submit", "detail": "Form submission is blocked; use guided login for one authorized HTTPS POST", "action": "none"}
     if tag == "button" and effective_type in {"", "submit"}:
-        return {"allowed": False, "reason": "submit", "detail": "Submit buttons cannot be activated during manual browse"}
+        return {"allowed": False, "reason": "submit", "detail": "Submit buttons cannot be activated during manual browse", "action": "none"}
 
     is_link = tag == "a" and bool(href)
-    is_non_submit_button = tag == "button" and effective_type == "button"
-    is_input_button = tag == "input" and effective_type == "button"
-    is_role_button = role == "button" and not form_associated
-    if not (is_link or is_non_submit_button or is_input_button or is_role_button):
-        return {
-            "allowed": False,
-            "reason": "not-navigational",
-            "detail": "Manual browse only activates in-scope links and non-submit buttons; use selection mode to inspect other elements",
-        }
     if is_link:
         scope = InspectionRequest(urls=[href], hostname=hostname, allowed_paths=allowed_paths)
         if urlparse(href).username or urlparse(href).password:
-            return {"allowed": False, "reason": "credentials-in-url", "detail": "Links with embedded credentials cannot be opened"}
+            return {"allowed": False, "reason": "credentials-in-url", "detail": "Links with embedded credentials cannot be opened", "action": "none"}
         if not in_scope(href, scope):
-            return {"allowed": False, "reason": "out-of-scope", "detail": "Link is outside the guided session host/path scope"}
-        kind = "link"
-    elif is_input_button:
-        kind = "input-button"
-    elif is_non_submit_button:
-        kind = "button"
-    else:
-        kind = "role-button"
-    return {"allowed": True, "reason": "ok", "detail": f"Safe {kind} click", "kind": kind}
+            return {"allowed": False, "reason": "out-of-scope", "detail": "Link is outside the guided session host/path scope", "action": "none"}
+        return {"allowed": True, "reason": "ok", "detail": "Safe link click", "kind": "link", "action": "click", "typeable": False, "sensitive": False}
+
+    is_field = (
+        tag in {"input", "textarea", "select"}
+        or role in {"textbox", "searchbox", "combobox", "spinbutton"}
+        or contenteditable
+    )
+    if is_field:
+        if tag == "input" and effective_type not in FIELD_INPUT_TYPES:
+            return {"allowed": False, "reason": "unsupported-input", "detail": f"Input type {effective_type or 'unknown'} cannot be browsed", "action": "none"}
+        typeable = (not sensitive) and (
+            tag == "textarea"
+            or contenteditable
+            or role in {"textbox", "searchbox", "combobox", "spinbutton"}
+            or (tag == "input" and effective_type in TYPEABLE_INPUT_TYPES)
+        )
+        return {
+            "allowed": True,
+            "reason": "ok",
+            "detail": "Click into field to focus it" + ("; typing is available for non-sensitive fields" if typeable else "; typing blocked for sensitive fields — use guided login for passwords"),
+            "kind": "field",
+            "action": "focus",
+            "typeable": typeable,
+            "sensitive": sensitive,
+        }
+
+    is_non_submit_button = tag == "button" and effective_type == "button"
+    is_input_button = tag == "input" and effective_type == "button"
+    is_toggle = tag == "input" and effective_type in {"checkbox", "radio"}
+    is_role_button = role == "button"
+    if is_non_submit_button or is_input_button or is_toggle or is_role_button:
+        kind = "toggle" if is_toggle else ("input-button" if is_input_button else ("role-button" if is_role_button else "button"))
+        return {"allowed": True, "reason": "ok", "detail": f"Safe {kind} click", "kind": kind, "action": "click", "typeable": False, "sensitive": False}
+
+    # Generic page widgets (menus, cards, SPA handlers): mouse click is allowed;
+    # routing still blocks unsafe methods and out-of-scope hosts.
+    return {
+        "allowed": True,
+        "reason": "ok",
+        "detail": "In-page mouse click for navigation widgets",
+        "kind": "page",
+        "action": "click",
+        "typeable": False,
+        "sensitive": False,
+    }
 
 
 def correlate_focus_to_requests(
@@ -524,7 +576,7 @@ async def start_guided_session(request: GuidedSessionRequest) -> dict[str, Any]:
         session: dict[str, Any] = {
                 "id": session_id, "context": context, "page": page, "hostname": request.hostname.lower(),
                 "allowed_paths": request.allowed_paths or ["/"], "network_events": {}, "network_sequence": [],
-                "interaction_events": [], "selected_elements": [], "status_code": None,
+                "interaction_events": [], "selected_elements": [], "browse_focus": None, "status_code": None,
                 "auth_attempt_count": 0, "auth_state": "anonymous", "identity_label": "",
                 "auth_post_pending": False, "auth_post_used": False, "auth_post_target": None,
                 "auth_response_status": None, "auth_response_event": None,
@@ -1024,7 +1076,7 @@ async def probe_guided_input(session_id: str, request: GuidedSelectRequest) -> d
 POINT_HIT_SCRIPT = """({x, y}) => {
   const hit = document.elementFromPoint(x, y);
   if (!hit) return null;
-  const el = hit.closest('input,button,select,textarea,a,form,[role="button"],[role="textbox"]') || hit;
+  const el = hit.closest('input,button,select,textarea,a,form,[role="button"],[role="textbox"],[role="searchbox"],[role="combobox"],[contenteditable="true"]') || hit;
   const form = el.tagName === 'FORM' ? el : el.form;
   const r = el.getBoundingClientRect();
   const text = ((el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()).slice(0, 120);
@@ -1032,7 +1084,9 @@ POINT_HIT_SCRIPT = """({x, y}) => {
     tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', effective_type: el.type || '',
     name: el.getAttribute('name') || '', id: el.id || '', role: el.getAttribute('role') || '',
     aria_label: el.getAttribute('aria-label') || '', placeholder: el.getAttribute('placeholder') || '',
+    autocomplete: el.getAttribute('autocomplete') || '',
     required: el.hasAttribute('required'), disabled: el.hasAttribute('disabled') || Boolean(el.disabled),
+    contenteditable: el.isContentEditable === true || el.getAttribute('contenteditable') === 'true',
     href: el.href || '', target: el.getAttribute('target') || '',
     form_associated: Boolean(form),
     selector: el.id ? `#${CSS.escape(el.id)}` : `${el.tagName.toLowerCase()}${el.getAttribute('name') ? `[name="${CSS.escape(el.getAttribute('name'))}"]` : ''}`,
@@ -1041,6 +1095,23 @@ POINT_HIT_SCRIPT = """({x, y}) => {
     form_id: form ? (form.id || form.getAttribute('name') || '') : '',
     form_method: form ? (form.method || 'get').toUpperCase() : '', form_action: form ? form.action : '',
     bounds: {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height)}
+  };
+}"""
+
+FOCUSED_FIELD_SCRIPT = """() => {
+  const el = document.activeElement;
+  if (!el || el === document.body || el === document.documentElement) return null;
+  const form = el.tagName === 'FORM' ? el : el.form;
+  return {
+    tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', effective_type: el.type || '',
+    name: el.getAttribute('name') || '', id: el.id || '', role: el.getAttribute('role') || '',
+    aria_label: el.getAttribute('aria-label') || '', placeholder: el.getAttribute('placeholder') || '',
+    autocomplete: el.getAttribute('autocomplete') || '',
+    disabled: el.hasAttribute('disabled') || Boolean(el.disabled),
+    read_only: el.hasAttribute('readonly') || Boolean(el.readOnly),
+    contenteditable: el.isContentEditable === true || el.getAttribute('contenteditable') === 'true',
+    form_associated: Boolean(form),
+    form_method: form ? (form.method || 'get').toUpperCase() : '', form_action: form ? form.action : ''
   };
 }"""
 
@@ -1068,7 +1139,7 @@ async def select_guided_point(session_id: str, request: GuidedPointSelectRequest
 
 @app.post("/guided/sessions/{session_id}/click-at")
 async def click_guided_point(session_id: str, request: GuidedPointSelectRequest) -> dict[str, Any]:
-    """Manual browse: activate an in-scope link or non-submit button at screenshot coordinates."""
+    """Manual browse: mouse-click at screenshot coordinates for navigation or field focus."""
     async with browser_lab_lock:
         await expire_guided_sessions()
         session = browser_sessions.get(session_id)
@@ -1087,25 +1158,43 @@ async def click_guided_point(session_id: str, request: GuidedPointSelectRequest)
         event_started = time.monotonic()
         try:
             await session["page"].mouse.click(request.x, request.y, delay=20)
-            await session["page"].wait_for_timeout(1_200)
+            await session["page"].wait_for_timeout(900)
         except PlaywrightTimeoutError:
             raise HTTPException(status_code=422, detail="The visible control could not be clicked; no successful browse action was recorded")
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Manual browse click failed: {type(exc).__name__}") from exc
+        focused = await session["page"].evaluate(FOCUSED_FIELD_SCRIPT)
+        if decision.get("kind") == "field" or (focused and classify_manual_browse_target(focused, session["hostname"], session["allowed_paths"]).get("kind") == "field"):
+            focus_meta = focused or selected
+            focus_decision = classify_manual_browse_target(focus_meta, session["hostname"], session["allowed_paths"])
+            session["browse_focus"] = {
+                "tag": focus_meta.get("tag", ""),
+                "type": focus_meta.get("effective_type") or focus_meta.get("type") or "",
+                "name": focus_meta.get("name", ""),
+                "id": focus_meta.get("id", ""),
+                "role": focus_meta.get("role", ""),
+                "placeholder": focus_meta.get("placeholder", ""),
+                "aria_label": focus_meta.get("aria_label", ""),
+                "typeable": bool(focus_decision.get("typeable")),
+                "sensitive": bool(focus_decision.get("sensitive")),
+            }
+        else:
+            session["browse_focus"] = None
         correlated = correlate_focus_to_requests(selected, event_started, session["network_sequence"], session["hostname"], {"document", "xhr", "fetch"})
-        click_event = next((item for item in reversed(session["interaction_events"]) if item.get("type") == "click" and item.get("started_at", 0) >= event_started), None)
-        if click_event is None:
-            click_event = {
-                "id": str(uuid4()), "type": "click", "source": "manual-browse",
+        event_type = "focus" if decision.get("action") == "focus" else "click"
+        interaction = next((item for item in reversed(session["interaction_events"]) if item.get("type") == event_type and item.get("started_at", 0) >= event_started), None)
+        if interaction is None:
+            interaction = {
+                "id": str(uuid4()), "type": event_type, "source": "manual-browse",
                 "tag": selected.get("tag", ""), "input_type": selected.get("effective_type", ""),
                 "name": selected.get("name", ""), "id_attribute": selected.get("id", ""),
                 "role": selected.get("role", ""), "form_method": selected.get("form_method", ""),
                 "form_action": redact_url(selected.get("form_action", "")), "started_at": event_started,
             }
-            session["interaction_events"].append(click_event)
+            session["interaction_events"].append(interaction)
             session["interaction_events"] = session["interaction_events"][-MAX_INTERACTION_EVENTS:]
-        click_event["correlated_request_ids"] = [item.get("request_id") for item in correlated if item.get("request_id")]
-        click_event["matched_parameter_names"] = sorted({name for item in correlated for name in item.get("matched_parameter_names", [])})
+        interaction["correlated_request_ids"] = [item.get("request_id") for item in correlated if item.get("request_id")]
+        interaction["matched_parameter_names"] = sorted({name for item in correlated for name in item.get("matched_parameter_names", [])})
         session["touched"] = time.monotonic()
         safe_element = {
             **selected,
@@ -1114,10 +1203,83 @@ async def click_guided_point(session_id: str, request: GuidedPointSelectRequest)
         }
         return {
             "page_url": redact_url(session["page"].url),
-            "event": {"type": "click", "source": "manual-browse", "element": safe_element, "decision": decision},
+            "event": {"type": event_type, "source": "manual-browse", "element": safe_element, "decision": decision},
+            "browse_focus": session.get("browse_focus"),
             "correlation_status": "matched" if correlated else "no_request_observed",
             "correlated_requests": correlated,
-            "capture_policy": "manual browse click on an in-scope link or non-submit button; only same-host, in-scope GET/HEAD requests are allowed; form submission, keyboard input, request bodies, and raw field values are blocked/not captured",
+            "capture_policy": "manual mouse browse: navigate links/widgets or click into fields; type only into non-sensitive focused fields via the lab type action; form submission, request bodies, and raw field values are blocked/not captured; only same-host in-scope GET/HEAD traffic is allowed",
+            "raw_value_captured": False,
+            "snapshot": await guided_snapshot(session),
+        }
+
+
+@app.post("/guided/sessions/{session_id}/type")
+async def type_into_focused_field(session_id: str, request: GuidedTypeRequest) -> dict[str, Any]:
+    """Type into the currently focused non-sensitive field during manual browse. Values are never returned."""
+    async with browser_lab_lock:
+        await expire_guided_sessions()
+        session = browser_sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Guided browser session not found or expired")
+        focused = await session["page"].evaluate(FOCUSED_FIELD_SCRIPT)
+        if not focused:
+            raise HTTPException(status_code=422, detail="Click into a field first, then type")
+        decision = classify_manual_browse_target(focused, session["hostname"], session["allowed_paths"])
+        if decision.get("kind") != "field":
+            raise HTTPException(status_code=422, detail="The focused control is not a text field")
+        if focused.get("disabled") or focused.get("read_only"):
+            raise HTTPException(status_code=422, detail="The focused field is not editable")
+        if not decision.get("typeable") or decision.get("sensitive"):
+            raise HTTPException(status_code=422, detail="Sensitive and credential fields cannot be typed into here; use guided login for passwords")
+        text = request.text
+        if "\n" in text or "\r" in text:
+            raise HTTPException(status_code=422, detail="Multi-line paste is not allowed; type a single-line value")
+        event_started = time.monotonic()
+        try:
+            if request.clear_first:
+                await session["page"].keyboard.press("Control+A")
+                await session["page"].keyboard.press("Backspace")
+            if text:
+                await session["page"].keyboard.type(text, delay=15)
+            if request.press_enter:
+                await session["page"].keyboard.press("Enter")
+            await session["page"].wait_for_timeout(900)
+        except PlaywrightTimeoutError:
+            raise HTTPException(status_code=422, detail="Typing into the focused field timed out")
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Manual browse typing failed: {type(exc).__name__}") from exc
+        correlated = correlate_focus_to_requests(focused, event_started, session["network_sequence"], session["hostname"], {"document", "xhr", "fetch"})
+        input_event = {
+            "id": str(uuid4()), "type": "input", "source": "manual-browse-type",
+            "tag": focused.get("tag", ""), "input_type": focused.get("effective_type", ""),
+            "name": focused.get("name", ""), "id_attribute": focused.get("id", ""),
+            "role": focused.get("role", ""), "form_method": focused.get("form_method", ""),
+            "form_action": redact_url(focused.get("form_action", "")), "started_at": event_started,
+            "press_enter": bool(request.press_enter), "char_count": len(text),
+        }
+        input_event["correlated_request_ids"] = [item.get("request_id") for item in correlated if item.get("request_id")]
+        input_event["matched_parameter_names"] = sorted({name for item in correlated for name in item.get("matched_parameter_names", [])})
+        session["interaction_events"].append(input_event)
+        session["interaction_events"] = session["interaction_events"][-MAX_INTERACTION_EVENTS:]
+        session["browse_focus"] = {
+            "tag": focused.get("tag", ""),
+            "type": focused.get("effective_type") or focused.get("type") or "",
+            "name": focused.get("name", ""),
+            "id": focused.get("id", ""),
+            "role": focused.get("role", ""),
+            "placeholder": focused.get("placeholder", ""),
+            "aria_label": focused.get("aria_label", ""),
+            "typeable": True,
+            "sensitive": False,
+        }
+        session["touched"] = time.monotonic()
+        return {
+            "page_url": redact_url(session["page"].url),
+            "event": {"type": "input", "source": "manual-browse-type", "element": {key: focused.get(key, "") for key in ("tag", "effective_type", "name", "id", "role", "placeholder")}, "press_enter": bool(request.press_enter), "char_count": len(text)},
+            "browse_focus": session.get("browse_focus"),
+            "correlation_status": "matched" if correlated else "no_request_observed",
+            "correlated_requests": correlated,
+            "capture_policy": "typed into a focused non-sensitive field; typed value and request bodies are never returned; Enter may trigger same-host GET navigation; form POST remains blocked",
             "raw_value_captured": False,
             "snapshot": await guided_snapshot(session),
         }
