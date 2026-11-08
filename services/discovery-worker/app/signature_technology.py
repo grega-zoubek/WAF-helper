@@ -9,6 +9,8 @@ from typing import Any
 
 
 DEFAULT_INDEX_FILE = "/run/signature-index/WAF_Default.json"
+# Technologies detected below this score are reported but never pull product rules in.
+MIN_SELECTION_SCORE = 0.70
 
 # These aliases map the scanner's canonical technology keys to tags derived from
 # the normalized NetScaler signature catalog. A catalog match is contextual
@@ -25,7 +27,8 @@ TECHNOLOGY_TAG_ALIASES: dict[str, set[str]] = {
     "joomla": {"joomla"},
     "magento": {"magento"},
     "php": {"php"},
-    "java": {"java", "tomcat", "struts"},
+    # A Java session cookie proves a Java runtime, not Struts or Tomcat.
+    "java": {"java"},
     "laravel": {"laravel"},
     "nginx": {"nginx"},
 }
@@ -89,8 +92,13 @@ def build_signature_technology_context(
                 stats["example_rule_ids"].append(rule_id)
 
     matches: list[dict[str, Any]] = []
+    below_threshold: list[dict[str, Any]] = []
     for item in technologies:
         key = str(item.get("technology_key") or "").strip().casefold()
+        score = item.get("confidence_score")
+        if score is not None and float(score) < MIN_SELECTION_SCORE:
+            below_threshold.append({"technology": item.get("technology"), "technology_key": key, "confidence_score": float(score), "reason": f"below selection threshold {MIN_SELECTION_SCORE}"})
+            continue
         aliases = TECHNOLOGY_TAG_ALIASES.get(key, set())
         if not aliases:
             continue
@@ -125,5 +133,6 @@ def build_signature_technology_context(
         "catalog_fingerprint": catalog.get("catalogs", [{}])[0].get("catalog_fingerprint") if catalog.get("catalogs") else None,
         "catalog_rule_count": catalog.get("rule_count", 0),
         "technology_matches": matches,
+        "below_threshold_technologies": below_threshold,
         "is_detection_evidence": False,
     }

@@ -169,7 +169,7 @@ def detect_technology_signals(
     drupal_version = _version((r"drupal\s*([0-9][\w.-]*)",), (generator, body_text))
     drupal_meta = "drupal" in generator.casefold()
     drupal_path = any(marker in body_lower or any(marker in asset for asset in lowered_assets) for marker in ("drupalsettings", "sites/default/files", "/misc/drupal", "core/misc/drupal"))
-    drupal_cookie = any(name.startswith("sess") or name.startswith("ssess") or name == "has_js" for name in cookie_set)
+    drupal_cookie = any(re.fullmatch(r"s?sess[0-9a-f]{32}", name) for name in cookie_set)
     if drupal_meta:
         add("Drupal", "Drupal generator metadata", "html.meta.generator", 0.99, generator, category="cms", family="meta", version=drupal_version)
     if drupal_path:
@@ -240,10 +240,17 @@ def detect_technology_signals(
     content_type = lowered_headers.get("content-type", "")
     if "application/json" in content_type:
         add("REST or JSON API", "JSON response content type", "response.headers.content-type", 0.78, content_type, category="protocol", family="header")
-    if "graphql" in content_type or "graphql" in body_lower or any("graphql" in asset for asset in lowered_assets):
-        add("GraphQL", "GraphQL content or route marker", "content_type_or_body_marker", 0.86, "GraphQL marker", category="protocol", family="body")
-    if "xml" in content_type or "soap" in body_lower:
-        add("XML or SOAP", "XML/SOAP content or marker", "content_type_or_body_marker", 0.78, content_type or "SOAP marker", category="protocol", family="body")
+    # Keyword-in-body matches are not evidence (a shop page or CSS file can say "soap"
+    # or "graphql"), so require a protocol-level signal.
+    if "graphql" in content_type or path_is("/graphql") or any(re.search(r"/graphql(?:[./?_-]|$)", asset) for asset in lowered_assets):
+        add("GraphQL", "GraphQL content type, route or asset", "content_type_or_route", 0.86, "GraphQL marker", category="protocol", family="body")
+    media_type = content_type.split(";", 1)[0].strip()
+    xml_media = bool(re.fullmatch(r"(?:application|text)/(?:[\w.-]+\+)?xml", media_type)) and not re.search(r"xhtml|rss|atom|svg", media_type)
+    soap_envelope = media_type not in {"text/css", "text/javascript", "application/javascript"} and bool(
+        re.search(r"<(?:[\w-]+:)?envelope\b[^>]*(?:schemas\.xmlsoap\.org|www\.w3\.org/2003/05/soap-envelope)", body_lower)
+    )
+    if "soap" in media_type or xml_media or soap_envelope:
+        add("XML or SOAP", "XML/SOAP content type or envelope", "content_type_or_envelope", 0.78, media_type or "SOAP envelope", category="protocol", family="body")
     if generator and not any(item["source"] == "html.meta.generator" for item in signals):
         add("Generated platform", "HTML generator metadata", "html.meta.generator", 0.78, generator, category="application-platform", family="meta")
     if "cf-ray" in raw_headers or "cloudflare" in server_lower:

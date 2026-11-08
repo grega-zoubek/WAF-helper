@@ -62,6 +62,8 @@ class SurfaceParser(HTMLParser):
             value = values.get("src") or values.get("href")
             if value:
                 self.assets.append(value)
+            if tag == "script" and not values.get("src"):
+                self._in_script = True
         elif tag == "form":
             self.forms.append({
                 "action": values.get("action", ""),
@@ -90,8 +92,6 @@ class SurfaceParser(HTMLParser):
                 self.search_surfaces.append({"tag": tag, "type": control["type"], "name": control["name"], "id": control["id"], "aria_label": control["aria_label"]})
         elif tag.endswith("search-bar") or "search-bar" in tag:
             self.search_surfaces.append({"tag": tag, "type": "search-component", "name": values.get("name", "")[:100], "id": values.get("id", "")[:100], "aria_label": values.get("aria-label", "")[:150]})
-        elif tag == "script" and not values.get("src"):
-            self._in_script = True
         elif tag == "meta":
             name = values.get("name") or values.get("property")
             if name and values.get("content"):
