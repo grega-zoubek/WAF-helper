@@ -1,10 +1,13 @@
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import httpx
+sys.path.insert(0, str(Path(__file__).parents[1] / "services" / "control-api"))
+
+import httpx  # noqa: E402
 from app.main import app, _candidate_model_for_status
 from app.positive_model import DecisionMode, EndpointModel, Environment, Lifecycle, PositiveModelDocument
 from app.operator_auth import (

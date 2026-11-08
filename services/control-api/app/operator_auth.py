@@ -114,3 +114,17 @@ def request_is_secure_same_origin(headers: Any) -> bool:
         and not parsed.username
         and not parsed.password
     )
+
+
+def authenticate_websocket(headers: Any, cookies: Any, csrf_token: str) -> dict[str, Any] | None:
+    """Check a WebSocket upgrade the way the HTTP middleware checks requests.
+
+    Requires a valid operator cookie, an https same-origin Origin, and the session CSRF
+    token supplied by the client as its first message.
+    """
+    session = verify_session(cookies.get(COOKIE_NAME, ""))
+    if not session or not request_is_secure_same_origin(headers):
+        return None
+    if not csrf_token or not hmac.compare_digest(str(session.get("csrf", "")), str(csrf_token)):
+        return None
+    return session

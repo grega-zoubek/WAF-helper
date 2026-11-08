@@ -4,6 +4,7 @@ import asyncio
 import base64
 import ipaddress
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -16,6 +17,7 @@ from playwright.async_api import Browser, TimeoutError as PlaywrightTimeoutError
 from pydantic import BaseModel, Field, SecretStr
 
 from app.auth_journey import guided_request_allowed, validated_login_target
+from app.live import build_live_router
 
 app = FastAPI(title="WAF Runtime Inspector", version="0.2.0")
 inspection_lock = asyncio.Lock()
@@ -545,6 +547,18 @@ async def inspect_page(browser: Browser, url: str) -> dict[str, Any]:
         return {"source_url": redact_url(url), "status_code": None, "forms": [], "controls": [], "search_surfaces": [], "links": [], "values_submitted": False, "error_type": "timeout"}
     finally:
         await page.close()
+
+
+async def ensure_shared_browser() -> Browser:
+    global guided_browser, guided_playwright
+    if guided_playwright is None:
+        guided_playwright = await async_playwright().start()
+    if guided_browser is None or not guided_browser.is_connected():
+        guided_browser = await guided_playwright.chromium.launch(headless=True, executable_path=os.getenv("CHROMIUM_PATH", "/usr/bin/chromium"), args=["--no-sandbox", "--disable-dev-shm-usage"])
+    return guided_browser
+
+
+app.include_router(build_live_router(ensure_shared_browser, redacted_route_template))
 
 
 @app.get("/healthz")

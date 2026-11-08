@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -18,7 +19,7 @@ from uuid import uuid4
 import httpx
 import psycopg
 from cryptography.fernet import Fernet
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 from psycopg.types.json import Jsonb
@@ -27,13 +28,13 @@ from app.rule_catalog import normalize_rule_catalog, resolve_rule_catalog
 from app.nextgen_correlation import correlate_scope_to_nextgen
 from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
-from app.scan_scope import scan_target_error
+from app.scan_scope import explicitly_allowlisted, scan_target_error
 from app.signature_workflow import ACTION_VALUES, OBJECT_NAME_RE, cli_import_commands, default_object_name, load_upstream_catalog, select_rules_for_detection, workflow_fingerprint
 from app.protection_lifecycle import build_exception_selection, build_promote_selection, summarize_protection_status
 from app.positive_compile import compile_observe_only_preview, structured_endpoint_editor_payload
 from app.positive_model import DecisionMode, Lifecycle, PositiveModelDocument, positive_model_json_schema
 from app.positive_learning import build_discovery_candidate, build_guided_candidate
-from app.operator_auth import AuthConfigurationError, COOKIE_NAME, SESSION_TTL_SECONDS, create_session, request_is_secure_same_origin, verify_credentials, verify_session
+from app.operator_auth import AuthConfigurationError, COOKIE_NAME, SESSION_TTL_SECONDS, create_session, request_is_secure_same_origin, verify_credentials, verify_session, authenticate_websocket
 from app.positive_validator import TransactionDescriptor, validate_transaction
 
 app = FastAPI(title="WAF Intelligence Control API", version="0.1.0")
@@ -3340,3 +3341,137 @@ async def topology_servicegroups() -> Any:
 @app.get("/api/adc/ha/nodes")
 async def adc_ha_nodes() -> Any:
     return await adapter_read("/api/adc/ha/nodes")
+
+
+# --- Live (interactive) browser lab -------------------------------------------------
+
+LIVE_SESSION_ID_RE = re.compile(r"live-[0-9a-f-]{36}")
+
+
+class LiveBrowserStartRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+    hostname: str = Field(min_length=1, max_length=253)
+    allowed_paths: list[str] = Field(default_factory=lambda: ["/"], max_length=100)
+    mode: str = Field(default="read_only", pattern="^(read_only|free)$")
+    ignore_https_errors: bool = False
+
+
+async def free_browsing_approved(url: str) -> bool:
+    """Free browsing needs an approved target: explicit allow-list entry or a managed ADC vServer."""
+    if await asyncio.to_thread(explicitly_allowlisted, url):
+        return True
+    try:
+        inventory = await adapter_read("/api/adc/classic-inventory")
+    except HTTPException:
+        return False
+    parsed = urlparse(url)
+    correlation = correlate_scope_to_classic({"seed_url": url, "hostname": parsed.hostname or ""}, inventory)
+    return correlation.get("status") == "matched"
+
+
+@app.post("/api/live-browser/sessions", status_code=201)
+async def live_browser_start(request: LiveBrowserStartRequest, http_request: Request) -> dict[str, Any]:
+    reason = await asyncio.to_thread(scan_target_error, request.url)
+    if reason:
+        raise HTTPException(status_code=422, detail=f"Browser target refused: {reason}")
+    if request.mode == "free" and not await free_browsing_approved(request.url):
+        raise HTTPException(status_code=422, detail="Free browsing is only allowed on approved targets (add the host to SCAN_TARGET_ALLOWLIST or use a host served by a managed ADC vServer). Use read_only mode instead.")
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.post(f"{RUNTIME_INSPECTOR_URL}/live/sessions", json=request.model_dump())
+            response.raise_for_status()
+            session = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Live browser session was rejected")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+    operator = (verify_session(http_request.cookies.get(COOKIE_NAME, "")) or {}).get("sub", "unknown")
+    logging.getLogger("waf.audit").info("live-browser start operator=%s mode=%s host=%s session=%s", operator, request.mode, request.hostname, session.get("id"))
+    return session
+
+
+@app.delete("/api/live-browser/sessions/{session_id}")
+async def live_browser_stop(session_id: str, http_request: Request) -> dict[str, Any]:
+    if not LIVE_SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(status_code=404, detail="Live browser session not found")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.delete(f"{RUNTIME_INSPECTOR_URL}/live/sessions/{session_id}")
+            response.raise_for_status()
+            result = response.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+    operator = (verify_session(http_request.cookies.get(COOKIE_NAME, "")) or {}).get("sub", "unknown")
+    logging.getLogger("waf.audit").info("live-browser stop operator=%s session=%s", operator, session_id)
+    return result
+
+
+@app.get("/api/live-browser/sessions/{session_id}/candidate")
+async def live_browser_candidate(session_id: str) -> dict[str, Any]:
+    if not LIVE_SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(status_code=404, detail="Live browser session not found")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(f"{RUNTIME_INSPECTOR_URL}/live/sessions/{session_id}/candidate-source")
+            response.raise_for_status()
+            source = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Live browser session not found")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+    try:
+        candidate = build_guided_candidate(source)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Candidate model did not pass schema validation; source values were not returned.") from exc
+    return {
+        "candidate": candidate.model_dump(mode="json"), "persisted": False, "enforcement_mode": "observe",
+        "summary": {"endpoint_count": len(candidate.endpoints), "field_count": sum(len(e.fields) for e in candidate.endpoints),
+                    "evidence_sources": ["guided_browser"], "mode": source.get("mode"),
+                    "confidence_note": "Single live session; metadata only (field names, value classes, request shapes). Observe-only."},
+        "cookie_metadata": source.get("cookie_metadata", []),
+    }
+
+
+@app.websocket("/api/live-browser/sessions/{session_id}/ws")
+async def live_browser_stream(websocket: WebSocket, session_id: str) -> None:
+    """Bridge the admin's browser to the inspector. HTTP middleware does not run for WebSockets."""
+    import websockets
+
+    if not LIVE_SESSION_ID_RE.fullmatch(session_id):
+        await websocket.close(code=4404)
+        return
+    # Cheap checks before accepting: valid operator cookie and https same-origin Origin.
+    if not verify_session(websocket.cookies.get(COOKIE_NAME, "")) or not request_is_secure_same_origin(websocket.headers):
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    try:
+        first = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+    except (asyncio.TimeoutError, WebSocketDisconnect, ValueError):
+        await websocket.close(code=4401)
+        return
+    if not isinstance(first, dict) or first.get("type") != "auth" or not authenticate_websocket(websocket.headers, websocket.cookies, str(first.get("csrf", ""))):
+        await websocket.close(code=4401)
+        return
+    upstream_url = RUNTIME_INSPECTOR_URL.replace("http://", "ws://", 1) + f"/live/sessions/{session_id}/ws"
+    try:
+        async with websockets.connect(upstream_url, max_size=8_000_000, open_timeout=10) as upstream:
+            async def to_upstream() -> None:
+                while True:
+                    await upstream.send(json.dumps(await websocket.receive_json()))
+
+            async def to_client() -> None:
+                async for message in upstream:
+                    await websocket.send_text(message if isinstance(message, str) else message.decode("utf-8", "replace"))
+
+            tasks = [asyncio.create_task(to_upstream()), asyncio.create_task(to_client())]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+    except Exception:
+        pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass

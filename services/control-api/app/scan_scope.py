@@ -65,3 +65,21 @@ def scan_target_error(url: str, *, resolve: bool = True) -> str | None:
     if entries and not _in_allowlist(host, addresses, entries):
         return "target is not in SCAN_TARGET_ALLOWLIST"
     return None
+
+
+def explicitly_allowlisted(url: str, *, resolve: bool = True) -> bool:
+    """True only when SCAN_TARGET_ALLOWLIST is set and contains the URL's host/IP/CIDR."""
+    entries = _allowlist()
+    host = (urlparse(url).hostname or "").casefold().rstrip(".")
+    if not entries or not host:
+        return False
+    addresses: list[ipaddress._BaseAddress] = []
+    try:
+        addresses = [ipaddress.ip_address(host)]
+    except ValueError:
+        if resolve:
+            try:
+                addresses = [ipaddress.ip_address(item[4][0]) for item in socket.getaddrinfo(host, None)]
+            except (socket.gaierror, ValueError):
+                addresses = []
+    return _in_allowlist(host, addresses, entries)

@@ -105,7 +105,9 @@ def build_guided_candidate(source: dict[str, Any]) -> PositiveModelDocument:
     requests = [
         item for item in source.get("requests", [])
         if isinstance(item, dict)
-        and str(item.get("method", "")).upper() in {"GET", "HEAD"}
+        and (str(item.get("method", "")).upper() in {"GET", "HEAD"}
+             # write methods are only modelled from live-browser captures, which carry body metadata
+             or (str(item.get("method", "")).upper() in {"POST", "PUT", "PATCH", "DELETE"} and "body_format" in item))
         and str(item.get("path_template", "")).startswith("/")
     ]
     selected_names: set[str] = set()
@@ -153,6 +155,22 @@ def build_guided_candidate(source: dict[str, Any]) -> PositiveModelDocument:
                 response_types.add(content_type)
         for name, count in sorted(query_counts.items(), key=lambda pair: pair[0].casefold()):
             fields.append(_field(name, FieldLocation.QUERY, count, selected_names, selected_types.get(name.casefold(), "")))
+        body_fields: dict[tuple[str, str], list[str]] = defaultdict(list)
+        body_formats: set[str] = set()
+        for item in observations:
+            body_format = str(item.get("body_format") or "")
+            if body_format in {"form", "json", "multipart"}:
+                body_formats.add(body_format)
+            for body_field in item.get("body_fields", []) if body_format in {"form", "json", "multipart"} else []:
+                name = body_field.get("name") if isinstance(body_field, dict) else None
+                if isinstance(name, str) and SAFE_FIELD_NAME.fullmatch(name):
+                    body_fields[(name, "json" if body_format == "json" else "form")].append(str(body_field.get("value_class", "")))
+        value_types = {"number": ValueType.NUMBER, "boolean": ValueType.BOOLEAN, "array": ValueType.ARRAY, "object": ValueType.OBJECT, "unknown": ValueType.UNKNOWN}
+        for (name, kind), classes in sorted(body_fields.items()):
+            dominant = Counter(classes).most_common(1)[0][0] if classes else ""
+            fields.append(_field(name, FieldLocation.JSON if kind == "json" else FieldLocation.FORM, len(classes), selected_names,
+                                 value_type=value_types.get(dominant, ValueType.STRING)))
+        request_content_types = sorted({{"form": "application/x-www-form-urlencoded", "json": "application/json", "multipart": "multipart/form-data"}[f] for f in body_formats})
         for name, count in sorted(request_headers.items()):
             fields.append(_field(name, FieldLocation.REQUEST_HEADER, count, selected_names))
         for name, count in sorted(response_headers.items()):
@@ -203,7 +221,7 @@ def build_guided_candidate(source: dict[str, Any]) -> PositiveModelDocument:
         endpoints.append({
             "path_template": path_template,
             "method": method,
-            "request_content_types": [],
+            "request_content_types": request_content_types,
             "response_content_types": sorted(response_types),
             "authentication": endpoint_authentication,
             "fields": fields,

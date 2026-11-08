@@ -313,6 +313,30 @@
         <button id="back-from-positive" class="secondary back-to-tools" type="button">Back to tools</button>
       </div>
       <p class="small muted">Build an observe-only allowlist from guided or manual browsing. Capture is isolated and temporary: same-host in-scope GET/HEAD, mouse click-to-browse (links, page widgets, and click-into fields), typing into non-sensitive focused fields, and only after a separate confirmation on an HTTPS login form, one matching login POST. Credentials and typed values are never candidate data. Sessions expire after 15 minutes.</p>
+    <section id="live-browser" class="card">
+      <h3>Live browser</h3>
+      <p class="small muted">Browse the application with your mouse and keyboard. Only metadata is recorded: field names, value classes and request shapes. Typed values, request bodies and screen frames are never stored.</p>
+      <form id="live-start-form">
+        <input id="live-url" required type="url" maxlength="2048" placeholder="Application URL, e.g. http://192.168.11.91/">
+        <input id="live-paths" value="/" maxlength="1000" placeholder="Allowed paths, comma-separated">
+        <select id="live-mode"><option value="free">Free browsing (approved targets only)</option><option value="read_only">Read-only (GET requests only)</option></select>
+        <label class="small"><input id="live-ignore-tls" type="checkbox"> Ignore target HTTPS certificate errors (lab only)</label>
+        <button type="submit">Start live browser</button>
+      </form>
+      <p id="live-status" class="small muted"></p>
+      <div id="live-session" hidden>
+        <div id="live-banner" class="notice"></div>
+        <div class="job-actions">
+          <button id="live-back" class="secondary" type="button" title="Back">&#9664;</button><button id="live-forward" class="secondary" type="button" title="Forward">&#9654;</button><button id="live-reload" class="secondary" type="button" title="Reload">&#8635;</button>
+          <input id="live-nav-url" type="url" maxlength="2048" placeholder="Address" style="flex:1;min-width:220px"><button id="live-go" type="button">Go</button>
+          <button id="live-inspect" class="secondary" type="button">Inspect element</button><button id="live-candidate" class="secondary" type="button">Generate candidate</button><button id="live-stop" class="secondary" type="button">Stop</button>
+        </div>
+        <canvas id="live-canvas" tabindex="0" width="1280" height="800" style="width:100%;max-width:1280px;border:1px solid #d9dee3;border-radius:6px;background:#f7f8fa;outline:none"></canvas>
+        <div id="live-inspected" class="notice" hidden></div>
+        <div id="live-panels"></div>
+        <div id="live-candidate-out" class="notice" hidden></div>
+      </div>
+    </section>
     <form id="browser-lab-start-form">
       <input id="browser-lab-url" required type="url" maxlength="2048" placeholder="Application URL, e.g. http://192.168.11.91/">
       <input id="browser-lab-paths" value="/" maxlength="1000" placeholder="Allowed paths, comma-separated">
@@ -2070,6 +2094,101 @@
     });
     document.querySelector('#profile').addEventListener('input', event => { const search = event.target.closest('#recommendation-technology-search'); if (!search) return; const list = document.querySelector('#recommendation-technology-options'); if (list) list.innerHTML = renderTechnologyFilterOptions(window.currentTechnologyCatalog || {groups: []}, window.currentSelectedTechnologyFilters || [], search.value); });
     document.querySelector('#profile').addEventListener('change', event => { const allYearsCheckbox = event.target.closest('#recommendation-release-all'); if (allYearsCheckbox) { const allYears = (window.currentTechnologyCatalog?.years || []).map(item => Number(item.year)); window.currentSelectedReleaseYears = allYearsCheckbox.checked ? allYears : []; const host = document.querySelector('#recommendation-release-years'); if (host) host.innerHTML = renderReleaseYearOptions(window.currentTechnologyCatalog || {years: []}, window.currentSelectedReleaseYears); const status = document.querySelector('#recommendation-technology-status'); if (status) status.textContent = `${(window.currentSelectedTechnologyFilters || []).length} vendor/product/technology option(s) selected · ${allYearsCheckbox.checked ? 'all release years selected' : '0 release years selected'}.`; return; } const yearCheckbox = event.target.closest('.recommendation-release-year-select'); if (yearCheckbox) { const current = new Set(window.currentSelectedReleaseYears || []); const year = Number(yearCheckbox.value); if (yearCheckbox.checked) current.add(year); else current.delete(year); window.currentSelectedReleaseYears = [...current].sort((a, b) => a - b); const allYears = (window.currentTechnologyCatalog?.years || []).map(item => Number(item.year)); const allCheckbox = document.querySelector('#recommendation-release-all'); if (allCheckbox) allCheckbox.checked = allYears.length > 0 && current.size === allYears.length; const status = document.querySelector('#recommendation-technology-status'); if (status) status.textContent = `${(window.currentSelectedTechnologyFilters || []).length} vendor/product/technology option(s) selected · ${current.size === allYears.length && allYears.length ? 'all release years selected' : `${current.size} release year(s) selected`}.`; return; } const groupCheckbox = event.target.closest('.recommendation-technology-group'); if (groupCheckbox) { const groupKey = groupCheckbox.dataset.groupKey; const children = [...document.querySelectorAll(`.recommendation-technology-select[data-vendor-key="${CSS.escape(groupKey)}"]`)].map(item => item.value); const current = new Set(window.currentSelectedTechnologyFilters || []); children.forEach(value => groupCheckbox.checked ? current.add(value) : current.delete(value)); window.currentSelectedTechnologyFilters = [...current]; window.currentSelectedTechnologyTags = [...current]; const status = document.querySelector('#recommendation-technology-status'); if (status) status.textContent = `${current.size} vendor/product/technology option(s) selected.`; return; } const technologyCheckbox = event.target.closest('.recommendation-technology-select'); if (technologyCheckbox) { const current = new Set(window.currentSelectedTechnologyFilters || []); if (technologyCheckbox.checked) current.add(technologyCheckbox.value); else current.delete(technologyCheckbox.value); window.currentSelectedTechnologyFilters = [...current]; window.currentSelectedTechnologyTags = [...current]; const status = document.querySelector('#recommendation-technology-status'); if (status) status.textContent = `${current.size} vendor/product/technology option(s) selected · generic signatures ${document.querySelector('#recommendation-include-generic')?.checked ? 'included' : 'excluded'}.`; return; } const genericCheckbox = event.target.closest('#recommendation-include-generic'); if (genericCheckbox) { const status = document.querySelector('#recommendation-technology-status'); if (status) status.textContent = `${(window.currentSelectedTechnologyFilters || []).length} vendor/product/technology option(s) selected · generic signatures ${genericCheckbox.checked ? 'included' : 'excluded'}.`; return; } const filter = event.target.closest('#evidence-filter'); if (!filter) return; const body = document.querySelector('#all-evidence-body'); if (body) body.innerHTML = renderEvidenceRows(window.currentEvidence || [], filter.value); });
+
+    // ---- Live browser: canvas stream + input over a WebSocket (metadata-only capture) ----
+    (() => {
+      const $ = selector => document.querySelector(selector);
+      const canvas = $('#live-canvas'), context2d = canvas.getContext('2d');
+      let socket = null, sessionId = null, mode = null, frameW = 1280, frameH = 800, inspecting = false, lastMove = 0, decoding = false;
+      const send = message => { if (socket && socket.readyState === 1) socket.send(JSON.stringify(message)); };
+      const modifiers = e => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
+      const point = e => { const r = canvas.getBoundingClientRect(); return {x: (e.clientX - r.left) * frameW / r.width, y: (e.clientY - r.top) * frameH / r.height}; };
+      const setStatus = text => { $('#live-status').textContent = text || ''; };
+      function drawFrame(message) {
+        if (decoding) return;
+        decoding = true;
+        const image = new Image();
+        image.onload = () => { if (canvas.width !== image.naturalWidth || canvas.height !== image.naturalHeight) { canvas.width = image.naturalWidth; canvas.height = image.naturalHeight; } context2d.drawImage(image, 0, 0); decoding = false; };
+        image.onerror = () => { decoding = false; };
+        frameW = message.w || frameW; frameH = message.h || frameH;
+        image.src = 'data:image/jpeg;base64,' + message.data;
+      }
+      function renderSnapshot(snapshot) {
+        const navInput = $('#live-nav-url');
+        if (document.activeElement !== navInput && snapshot.url) navInput.value = snapshot.url;
+        const forms = (snapshot.forms || []).map(f => `<tr><td>${escapeHtml(f.id || f.name || '#' + f.index)}</td><td>${escapeHtml(f.method)}</td><td><code>${escapeHtml(f.action)}</code></td><td>${escapeHtml(f.field_count)}</td></tr>`).join('');
+        const controls = (snapshot.controls || []).filter(c => c.type !== 'hidden' || c.name).map(c => `<tr><td>${escapeHtml(c.form_index >= 0 ? 'form ' + c.form_index : '-')}</td><td>${escapeHtml(c.name || c.id)}</td><td>${escapeHtml(c.tag)}/${escapeHtml(c.type)}</td><td>${escapeHtml(c.label || c.placeholder)}</td><td>${escapeHtml(c.autocomplete)}</td><td>${c.required ? 'yes' : ''}</td></tr>`).join('');
+        const network = (snapshot.network || []).slice().reverse().map(n => { const shape = n.body_shape && n.body_shape.fields && n.body_shape.fields.length ? n.body_shape.fields.map(f => `${escapeHtml(f.name)}:${escapeHtml(f.value_class)}`).join(', ') : ''; return `<tr><td>${escapeHtml(n.method)}</td><td><code>${escapeHtml(n.url)}</code></td><td>${escapeHtml(n.resource_type)}</td><td>${escapeHtml(n.status_code ?? '-')}</td><td class="small">${shape}</td></tr>`; }).join('');
+        $('#live-panels').innerHTML = `<p class="small muted">Page: <strong>${escapeHtml(snapshot.title || '-')}</strong> · blocked requests: ${escapeHtml(snapshot.blocked_requests ?? 0)} · interaction events: ${escapeHtml(snapshot.event_count ?? 0)}</p>`
+          + (forms ? `<h4>Forms</h4><table><thead><tr><th>Form</th><th>Method</th><th>Action</th><th>Fields</th></tr></thead><tbody>${forms}</tbody></table>` : '')
+          + (controls ? `<h4>Entry fields</h4><div class="browser-list"><table><thead><tr><th>Form</th><th>Name</th><th>Type</th><th>Label</th><th>Autocomplete</th><th>Required</th></tr></thead><tbody>${controls}</tbody></table></div>` : '')
+          + (network ? `<h4>Requests (same host; body shape = field names and value classes only)</h4><div class="browser-list"><table><thead><tr><th>Method</th><th>URL</th><th>Type</th><th>Status</th><th>Body fields</th></tr></thead><tbody>${network}</tbody></table></div>` : '');
+      }
+      function onMessage(message) {
+        if (message.type === 'frame') drawFrame(message);
+        else if (message.type === 'snapshot') renderSnapshot(message);
+        else if (message.type === 'status') { if (message.state === 'expired') { setStatus(`Session ended (${message.reason}).`); endSession(false); } }
+        else if (message.type === 'error') setStatus(message.message || 'Browser reported an error');
+        else if (message.type === 'inspected') {
+          const box = $('#live-inspected'); const el = message.element;
+          box.hidden = false;
+          box.innerHTML = el ? `<strong>${escapeHtml(el.tag)}/${escapeHtml(el.type)}</strong> name <code>${escapeHtml(el.name || el.id || '-')}</code> · label ${escapeHtml(el.label || '-')} · autocomplete ${escapeHtml(el.autocomplete || '-')} · required ${el.required ? 'yes' : 'no'} · form ${escapeHtml(el.form_method || '-')} <code>${escapeHtml(el.form_action || '')}</code>` : 'No form control or link at that point.';
+          inspecting = false; $('#live-inspect').textContent = 'Inspect element'; canvas.style.cursor = 'default';
+        }
+      }
+      function endSession(callApi) {
+        const id = sessionId; sessionId = null;
+        if (socket) { try { socket.close(); } catch (e) {} socket = null; }
+        $('#live-session').hidden = true;
+        if (callApi && id) api(`/api/live-browser/sessions/${id}`, {method: 'DELETE'}).catch(() => {});
+      }
+      $('#live-start-form').addEventListener('submit', async event => {
+        event.preventDefault();
+        if (sessionId) endSession(true);
+        const url = $('#live-url').value;
+        const button = event.currentTarget.querySelector('button[type="submit"]');
+        button.disabled = true; setStatus('Starting…');
+        try {
+          const parsed = new URL(url);
+          const paths = $('#live-paths').value.split(',').map(v => v.trim()).filter(Boolean);
+          const session = await api('/api/live-browser/sessions', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url, hostname: parsed.hostname, allowed_paths: paths.length ? paths : ['/'], mode: $('#live-mode').value, ignore_https_errors: $('#live-ignore-tls').checked})});
+          sessionId = session.id; mode = session.mode;
+          $('#live-banner').textContent = mode === 'free' ? 'Free browsing: state-changing requests (POST/PUT/DELETE) are allowed on this approved target. Values you type are never stored; only field names, value classes and request shapes are recorded.' : 'Read-only: only GET requests leave the browser; form submissions are blocked.';
+          $('#live-session').hidden = false; $('#live-candidate-out').hidden = true; $('#live-inspected').hidden = true; $('#live-panels').innerHTML = '';
+          socket = new WebSocket(`wss://${location.host}/api/live-browser/sessions/${session.id}/ws`);
+          socket.onopen = () => { socket.send(JSON.stringify({type: 'auth', csrf: csrfToken})); setStatus('Live. Click the page to focus it, then use mouse and keyboard.'); canvas.focus(); };
+          socket.onmessage = e => { try { onMessage(JSON.parse(e.data)); } catch (error) {} };
+          socket.onclose = () => { if (sessionId) { setStatus('Connection closed.'); $('#live-session').hidden = true; sessionId = null; } };
+        } catch (error) { setStatus(`Could not start: ${error.message}`); }
+        finally { button.disabled = false; }
+      });
+      canvas.addEventListener('mousemove', e => { const now = performance.now(); if (inspecting || now - lastMove < 33) return; lastMove = now; send({type: 'mouse', action: 'move', ...point(e), modifiers: modifiers(e)}); });
+      canvas.addEventListener('mousedown', e => { canvas.focus(); e.preventDefault(); if (inspecting) { send({type: 'inspect', ...point(e)}); return; } send({type: 'mouse', action: 'down', ...point(e), button: e.button, click_count: e.detail || 1, modifiers: modifiers(e)}); });
+      canvas.addEventListener('mouseup', e => { if (inspecting) return; send({type: 'mouse', action: 'up', ...point(e), button: e.button, click_count: e.detail || 1, modifiers: modifiers(e)}); });
+      canvas.addEventListener('wheel', e => { e.preventDefault(); send({type: 'mouse', action: 'wheel', ...point(e), delta_x: e.deltaX, delta_y: e.deltaY, modifiers: modifiers(e)}); }, {passive: false});
+      canvas.addEventListener('contextmenu', e => e.preventDefault());
+      canvas.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') return; e.preventDefault(); send({type: 'key', action: 'down', key: e.key, code: e.code, key_code: e.keyCode, modifiers: modifiers(e)}); });
+      canvas.addEventListener('keyup', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') return; e.preventDefault(); send({type: 'key', action: 'up', key: e.key, code: e.code, key_code: e.keyCode, modifiers: modifiers(e)}); });
+      canvas.addEventListener('paste', e => { e.preventDefault(); const text = e.clipboardData ? e.clipboardData.getData('text') : ''; if (text) send({type: 'text', text}); });
+      $('#live-back').addEventListener('click', () => send({type: 'nav', action: 'back'}));
+      $('#live-forward').addEventListener('click', () => send({type: 'nav', action: 'forward'}));
+      $('#live-reload').addEventListener('click', () => send({type: 'nav', action: 'reload'}));
+      const go = () => { const url = $('#live-nav-url').value.trim(); if (url) send({type: 'nav', action: 'goto', url}); };
+      $('#live-go').addEventListener('click', go);
+      $('#live-nav-url').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+      $('#live-inspect').addEventListener('click', e => { inspecting = !inspecting; e.currentTarget.textContent = inspecting ? 'Click an element…' : 'Inspect element'; canvas.style.cursor = inspecting ? 'crosshair' : 'default'; });
+      $('#live-stop').addEventListener('click', () => { endSession(true); setStatus('Session closed.'); });
+      $('#live-candidate').addEventListener('click', async () => {
+        const box = $('#live-candidate-out'); if (!sessionId) return;
+        box.hidden = false; box.textContent = 'Building observe-only candidate…';
+        try {
+          const result = await api(`/api/live-browser/sessions/${sessionId}/candidate`);
+          const rows = (result.candidate.endpoints || []).map(en => `<li>${escapeHtml(en.method)} <code>${escapeHtml(en.path_template)}</code> · ${escapeHtml((en.fields || []).length)} fields</li>`).join('');
+          box.innerHTML = `<strong>${escapeHtml(result.summary.endpoint_count)} endpoints, ${escapeHtml(result.summary.field_count)} fields</strong> (not saved, observe-only). ${escapeHtml(result.summary.confidence_note)}<ul>${rows}</ul>`;
+        } catch (error) { box.textContent = `Candidate failed: ${error.message}`; }
+      });
+      window.addEventListener('beforeunload', () => { if (socket) socket.close(); }); // the server closes the session when the stream ends
+    })();
   </script>
 </body>
 </html>

@@ -92,6 +92,17 @@ server/runtime technologies with matching NetScaler signature tags, categories,
 rule counts, and example IDs. This is catalog applicability context only; a WAF
 signature category cannot independently confirm that a target runs that technology.
 
+## Live browser (positive security lab)
+
+The lab has a **Live browser**: Chromium streams to a canvas in the GUI over a WebSocket
+(`/api/live-browser/sessions/{id}/ws`) and your mouse, wheel and keyboard drive it.
+Two modes: `read_only` (GET only) and `free` (same-host POST/PUT/DELETE allowed). `free` is
+refused unless the target is listed in `SCAN_TARGET_ALLOWLIST` (hostnames, IPs or CIDRs,
+set on control-api) or is served by a managed ADC vServer. Only metadata is recorded:
+field names, value classes, length buckets and request shapes. Typed values, request
+bodies, cookies and screen frames are never stored. Compose-internal hosts, loopback and
+link-local targets are always refused. Sessions end after 15 min idle or 60 min total.
+
 ## Deployment
 
 1. Create `secrets/netscaler_password` with the ADC password and restrict it to
