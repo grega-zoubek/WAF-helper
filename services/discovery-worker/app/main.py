@@ -146,13 +146,22 @@ def in_scope(candidate: str, seed: str, prefixes: list[str]) -> bool:
     )
 
 
+# A crawler issues GET requests for every link; never follow ones that look like actions.
+DESTRUCTIVE_PATH_RE = re.compile(r"(?:^|[/_.#-])(?:log-?out|sign-?out|delete|remove|unsubscribe|destroy|purge|reset|revoke|deactivate|cancel)(?:$|[/_.?&=#-])", re.IGNORECASE)
+
+
+def is_destructive_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return bool(DESTRUCTIVE_PATH_RE.search(parsed.path) or DESTRUCTIVE_PATH_RE.search(parsed.fragment))
+
+
 def normalize_url(candidate: str, current: str, seed: str, prefixes: list[str]) -> str | None:
     if not candidate or (candidate.startswith("#") and not candidate.startswith("#/")) or candidate.startswith(("mailto:", "javascript:", "data:")):
         return None
     joined = urljoin(current, candidate)
     parsed = urlparse(joined)
     absolute = parsed.geturl() if parsed.fragment.startswith("/") else parsed._replace(fragment="").geturl()
-    return absolute if in_scope(absolute, seed, prefixes) else None
+    return absolute if in_scope(absolute, seed, prefixes) and not is_destructive_url(absolute) else None
 
 
 def redact_url(value: str) -> str:
@@ -311,6 +320,23 @@ def static_search_markers(content: bytes | str) -> list[str]:
         if re.search(pattern, text, flags=re.IGNORECASE):
             markers.append(label)
     return markers
+
+
+MAX_PAGE_BYTES = 5_000_000
+
+
+async def fetch_page(client: httpx.AsyncClient, url: str, user_agent: str) -> httpx.Response:
+    """GET a page but never hold more than MAX_PAGE_BYTES of decoded body in memory."""
+    async with client.stream("GET", url, headers={"User-Agent": user_agent}) as streamed:
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in streamed.aiter_bytes():
+            chunks.append(chunk[: MAX_PAGE_BYTES - total])
+            total += len(chunks[-1])
+            if total >= MAX_PAGE_BYTES:
+                break
+        headers = [(k, v) for k, v in streamed.headers.multi_items() if k.lower() not in {"content-encoding", "content-length", "transfer-encoding"}]
+        return httpx.Response(streamed.status_code, headers=headers, content=b"".join(chunks), request=streamed.request)
 
 
 async def fetch_asset(client: httpx.AsyncClient, url: str, user_agent: str) -> tuple[httpx.Response, bytes, bool, float]:
@@ -669,7 +695,7 @@ async def run_discovery(job: DiscoveryJob) -> None:
                 await asyncio.sleep(delay if pages else 0)
                 started = time.perf_counter()
                 try:
-                    response = await client.get(url, headers={"User-Agent": user_agent})
+                    response = await fetch_page(client, url, user_agent)
                 except httpx.HTTPError as exc:
                     observations.append({"run_id": job.id, "observed_at": now(), "source_url": url, "status_code": None, "duration_ms": round((time.perf_counter() - started) * 1000, 2), "observation": {"request": {"method": "GET", "url": redact_url(url), "headers": {"user-agent": user_agent}}, "error": {"type": type(exc).__name__}, "response": None, "body_retained": False}})
                     rows.append(evidence_row(job.id, "request_error", url, "GET", None, "Request failed", {"error_type": type(exc).__name__}))
@@ -698,14 +724,14 @@ async def run_discovery(job: DiscoveryJob) -> None:
                             assets_seen.add(candidate)
                             kind = asset_type(candidate)
                             should_fetch = bool(kind and fetched_assets < MAX_ASSETS_PER_RUN)
-                            rows.append(evidence_row(job.id, "asset", candidate, "GET", None, "Referenced asset", {"source_page": url, "asset_type": kind or "other", "fetched_for_fingerprinting": should_fetch}))
+                            rows.append(evidence_row(job.id, "asset", candidate, "GET", None, "Referenced asset", {"source_page": redact_url(url), "asset_type": kind or "other", "fetched_for_fingerprinting": should_fetch}))
                             if should_fetch:
                                 fetched_assets += 1
                                 await asyncio.to_thread(save_run_sync, job, "running", phase="asset-analysis", current_url=redact_url(candidate), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=len(rows))
                                 try:
                                     asset_response, asset_content, truncated, duration_ms = await fetch_asset(client, candidate, user_agent)
                                     asset_content_type = asset_response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-                                    rows.append(evidence_row(job.id, "asset", candidate, "GET", asset_response.status_code, "Asset fetched for passive fingerprinting", {"source_page": url, "asset_type": kind, "content_type": asset_content_type, "bytes_inspected": len(asset_content), "truncated": truncated}))
+                                    rows.append(evidence_row(job.id, "asset", candidate, "GET", asset_response.status_code, "Asset fetched for passive fingerprinting", {"source_page": redact_url(url), "asset_type": kind, "content_type": asset_content_type, "bytes_inspected": len(asset_content), "truncated": truncated}))
                                     observations.append({"run_id": job.id, "observed_at": now(), "source_url": candidate, "status_code": asset_response.status_code, "duration_ms": duration_ms, "observation": {"request": {"method": "GET", "url": redact_url(candidate), "headers": {"user-agent": user_agent}}, "response": {"status": asset_response.status_code, "headers": safe_headers(asset_response), "cookies": cookie_observations(asset_response)}, "asset": {"type": kind, "content_type": asset_content_type, "bytes_inspected": len(asset_content), "truncated": truncated}, "body_retained": False}})
                                     for signal in asset_fingerprint(candidate, asset_content_type, asset_content):
                                         rows.append(evidence_row(job.id, "technology", candidate, "GET", asset_response.status_code, signal["signal"], signal_metadata(signal, asset_type=kind), signal["technology"], signal["score"]))

@@ -27,6 +27,7 @@ from app.rule_catalog import normalize_rule_catalog, resolve_rule_catalog
 from app.nextgen_correlation import correlate_scope_to_nextgen
 from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
+from app.scan_scope import scan_target_error
 from app.signature_workflow import ACTION_VALUES, OBJECT_NAME_RE, cli_import_commands, default_object_name, load_upstream_catalog, select_rules_for_detection, workflow_fingerprint
 from app.protection_lifecycle import build_exception_selection, build_promote_selection, summarize_protection_status
 from app.positive_compile import compile_observe_only_preview, structured_endpoint_editor_payload
@@ -1293,6 +1294,9 @@ async def dry_run_positive_model_validation(request: Request) -> dict[str, Any]:
 
 @app.post("/api/browser-lab/sessions", status_code=201)
 async def browser_lab_start(request: BrowserLabStartRequest) -> dict[str, Any]:
+    scope_error = await asyncio.to_thread(scan_target_error, request.url)
+    if scope_error:
+        raise HTTPException(status_code=422, detail=f"Browser target refused: {scope_error}")
     try:
         async with httpx.AsyncClient(timeout=45) as client:
             response = await client.post(f"{RUNTIME_INSPECTOR_URL}/guided/sessions", json=request.model_dump())
@@ -1571,6 +1575,9 @@ async def create_discovery_job(request: DiscoveryRequest) -> dict[str, Any]:
     parsed = urlparse(request.seed_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise HTTPException(status_code=422, detail="seed_url must contain an http or https hostname")
+    scope_error = await asyncio.to_thread(scan_target_error, request.seed_url)
+    if scope_error:
+        raise HTTPException(status_code=422, detail=f"Scan target refused: {scope_error}")
     job_id = str(uuid4())
     job = {
         "id": job_id,

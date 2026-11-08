@@ -320,7 +320,7 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
     if route_candidates:
         architecture.append("Client-referenced API or application routes")
         protections.append({"area": "API route review", "reason": "Static route candidates were found in JavaScript bundles; they were not fetched", "priority": "medium"})
-    if technology_names & {"php runtime", "java runtime", "asp.net runtime", "laravel"}:
+    if technology_names & {"php", "java", "asp.net", "asp.net core", "express / node.js", "laravel"}:
         architecture.append("Stateful server-side application runtime")
     if technology_names & {"cloudflare", "reverse proxy or cache"}:
         architecture.append("CDN, reverse proxy, or caching layer")
@@ -339,6 +339,17 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
     route_origin = next((f"{urlparse(item.get('source_url', '')).scheme}://{urlparse(item.get('source_url', '')).netloc}" for item in request.profile.get("evidence", []) if item.get("evidence_type") == "route" and urlparse(item.get("source_url", "")).netloc), "")
     script_origins: set[str] = set()
     style_origins: set[str] = set()
+    # The crawler only records same-host assets, so third-party origins come from the
+    # rendered pages seen by the runtime inspector.
+    runtime_pages = [item for item in request.profile.get("evidence", []) if item.get("evidence_type") == "runtime_inspection"]
+    for item in runtime_pages:
+        meta = item.get("metadata") or {}
+        for key, target in (("script_urls", script_origins), ("stylesheet_urls", style_origins)):
+            for asset_url in meta.get(key, []):
+                parsed_asset = urlparse(str(asset_url))
+                origin = f"{parsed_asset.scheme}://{parsed_asset.netloc}" if parsed_asset.netloc else ""
+                if origin and origin != route_origin:
+                    target.add(origin)
     for item in request.profile.get("evidence", []):
         if item.get("evidence_type") != "asset":
             continue
@@ -353,6 +364,8 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
     csp_script_sources = " ".join(["'self'"] + sorted(script_origins))
     csp_style_sources = " ".join(["'self'"] + sorted(style_origins))
     csp_report_uri = os.getenv("CSP_REPORT_URI", "/api/csp/report")[:512]
+    if not runtime_pages:
+        gaps.append("CSP draft is incomplete: no runtime inspection, so third-party script/style origins are unknown")
     csp_draft = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src " + csp_script_sources + "; style-src " + csp_style_sources + "; img-src 'self' data:; connect-src 'self'; report-uri " + csp_report_uri + ";"
     header_specs = (
         ("content-security-policy", "CSP", "Browser script and content policy", csp_draft, "report-only", "Generated from observed same-origin and external JS/CSS asset origins; application-specific scripts, styles, APIs, frames, fonts, and reporting endpoints still require confirmation."),
