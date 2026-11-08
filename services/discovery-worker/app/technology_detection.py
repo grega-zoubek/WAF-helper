@@ -66,6 +66,14 @@ def detect_technology_signals(
     cookie_set = _cookie_names(cookies)
     asset_values = [str(value) for value in (assets or ()) if value]
     lowered_assets = [value.casefold() for value in asset_values]
+    # Only script/style files can evidence a front-end library; image and other URLs
+    # (for example "reaction.png") must not, and names are matched as whole tokens.
+    static_assets = [a for a in lowered_assets if re.search(r"\.(?:m?js|css)(?:[?#]|$)", a)]
+
+    def asset_token(*tokens: str) -> bool:
+        pattern = r"(?:^|[/._-])(?:" + "|".join(re.escape(t) for t in tokens) + r")(?:[._-]|\d|$)"
+        return any(re.search(pattern, a.rsplit("/", 1)[-1].split("?", 1)[0]) for a in static_assets)
+
     body_text = (body or "")[:2_000_000]
     body_lower = body_text.casefold()
     title_lower = (title or "").casefold()
@@ -108,6 +116,8 @@ def detect_technology_signals(
         add("Microsoft IIS", "IIS Server response header", "response.headers.server", 0.92, server, category="web-server", family="header", version=_version((r"(?:microsoft-iis|iis)[/ ]([0-9][\w.]*)",), (server,)))
     elif "nginx" in server_lower:
         add("nginx", "nginx Server response header", "response.headers.server", 0.92, server, category="web-server", family="header", version=_version((r"nginx[/ ]([0-9][\w.]*)",), (server,)))
+    elif "coyote" in server_lower or "tomcat" in server_lower:
+        add("Apache Tomcat", "Tomcat/Coyote Server response header", "response.headers.server", 0.88, server, category="web-server", family="header", version=_version((r"tomcat[/ ]([0-9][\w.]*)",), (server,)))
     elif "apache" in server_lower:
         add("Apache HTTP Server", "Apache Server response header", "response.headers.server", 0.92, server, category="web-server", family="header", version=_version((r"apache[/ ]([0-9][\w.]*)",), (server,)))
     elif "caddy" in server_lower:
@@ -179,11 +189,14 @@ def detect_technology_signals(
 
     joomla_version = _version((r"joomla!?\s*([0-9][\w.-]*)",), (generator, body_text))
     joomla_meta = "joomla" in generator.casefold()
-    joomla_path = path_is("/administrator") or any(marker in body_lower or any(marker in asset for asset in lowered_assets) for marker in ("/media/system/js/", "/media/jui/", "com_content"))
+    joomla_admin_path = path_is("/administrator")
+    joomla_path = any(marker in body_lower or any(marker in asset for asset in lowered_assets) for marker in ("/media/system/js/", "/media/jui/", "com_content"))
     if joomla_meta:
         add("Joomla", "Joomla generator metadata", "html.meta.generator", 0.99, generator, category="cms", family="meta", version=joomla_version)
     if joomla_path:
         add("Joomla", "Joomla administrator or asset marker", "html_or_asset_path", 0.94, "Joomla route/asset marker", category="cms", family="url", version=joomla_version)
+    elif joomla_admin_path:
+        add("Joomla", "Generic /administrator path (weak)", "url.path", 0.55, parsed_path, category="cms", family="url")
 
     magento_version = _version((r"magento\s*([0-9][\w.-]*)",), (generator, body_text))
     magento_marker = any(marker in body_lower or any(marker in asset for asset in lowered_assets) for marker in ("x-magento-init", "mage/requirejs", "magento_", "/static/version"))
@@ -198,7 +211,7 @@ def detect_technology_signals(
     # Common server-side runtimes and frameworks.
     php_cookie = "phpsessid" in cookie_set or "laravel_session" in cookie_set
     java_cookie = "jsessionid" in cookie_set
-    asp_cookie = bool(cookie_set & {"asp.net_sessionid", ".aspxauth", ".aspnetcore"})
+    asp_cookie = bool(cookie_set & {"asp.net_sessionid", ".aspxauth"}) or any(name.startswith(".aspnetcore.") for name in cookie_set)
     if php_cookie:
         add("PHP", "PHP session cookie", "response.headers.set-cookie.name", 0.90, "PHP session cookie", category="server-runtime", family="cookie")
     if java_cookie:
@@ -215,26 +228,45 @@ def detect_technology_signals(
         add("ASP.NET MVC", "ASP.NET MVC marker", "header_or_body_marker", 0.90, "ASP.NET MVC", category="framework", family="body")
 
     # Frontend frameworks and libraries.
-    if "ng-version" in body_lower or any("angular" in asset for asset in lowered_assets) or any(marker in body_lower for marker in ("ngdevmode", "@angular/core", "zone.js")):
+    if "ng-version" in body_lower or asset_token("angular", "angularjs") or any(marker in body_lower for marker in ("ngdevmode", "@angular/core", "zone.js")):
         add("Angular", "Angular DOM or asset marker", "html_or_asset_path", 0.94, "Angular marker", category="framework", family="body" if "ng-version" in body_lower else "asset")
-    if "data-reactroot" in body_lower or any(marker in body_lower for marker in ("__reactfiber", "reactdom", "react/jsx-runtime", "react.production", "createroot")) or any("react" in asset for asset in lowered_assets):
+    if "data-reactroot" in body_lower or any(marker in body_lower for marker in ("__reactfiber", "reactdom", "react/jsx-runtime", "react.production", "createroot")) or asset_token("react", "react-dom"):
         add("React", "React DOM or asset marker", "html_or_asset_path", 0.92, "React marker", category="framework", family="body" if "data-reactroot" in body_lower else "asset")
     if any("/_next/" in asset or "next/static" in asset for asset in lowered_assets) or "__next_data__" in body_lower or "__next_f.push" in body_lower:
         add("Next.js", "Next.js application marker", "html_or_asset_path", 0.97, "Next.js marker", category="framework", family="url" if any("/_next/" in asset for asset in lowered_assets) else "body")
     if any("/_nuxt/" in asset for asset in lowered_assets) or any(marker in body_lower for marker in ("__nuxt__", "nuxtapp")):
         add("Nuxt", "Nuxt application marker", "html_or_asset_path", 0.97, "Nuxt marker", category="framework", family="url" if any("/_nuxt/" in asset for asset in lowered_assets) else "body")
-    if any("vue" in asset for asset in lowered_assets) or "data-v-" in body_lower or "__vue__" in body_lower:
+    if asset_token("vue") or "data-v-" in body_lower or "__vue__" in body_lower:
         add("Vue.js", "Vue DOM or asset marker", "html_or_asset_path", 0.92, "Vue marker", category="framework", family="body" if "data-v-" in body_lower or "__vue__" in body_lower else "asset")
-    if any("jquery" in asset for asset in lowered_assets) or any(marker in body_lower for marker in ("jquery.fn", "jquery v")):
+    if asset_token("jquery") or any(marker in body_lower for marker in ("jquery.fn", "jquery v")):
         add("jQuery", "jQuery asset or runtime marker", "asset_path_or_body", 0.88, "jQuery marker", category="library", family="asset")
-    if any("bootstrap" in asset for asset in lowered_assets) or ("bootstrap" in body_lower and ".container" in body_lower):
+    if asset_token("bootstrap") or ("bootstrap" in body_lower and ".container" in body_lower):
         add("Bootstrap", "Bootstrap asset or CSS marker", "asset_path_or_body", 0.88, "Bootstrap marker", category="library", family="asset")
     if "webpackruntime" in body_lower or "__webpack_require__" in body_lower:
         add("Webpack", "Webpack runtime marker", "asset.content_marker", 0.84, "Webpack marker", category="library", family="body")
-    if "vite" in body_lower and "import.meta" in body_lower:
+    if re.search(r"\bvite\b", body_lower) and "import.meta" in body_lower:
         add("Vite", "Vite bundle marker", "asset.content_marker", 0.88, "Vite marker", category="library", family="body")
     if any(marker in body_lower for marker in ("tailwind", "--tw-")):
         add("Tailwind CSS", "Tailwind CSS marker", "asset.content_marker", 0.90, "Tailwind marker", category="library", family="body")
+
+    # Products that map to NetScaler signature tags (tomcat, struts, coldfusion, sharepoint) or are
+    # informational platforms. Each needs a product-specific marker, never a generic word.
+    if "x-jenkins" in raw_headers or "jenkins" in cookie_set or any(name.startswith("jsessionid.") for name in cookie_set) and "x-hudson" in raw_headers:
+        add("Jenkins", "Jenkins response header", "response.headers", 0.97, "X-Jenkins", family="header", version=raw_headers.get("x-jenkins"))
+    if "microsoftsharepointteamservices" in raw_headers or "sprequestguid" in raw_headers or path_is("/_layouts", "/_vti_bin"):
+        add("Microsoft SharePoint", "SharePoint response header or route", "response.headers_or_path", 0.96, "SharePoint marker", family="header" if "microsoftsharepointteamservices" in raw_headers or "sprequestguid" in raw_headers else "url", version=raw_headers.get("microsoftsharepointteamservices"))
+    if "coldfusion" in powered_lower or cookie_set & {"cfid", "cftoken", "cfglobals"} or parsed_path.endswith((".cfm", ".cfc")):
+        add("Adobe ColdFusion", "ColdFusion header, cookie or extension", "header_cookie_or_path", 0.93, "ColdFusion marker", category="server-runtime", family="cookie" if cookie_set & {"cfid", "cftoken", "cfglobals"} else "header" if "coldfusion" in powered_lower else "url")
+    if parsed_path.endswith((".action", ".do")) and ("struts" in body_lower or any("/struts/" in a for a in lowered_assets)) or any("/struts/" in a or "struts2" in a for a in lowered_assets):
+        add("Apache Struts", "Struts asset or action marker", "html_or_asset_path", 0.90, "Struts marker", category="framework", family="asset")
+    if meta_values.get("ajs-version-number") or "ajs-confluence" in " ".join(meta_values) or "confluence" in generator.casefold():
+        add("Atlassian Confluence", "Confluence page metadata", "html.meta", 0.96, "ajs metadata", family="meta", version=meta_values.get("ajs-version-number"))
+    if "ajs-jira" in " ".join(meta_values) or "jira" in generator.casefold() or "atlassian.xsrf.token" in cookie_set and "x-arequestid" in raw_headers:
+        add("Atlassian Jira", "Jira page metadata or header", "html.meta", 0.94, "Jira marker", family="meta")
+    if "_gitlab_session" in cookie_set or "gitlab" in generator.casefold():
+        add("GitLab", "GitLab session cookie or generator", "cookie_or_meta", 0.95, "GitLab marker", family="cookie" if "_gitlab_session" in cookie_set else "meta")
+    if "grafanabootdata" in body_lower or "grafana_session" in cookie_set or (path_is("/login") and "grafana-app" in body_lower):
+        add("Grafana", "Grafana boot data or session cookie", "body_or_cookie", 0.94, "Grafana marker", family="cookie" if "grafana_session" in cookie_set else "body")
 
     # Protocol and application-surface signals remain useful for WAF planning.
     content_type = lowered_headers.get("content-type", "")

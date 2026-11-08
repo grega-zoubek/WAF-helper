@@ -1,0 +1,26 @@
+{
+  "juice_shop_like_spa": {
+    "input": {"url": "http://shop.test/", "headers": {"content-type": "text/html", "x-powered-by": "Express"}, "cookies": ["language", "welcomebanner_status"],
+      "body": "<app-root ng-version=\"15.0.0\"></app-root>", "assets": ["/main.js", "/polyfills.js", "/styles.css", "/assets/public/favicon_js.ico", "/assets/i18n/reactions.png"]},
+    "expect": ["Angular", "Express / Node.js"], "forbid": ["React", "Drupal", "XML or SOAP", "GraphQL"]
+  },
+  "wordpress_blog_mentions_soap": {
+    "input": {"url": "https://blog.test/", "headers": {"content-type": "text/html", "server": "nginx/1.24.0"}, "cookies": ["session_id"],
+      "body": "<link href=\"/wp-content/themes/a/style.css\"><p>Our handmade soap and graphql tips</p>", "assets": ["/wp-content/themes/a/style.css", "/wp-includes/js/jquery/jquery.min.js"],
+      "meta": [{"name": "generator", "content": "WordPress 6.4"}]},
+    "expect": ["WordPress", "nginx", "jQuery"], "forbid": ["Drupal", "XML or SOAP", "GraphQL", "Joomla"]
+  },
+  "tomcat_struts_app": {
+    "input": {"url": "https://corp.test/login.action", "headers": {"content-type": "text/html", "server": "Apache-Coyote/1.1"}, "cookies": ["JSESSIONID"],
+      "body": "<html></html>", "assets": ["/struts/utils.js"]},
+    "expect": ["Apache Tomcat", "Java", "Apache Struts"], "forbid": ["Apache HTTP Server", "Drupal"]
+  },
+  "aspnet_core_api": {
+    "input": {"url": "https://api.test/", "headers": {"content-type": "application/json", "server": "Kestrel"}, "cookies": [".AspNetCore.Antiforgery.xyz"]},
+    "expect": ["ASP.NET", "REST or JSON API"], "forbid": ["XML or SOAP", "Drupal"]
+  },
+  "plain_static_site_with_admin_path": {
+    "input": {"url": "https://static.test/administrator/", "headers": {"content-type": "text/html"}, "body": "<html><body>hello</body></html>", "assets": ["/img/triangular.png"]},
+    "expect": [], "forbid": ["Angular", "React", "Vue.js"], "weak_only": ["Joomla"]
+  }
+}
