@@ -332,7 +332,7 @@ def provider_records(payload: Any, key: str) -> list[dict[str, Any]]:
 
 
 def _safe_adc_name(value: str, field_name: str, *, max_length: int = 128) -> str:
-    if not value or len(value) > max_length or not re.fullmatch(r"[A-Za-z0-9_.# @=-]+", value):
+    if not value or len(value) > max_length or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.#@=:-]*", value):
         raise HTTPException(status_code=422, detail=f"Invalid NetScaler {field_name}")
     return value
 

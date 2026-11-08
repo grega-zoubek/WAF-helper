@@ -10,7 +10,7 @@ services:
       WAF_OPERATOR_USERNAME_FILE: /run/secrets/waf_operator_username
       WAF_OPERATOR_PASSWORD_FILE: /run/secrets/waf_operator_password
       WAF_SESSION_SECRET_FILE: /run/secrets/waf_session_secret
-      NETSCALER_WRITE_ENABLED: "true"
+      NETSCALER_WRITE_ENABLED: "${NETSCALER_WRITE_ENABLED:-false}"
       SIGNATURE_UPSTREAM_INDEX_FILE: /run/upstream-signatures/latest.json
     ports:
       - "127.0.0.1:8110:8090"
@@ -62,25 +62,27 @@ services:
   netscaler-adapter:
     build: ./services/netscaler-adapter
     environment:
-      NETSCALER_HOST: 192.168.11.101
-      NETSCALER_USERNAME: mcp_user
+      NETSCALER_HOST: "${NETSCALER_HOST:-}"
+      NETSCALER_USERNAME: "${NETSCALER_USERNAME:-}"
       NETSCALER_PASSWORD_FILE: /run/secrets/netscaler_password
       NETSCALER_NEXTGEN_SCHEME: https
       NETSCALER_NEXTGEN_BASE_URL: ""
       NETSCALER_NEXTGEN_SESSION_TIMEOUT: 30min
       NETSCALER_SSH_ENABLED: "true"
-      NETSCALER_SSH_HOST: 192.168.11.101
-      NETSCALER_SSH_USERNAME: mcp_user
+      NETSCALER_SSH_HOST: "${NETSCALER_HOST:-}"
+      NETSCALER_SSH_USERNAME: "${NETSCALER_USERNAME:-}"
       NETSCALER_SSH_PASSWORD_FILE: /run/secrets/netscaler_password
-      NETSCALER_SSH_STRICT_HOST_KEY: "false"
+      NETSCALER_SSH_STRICT_HOST_KEY: "${NETSCALER_SSH_STRICT_HOST_KEY:-true}"
+      NETSCALER_SSH_KNOWN_HOSTS_FILE: /run/secrets/netscaler_known_hosts
       NETSCALER_SIGNATURE_RULE_CATALOG_FILE: /run/catalogs/netscaler_rule_catalog.json
       NETSCALER_SIGNATURE_SOURCE_FILE: /run/upstream-signatures/raw/latest.xml
-      NETSCALER_WRITE_ENABLED: "true"
+      NETSCALER_WRITE_ENABLED: "${NETSCALER_WRITE_ENABLED:-false}"
     volumes:
       - ./catalogs:/run/catalogs:ro
       - ./signature-cache/upstream/raw:/run/upstream-signatures/raw:ro
     secrets:
       - netscaler_password
+      - netscaler_known_hosts
     expose:
       - "8092"
 
@@ -139,6 +141,8 @@ volumes:
 secrets:
   netscaler_password:
     file: ./secrets/netscaler_password
+  netscaler_known_hosts:
+    file: ./secrets/netscaler_known_hosts
   credential_encryption_key:
     file: ./secrets/credential_encryption_key
   waf_operator_username:

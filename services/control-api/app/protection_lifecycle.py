@@ -10,11 +10,11 @@ import re
 from typing import Any
 
 
-OBJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.# @=-]{1,31}$")
+OBJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,30}$")
 
 
 def _safe_object_name(base: str, suffix: str) -> str:
-    root = re.sub(r"[^A-Za-z0-9_.# @=-]+", "-", str(base or "waf").strip())[:24].rstrip("-_. ")
+    root = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(base or "waf").strip()).lstrip("-.")[:24].rstrip("-_. ")
     candidate = f"{root}-{suffix}"[:31]
     if not OBJECT_NAME_RE.fullmatch(candidate):
         candidate = f"waf-{suffix}"[:31]

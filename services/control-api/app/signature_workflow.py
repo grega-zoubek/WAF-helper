@@ -13,7 +13,7 @@ from app.confidence import confidence_summary, rule_confidence, technology_detec
 
 
 DEFAULT_UPSTREAM_INDEX_FILE = "/run/upstream-signatures/latest.json"
-OBJECT_NAME_RE = re.compile(r"[A-Za-z0-9_.# @=-]{1,31}")
+OBJECT_NAME_RE = re.compile(r"waf-[A-Za-z0-9_.-]{1,27}")
 ACTION_VALUES = {"LOG", "BLOCK"}
 
 

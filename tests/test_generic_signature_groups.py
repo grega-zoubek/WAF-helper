@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import sys
+import unittest
 
 
 CONTROL_API = Path(__file__).resolve().parents[1] / "services" / "control-api"
@@ -176,3 +177,16 @@ if __name__ == "__main__":
     test_cve_search_supports_description_and_attack_pattern_modes()
     test_cve_attack_pattern_rejects_invalid_python_regex()
     print("9 generic signature-group tests passed")
+
+
+class GenericSignatureGroupTests(unittest.TestCase):
+    """unittest adapter so the documented discovery command runs the module-level tests."""
+
+
+for _name, _fn in list(globals().items()):
+    if _name.startswith("test_") and callable(_fn):
+        setattr(GenericSignatureGroupTests, _name, lambda self, _fn=_fn: _fn())
+
+
+if __name__ == "__main__":
+    unittest.main()
