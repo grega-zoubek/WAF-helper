@@ -103,6 +103,22 @@ field names, value classes, length buckets and request shapes. Typed values, req
 bodies, cookies and screen frames are never stored. Compose-internal hosts, loopback and
 link-local targets are always refused. Sessions end after 15 min idle or 60 min total.
 
+## Run locally (laptop, Docker Desktop)
+
+```bash
+./tools/bootstrap-local.sh      # secrets, self-signed cert for localhost, .env (prints the operator password once)
+docker compose up -d --build    # also starts a Juice Shop test target
+```
+
+Open `https://localhost/` (accept the self-signed certificate) and sign in as `operator`.
+In **Positive security lab > Live browser** use `http://juice-shop:3000/`; `SCAN_TARGET_ALLOWLIST`
+in `.env` already approves it for free browsing. To test another app, add its host or IP to that
+variable and recreate `control-api`. Loopback and `host.docker.internal` are refused; use the
+laptop's LAN IP for apps running on the host. ADC access stays unconfigured until you fill
+`NETSCALER_HOST`/`NETSCALER_USERNAME` in `.env` and `secrets/netscaler_password`.
+The signature catalog needs the Citrix public key in `signature-cache/citrix_public.pem`
+(copy it from the ADC's `/netscaler/public.pem`); the live browser works without it.
+
 ## Deployment
 
 1. Create `secrets/netscaler_password` with the ADC password and restrict it to

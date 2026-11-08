@@ -11,6 +11,7 @@ services:
       WAF_OPERATOR_PASSWORD_FILE: /run/secrets/waf_operator_password
       WAF_SESSION_SECRET_FILE: /run/secrets/waf_session_secret
       NETSCALER_WRITE_ENABLED: "${NETSCALER_WRITE_ENABLED:-false}"
+      SCAN_TARGET_ALLOWLIST: "${SCAN_TARGET_ALLOWLIST:-}"
       SIGNATURE_UPSTREAM_INDEX_FILE: /run/upstream-signatures/latest.json
     ports:
       - "127.0.0.1:8110:8090"
@@ -111,7 +112,10 @@ services:
     image: nginx:1.27-alpine
     volumes:
       - ./frontend:/usr/share/nginx/html:ro
-      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # nginx renders ${WAF_PUBLIC_HOST} from this template at start-up
+      - ./frontend/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+    environment:
+      WAF_PUBLIC_HOST: "${WAF_PUBLIC_HOST:-192.168.11.90}"
     ports:
       - "8180:80"
       - "443:443"
