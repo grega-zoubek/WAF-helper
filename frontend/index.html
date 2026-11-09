@@ -204,6 +204,11 @@
   <section id="connection-screen" class="connection-screen">
     <div class="job-actions" style="justify-content:flex-end"><button id="operator-logout-connection" class="secondary" type="button">Sign out</button></div>
     <div class="card connection-panel">
+      <h2>No appliance needed for application analysis</h2>
+      <p class="small muted">Scanning, the live browser and Regex Rulz work without a NetScaler. Connect one only to inspect AppFW, bind protections or export signatures.</p>
+      <button id="continue-without-adc" type="button">Continue without NetScaler</button>
+    </div>
+    <div class="card connection-panel">
       <h2>Saved NetScaler connections</h2>
       <p class="small muted">Select a saved appliance to reconnect. Scroll this list to see additional connections.</p>
       <div id="saved-netscalers" class="connection-list" aria-label="Saved NetScaler connections"></div>
@@ -229,6 +234,7 @@
         <span id="catalog-freshness" class="small muted">Catalog: not loaded</span>
       </div>
       <div class="workspace-bar-actions">
+        <button id="connect-adc-button" class="secondary" type="button" hidden>Connect NetScaler</button>
         <button id="disconnect-button" class="secondary" type="button">Disconnect</button>
         <button id="operator-logout" class="secondary" type="button">Sign out</button>
       </div>
@@ -337,6 +343,10 @@
         <div id="live-panels"></div>
         <div id="live-candidate-out" class="notice" hidden></div>
       </div>
+      <h4>Saved browsing captures</h4>
+      <p class="small muted">Every finished live session is kept as metadata only: forms, entry fields and request shapes (no typed values, bodies or screen frames). Reopen one, build an observe-only candidate, or delete it.</p>
+      <div id="live-saved"></div>
+      <div id="live-saved-view"></div>
     </section>
     <form id="browser-lab-start-form">
       <input id="browser-lab-url" required type="url" maxlength="2048" placeholder="Application URL, e.g. http://192.168.11.91/">
@@ -371,7 +381,7 @@
   <script>
     let csrfToken = '';
     const api = (path, options = {}) => { const headers = new Headers(options.headers || {}); if (!['GET','HEAD','OPTIONS'].includes(String(options.method || 'GET').toUpperCase()) && csrfToken) headers.set('X-CSRF-Token', csrfToken); return fetch(path, {...options, headers, credentials:'same-origin'}).then(async r => { if (r.status === 401) { csrfToken = ''; document.body.classList.remove('authenticated'); document.querySelector('#auth-gate').hidden = false; } if (!r.ok) { let detail = ''; try { const body = await r.json(); detail = body.detail || body.message || ''; } catch (error) { try { detail = await r.text(); } catch (ignored) {} } throw new Error(detail || `${r.status}`); } return r.status === 204 ? null : r.json(); }); };
-    async function initializeOperatorSession() { try { const response = await fetch('/api/auth/session', {credentials:'same-origin', cache:'no-store'}); if (!response.ok) throw new Error('sign-in required'); const data = await response.json(); csrfToken = data.csrf_token || ''; document.body.classList.add('authenticated'); document.querySelector('#auth-gate').hidden = true; loadPositiveCandidates(); } catch (error) { document.body.classList.remove('authenticated'); document.querySelector('#auth-gate').hidden = false; } }
+    async function initializeOperatorSession() { try { const response = await fetch('/api/auth/session', {credentials:'same-origin', cache:'no-store'}); if (!response.ok) throw new Error('sign-in required'); const data = await response.json(); csrfToken = data.csrf_token || ''; document.body.classList.add('authenticated'); document.querySelector('#auth-gate').hidden = true; if (!window.currentConnectionId) enterOffline(); loadPositiveCandidates(); } catch (error) { document.body.classList.remove('authenticated'); document.querySelector('#auth-gate').hidden = false; } }
     document.querySelector('#operator-login-form').addEventListener('submit', async event => { event.preventDefault(); const status = document.querySelector('#operator-login-status'); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true; status.textContent = 'Signing in…'; try { const response = await fetch('/api/auth/login', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:document.querySelector('#operator-username').value, password:document.querySelector('#operator-password').value})}); const result = await response.json(); if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`); document.querySelector('#operator-password').value = ''; location.reload(); } catch (error) { document.querySelector('#operator-password').value = ''; status.textContent = `Sign-in failed: ${error.message}`; } finally { button.disabled = false; } });
     async function operatorLogout() { try { await api('/api/auth/logout', {method:'POST'}); } finally { csrfToken = ''; location.reload(); } }
     document.querySelector('#operator-logout')?.addEventListener('click', operatorLogout);
@@ -464,6 +474,7 @@
       window.currentTool = tool || null;
       if (tool === 'analyse') setAnalyseStep(window.currentAnalyseStep || 'scan');
       if (tool === 'regex') refreshRegexRulzJobs();
+      if (tool === 'positive' && window.loadLiveCaptures) window.loadLiveCaptures();
       const target = tool ? panels[tool] : hub;
       target?.scrollIntoView({behavior: 'smooth', block: 'start'});
     }
@@ -1609,6 +1620,24 @@
       try { const result = await api(`/api/netscalers/${encodeURIComponent(button.dataset.connection)}/connect`, {method: 'POST'}); setConnected(result, 'Connected using encrypted saved credentials.'); await loadSavedNetScalers(); }
       catch (error) { status.textContent = 'Unable to reconnect to saved NetScaler.'; }
     });
+    // The appliance is optional: application analysis, the live browser and Regex Rulz do not need it.
+    function enterOffline() {
+      window.currentConnectionId = null;
+      window.wafInventoryLoaded = false;
+      document.querySelector('#connection-screen').hidden = true;
+      document.querySelector('#workspace').hidden = false;
+      document.querySelector('#connection-summary').hidden = true;
+      document.querySelector('#main-actions').hidden = false;
+      document.querySelector('#bar-nsip').textContent = 'No NetScaler connected';
+      document.querySelector('#bar-hostname').textContent = '';
+      document.querySelectorAll('#write-mode-badge, #catalog-freshness, #disconnect-button').forEach(el => { el.hidden = true; });
+      document.querySelector('#connect-adc-button').hidden = false;
+      const inventory = document.querySelector('#create-signature-profile');
+      inventory.disabled = true; inventory.title = 'Connect a NetScaler to use this tool';
+      showTool(null);
+    }
+    document.querySelector('#continue-without-adc').addEventListener('click', enterOffline);
+    document.querySelector('#connect-adc-button').addEventListener('click', () => { document.querySelector('#workspace').hidden = true; document.querySelector('#connection-screen').hidden = false; });
     function setConnected(result, message) {
       window.currentConnectionId = result.connection_id;
       document.querySelector('#connection-success-message').textContent = message;
@@ -1620,6 +1649,10 @@
       document.querySelector('#connection-identity-status').textContent = result.identity_status === 'available' ? 'Hostname and version read from the appliance over SSH.' : `SSH identity lookup: ${result.identity_status || 'unavailable'}.`;
       document.querySelector('#connection-screen').hidden = true;
       document.querySelector('#workspace').hidden = false;
+      document.querySelectorAll('#write-mode-badge, #catalog-freshness, #disconnect-button').forEach(el => { el.hidden = false; });
+      document.querySelector('#connect-adc-button').hidden = true;
+      document.querySelector('#create-signature-profile').disabled = false;
+      document.querySelector('#create-signature-profile').title = '';
       document.querySelector('#connection-summary').hidden = false;
       document.querySelector('#main-actions').hidden = false;
       setWriteModeBadge(null, 'Open Signature profile to refresh live write mode from inventory.');
@@ -1641,8 +1674,6 @@
       window.currentConnectionId = null;
       window.wafInventoryLoaded = false;
       window.currentTool = null;
-      document.querySelector('#connection-screen').hidden = false;
-      document.querySelector('#workspace').hidden = true;
       document.querySelector('#waf-section').hidden = true;
       document.querySelector('#discovery-section').hidden = true;
       document.querySelector('#positive-model-workbench').hidden = true;
@@ -1655,6 +1686,7 @@
       document.querySelector('#bind-wizard').textContent = '';
       setWriteModeBadge(null);
       setCatalogFreshness('Catalog: not loaded');
+      enterOffline();
     });
     document.querySelector('#load-waf-inventory').addEventListener('click', loadWafInventory);
     document.querySelectorAll('.back-to-tools').forEach(btn => btn.addEventListener('click', backToTools));
@@ -2122,22 +2154,51 @@
         if (!framesSeen && performance.now() - startedAt > 4000) notes.push('No video frames received yet. The page may still be loading, or the browser may not be repainting; try Reload.');
         const box = $('#live-diagnostics'); box.hidden = !notes.length; box.innerHTML = notes.join('<br>');
       }
-      function renderSnapshot(snapshot) {
-        renderDiagnostics(snapshot);
-        const navInput = $('#live-nav-url');
-        if (document.activeElement !== navInput && snapshot.url) navInput.value = snapshot.url;
+      function panelsHtml(snapshot) {
         const forms = (snapshot.forms || []).map(f => `<tr><td>${escapeHtml(f.id || f.name || '#' + f.index)}</td><td>${escapeHtml(f.method)}</td><td><code>${escapeHtml(f.action)}</code></td><td>${escapeHtml(f.field_count)}</td></tr>`).join('');
         const controls = (snapshot.controls || []).filter(c => c.type !== 'hidden' || c.name).map(c => `<tr><td>${escapeHtml(c.form_index >= 0 ? 'form ' + c.form_index : '-')}</td><td>${escapeHtml(c.name || c.id)}</td><td>${escapeHtml(c.tag)}/${escapeHtml(c.type)}</td><td>${escapeHtml(c.label || c.placeholder)}</td><td>${escapeHtml(c.autocomplete)}</td><td>${c.required ? 'yes' : ''}</td></tr>`).join('');
         const network = (snapshot.network || []).slice().reverse().map(n => { const shape = n.body_shape && n.body_shape.fields && n.body_shape.fields.length ? n.body_shape.fields.map(f => `${escapeHtml(f.name)}:${escapeHtml(f.value_class)}`).join(', ') : ''; return `<tr><td>${escapeHtml(n.method)}</td><td><code>${escapeHtml(n.url)}</code></td><td>${escapeHtml(n.resource_type)}</td><td>${escapeHtml(n.status_code ?? '-')}</td><td class="small">${shape}</td></tr>`; }).join('');
-        $('#live-panels').innerHTML = `<p class="small muted">Page: <strong>${escapeHtml(snapshot.title || '-')}</strong> · blocked requests: ${escapeHtml(snapshot.blocked_requests ?? 0)} · interaction events: ${escapeHtml(snapshot.event_count ?? 0)}</p>`
+        return `<p class="small muted">Page: <strong>${escapeHtml(snapshot.title || '-')}</strong> · blocked requests: ${escapeHtml(snapshot.blocked_requests ?? 0)} · interaction events: ${escapeHtml(snapshot.event_count ?? 0)}</p>`
           + (forms ? `<h4>Forms</h4><table><thead><tr><th>Form</th><th>Method</th><th>Action</th><th>Fields</th></tr></thead><tbody>${forms}</tbody></table>` : '')
           + (controls ? `<h4>Entry fields</h4><div class="browser-list"><table><thead><tr><th>Form</th><th>Name</th><th>Type</th><th>Label</th><th>Autocomplete</th><th>Required</th></tr></thead><tbody>${controls}</tbody></table></div>` : '')
           + (network ? `<h4>Requests (same host; body shape = field names and value classes only)</h4><div class="browser-list"><table><thead><tr><th>Method</th><th>URL</th><th>Type</th><th>Status</th><th>Body fields</th></tr></thead><tbody>${network}</tbody></table></div>` : '');
       }
+      function renderSnapshot(snapshot) {
+        renderDiagnostics(snapshot);
+        const navInput = $('#live-nav-url');
+        if (document.activeElement !== navInput && snapshot.url) navInput.value = snapshot.url;
+        $('#live-panels').innerHTML = panelsHtml(snapshot);
+      }
+      // ---- saved captures ----
+      async function loadSaved() {
+        const host = $('#live-saved');
+        try {
+          const rows = await api('/api/live-browser/captures');
+          host.innerHTML = rows.length ? `<table><thead><tr><th>Ended</th><th>Host</th><th>Mode</th><th>Requests</th><th>Writes</th><th>Forms</th><th>Fields</th><th></th></tr></thead><tbody>${rows.map(r => `<tr><td class="small">${escapeHtml(new Date(r.ended_at).toLocaleString())}</td><td>${escapeHtml(r.hostname)}</td><td>${escapeHtml(r.mode)}</td><td>${escapeHtml(r.request_count)}</td><td>${escapeHtml(r.write_request_count)}</td><td>${escapeHtml(r.form_count)}</td><td>${escapeHtml(r.field_count)}</td><td class="job-actions"><button class="secondary live-saved-view-btn" data-id="${escapeHtml(r.id)}" type="button">View</button><button class="secondary live-saved-candidate-btn" data-id="${escapeHtml(r.id)}" type="button">Candidate</button><button class="secondary live-saved-delete-btn" data-id="${escapeHtml(r.id)}" type="button">Delete</button></td></tr>`).join('')}</tbody></table>` : '<p class="small muted">No saved captures yet. Stop a live session and it appears here.</p>';
+        } catch (error) { host.innerHTML = `<p class="small muted">Could not load captures: ${escapeHtml(error.message)}</p>`; }
+      }
+      window.loadLiveCaptures = loadSaved;
+      $('#live-saved').addEventListener('click', async event => {
+        const button = event.target.closest('button[data-id]'); if (!button) return;
+        const id = button.dataset.id, view = $('#live-saved-view');
+        try {
+          if (button.classList.contains('live-saved-view-btn')) {
+            const c = await api(`/api/live-browser/captures/${encodeURIComponent(id)}`);
+            view.innerHTML = `<div class="card"><h4>${escapeHtml(c.hostname)} <span class="small muted">${escapeHtml(c.mode)} · ${escapeHtml(c.duration_seconds)} s · ${escapeHtml(c.started_at)}</span></h4>${c.load_error ? `<p class="small">Page load problem: <code>${escapeHtml(c.load_error)}</code></p>` : ''}${panelsHtml({title: c.title, forms: c.forms, controls: c.controls, network: c.network, blocked_requests: c.blocked_requests, event_count: (c.events || []).length})}</div>`;
+          } else if (button.classList.contains('live-saved-candidate-btn')) {
+            const result = await api(`/api/live-browser/captures/${encodeURIComponent(id)}/candidate`);
+            const rows = (result.candidate.endpoints || []).map(en => `<li>${escapeHtml(en.method)} <code>${escapeHtml(en.path_template)}</code> · ${escapeHtml((en.fields || []).length)} fields</li>`).join('');
+            view.innerHTML = `<div class="notice"><strong>${escapeHtml(result.summary.endpoint_count)} endpoints, ${escapeHtml(result.summary.field_count)} fields</strong> (not saved as a candidate, observe-only). ${escapeHtml(result.summary.confidence_note)}<ul>${rows}</ul></div>`;
+          } else if (button.classList.contains('live-saved-delete-btn')) {
+            if (!confirm('Delete this saved capture?')) return;
+            await api(`/api/live-browser/captures/${encodeURIComponent(id)}`, {method: 'DELETE'}); view.innerHTML = ''; await loadSaved();
+          }
+        } catch (error) { view.innerHTML = `<p class="notice">${escapeHtml(error.message)}</p>`; }
+      });
       function onMessage(message) {
         if (message.type === 'frame') drawFrame(message);
         else if (message.type === 'snapshot') renderSnapshot(message);
-        else if (message.type === 'status') { if (message.state === 'expired') { setStatus(`Session ended (${message.reason}).`); endSession(false); } }
+        else if (message.type === 'status') { if (message.state === 'expired') { setStatus(`Session ended (${message.reason}). Capture saved.`); endSession(false); setTimeout(loadSaved, 1500); } }
         else if (message.type === 'error') setStatus(message.message || 'Browser reported an error');
         else if (message.type === 'inspected') {
           const box = $('#live-inspected'); const el = message.element;
@@ -2168,7 +2229,7 @@
           socket = new WebSocket(`wss://${location.host}/api/live-browser/sessions/${session.id}/ws`);
           socket.onopen = () => { socket.send(JSON.stringify({type: 'auth', csrf: csrfToken})); setStatus('Live. Click the page to focus it, then use mouse and keyboard.'); canvas.focus(); };
           socket.onmessage = e => { try { onMessage(JSON.parse(e.data)); } catch (error) {} };
-          socket.onclose = () => { if (sessionId) { setStatus('Connection closed.'); $('#live-session').hidden = true; sessionId = null; } };
+          socket.onclose = () => { if (sessionId) { setStatus('Connection closed. The capture was saved.'); $('#live-session').hidden = true; sessionId = null; setTimeout(loadSaved, 1500); } };
         } catch (error) { setStatus(`Could not start: ${error.message}`); }
         finally { button.disabled = false; }
       });
@@ -2187,7 +2248,16 @@
       $('#live-go').addEventListener('click', go);
       $('#live-nav-url').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
       $('#live-inspect').addEventListener('click', e => { inspecting = !inspecting; e.currentTarget.textContent = inspecting ? 'Click an element…' : 'Inspect element'; canvas.style.cursor = inspecting ? 'crosshair' : 'default'; });
-      $('#live-stop').addEventListener('click', () => { endSession(true); setStatus('Session closed.'); });
+      $('#live-stop').addEventListener('click', async () => {
+        const id = sessionId; if (!id) return;
+        sessionId = null; if (socket) { try { socket.close(); } catch (e) {} socket = null; }
+        $('#live-session').hidden = true; setStatus('Saving capture…');
+        try {
+          const result = await api(`/api/live-browser/sessions/${id}`, {method: 'DELETE'});
+          setStatus(result.saved ? `Session closed. Saved capture: ${result.summary.request_count} requests, ${result.summary.form_count} forms, ${result.summary.field_count} fields.` : 'Session closed, but the capture could not be saved.');
+        } catch (error) { setStatus(`Session closed. ${error.message}`); }
+        loadSaved();
+      });
       $('#live-candidate').addEventListener('click', async () => {
         const box = $('#live-candidate-out'); if (!sessionId) return;
         box.hidden = false; box.textContent = 'Building observe-only candidate…';

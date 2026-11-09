@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qsl, urlparse
@@ -100,13 +100,79 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def close_session(session_id: str) -> None:
-    session = live_sessions.pop(session_id, None)
+finished_captures: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+MAX_FINISHED_CAPTURES = 50
+
+
+async def candidate_source_dict(session: dict[str, Any], redacted_route_template: Callable[[str], str]) -> dict[str, Any]:
+    requests: list[dict[str, Any]] = []
+    for item in session["network"]:
+        parsed = urlparse(item["url"])
+        shape = item.get("body_shape") or {}
+        requests.append({
+            "id": item["id"], "method": item["method"], "path_template": redacted_route_template(item["url"]),
+            "scheme": parsed.scheme.lower(), "authentication": "unknown", "resource_type": item["resource_type"],
+            "status_code": item["status_code"],
+            "query_names": sorted({n[:256] for n, _ in parse_qsl(parsed.query, keep_blank_values=False) if n and len(n) <= 256}),
+            "request_header_names": item["request_header_names"], "cookie_header_present": "cookie" in item["request_header_names"],
+            "response_header_names": item["response_header_names"], "response_content_type": item["response_content_type"],
+            "body_format": shape.get("format", ""), "body_fields": shape.get("fields", []),
+            "observed_at": item["observed_at"],
+        })
+    cookies = []
+    try:
+        for cookie in await session["context"].cookies():
+            domain = str(cookie.get("domain", "")).lstrip(".").lower()
+            if session["hostname"] == domain or session["hostname"].endswith("." + domain):
+                cookies.append({"name": str(cookie.get("name", ""))[:256], "domain": domain[:253], "path": str(cookie.get("path", "/"))[:2048],
+                                "secure": bool(cookie.get("secure")), "http_only": bool(cookie.get("httpOnly")),
+                                "same_site": str(cookie.get("sameSite", ""))[:32], "session": float(cookie.get("expires", -1)) <= 0})
+    except Exception:
+        pass
+    return {"session_id": session["id"], "hostname": session["hostname"], "mode": session["mode"], "requests": requests,
+            "interaction_events": list(session["events"]), "cookie_metadata": cookies, "auth_state": "unknown",
+            "evidence_source": "guided_browser", "values_captured": False}
+
+
+async def build_capture(session: dict[str, Any]) -> dict[str, Any]:
+    """Metadata-only record of a browsing session (no values, bodies, cookies' values or frames)."""
+    from app.main import redacted_route_template  # late import: main imports this module
+
+    snapshot = await _snapshot(session)
+    started = session.get("started_at") or _now()
+    ended = _now()
+    return {
+        "id": session["id"], "hostname": session["hostname"], "mode": session["mode"], "allowed_paths": session["allowed_paths"],
+        "started_at": started, "ended_at": ended, "duration_seconds": int(time.monotonic() - session["created"]),
+        "final_url": snapshot.get("url", ""), "title": snapshot.get("title", ""),
+        "load_error": session.get("load_error", ""), "blocked_requests": session["blocked"], "blocked_hosts": dict(list(session["blocked_hosts"].items())[:20]),
+        "forms": snapshot.get("forms", []), "controls": snapshot.get("controls", []),
+        "network": [{k: v for k, v in item.items() if k in {"method", "url", "resource_type", "status_code", "response_content_type", "body_shape", "observed_at"}} for item in session["network"]],
+        "events": list(session["events"]),
+        "candidate_source": await candidate_source_dict(session, redacted_route_template),
+        "privacy": {"values_captured": False, "bodies_captured": False, "frames_stored": False},
+    }
+
+
+async def close_session(session_id: str) -> dict[str, Any] | None:
+    """Close a session; its metadata capture is kept in memory for the control plane to collect."""
+    session = live_sessions.get(session_id)
     if not session:
-        return
+        return finished_captures.get(session_id)
+    capture: dict[str, Any] | None = None
+    try:
+        capture = await build_capture(session)
+    except Exception as exc:
+        logging.getLogger("waf.live").warning("capture could not be built: %s", type(exc).__name__)
+    live_sessions.pop(session_id, None)
     session["closed"] = True
+    if capture:
+        finished_captures[session_id] = capture
+        while len(finished_captures) > MAX_FINISHED_CAPTURES:
+            finished_captures.popitem(last=False)
     for task in session.get("tasks", []):
-        task.cancel()
+        if task is not asyncio.current_task():
+            task.cancel()
     try:
         await session["cdp"].send("Page.stopScreencast")
     except Exception:
@@ -115,6 +181,7 @@ async def close_session(session_id: str) -> None:
         await session["context"].close()
     except Exception:
         pass
+    return capture
 
 
 async def _reap_loop() -> None:
@@ -253,7 +320,7 @@ async def create_session(browser: Any, request: LiveSessionRequest) -> dict[str,
             "context": context, "page": None, "cdp": None, "viewport": VIEWPORT, "queue": asyncio.Queue(maxsize=2),
             "network": deque(maxlen=MAX_NETWORK), "events": deque(maxlen=MAX_EVENTS), "blocked": 0, "blocked_hosts": {}, "load_error": "", "tasks": [],
             "ws": None, "ws_connected": False, "ever_connected": False, "closed": False,
-            "created": time.monotonic(), "touched": time.monotonic(),
+            "created": time.monotonic(), "touched": time.monotonic(), "started_at": _now(),
         }
         live_sessions[session_id] = session
     try:
@@ -381,40 +448,24 @@ def build_live_router(ensure_browser: Callable[[], Awaitable[Any]], redacted_rou
         return await create_session(await ensure_browser(), request)
 
     @router.delete("/sessions/{session_id}")
-    async def stop(session_id: str) -> dict[str, bool]:
+    async def stop(session_id: str) -> dict[str, Any]:
         existed = session_id in live_sessions
-        await close_session(session_id)
-        return {"closed": existed}
+        capture = await close_session(session_id)
+        return {"closed": existed, "capture": capture}
+
+    @router.get("/captures/{session_id}")
+    async def finished(session_id: str) -> dict[str, Any]:
+        capture = finished_captures.get(session_id)
+        if not capture:
+            raise HTTPException(status_code=404, detail="Capture not found")
+        return capture
 
     @router.get("/sessions/{session_id}/candidate-source")
     async def candidate_source(session_id: str) -> dict[str, Any]:
         session = live_sessions.get(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Live browser session not found or expired")
-        requests: list[dict[str, Any]] = []
-        for item in session["network"]:
-            parsed = urlparse(item["url"])
-            shape = item.get("body_shape") or {}
-            requests.append({
-                "id": item["id"], "method": item["method"], "path_template": redacted_route_template(item["url"]),
-                "scheme": parsed.scheme.lower(), "authentication": "unknown", "resource_type": item["resource_type"],
-                "status_code": item["status_code"],
-                "query_names": sorted({n[:256] for n, _ in parse_qsl(parsed.query, keep_blank_values=False) if n and len(n) <= 256}),
-                "request_header_names": item["request_header_names"], "cookie_header_present": "cookie" in item["request_header_names"],
-                "response_header_names": item["response_header_names"], "response_content_type": item["response_content_type"],
-                "body_format": shape.get("format", ""), "body_fields": shape.get("fields", []),
-                "observed_at": item["observed_at"],
-            })
-        cookies = []
-        for cookie in await session["context"].cookies():
-            domain = str(cookie.get("domain", "")).lstrip(".").lower()
-            if session["hostname"] == domain or session["hostname"].endswith("." + domain):
-                cookies.append({"name": str(cookie.get("name", ""))[:256], "domain": domain[:253], "path": str(cookie.get("path", "/"))[:2048],
-                                "secure": bool(cookie.get("secure")), "http_only": bool(cookie.get("httpOnly")),
-                                "same_site": str(cookie.get("sameSite", ""))[:32], "session": float(cookie.get("expires", -1)) <= 0})
-        return {"session_id": session_id, "hostname": session["hostname"], "mode": session["mode"], "requests": requests,
-                "interaction_events": list(session["events"]), "cookie_metadata": cookies, "auth_state": "unknown",
-                "evidence_source": "guided_browser", "values_captured": False}
+        return await candidate_source_dict(session, redacted_route_template)
 
     @router.websocket("/sessions/{session_id}/ws")
     async def stream(ws: WebSocket, session_id: str) -> None:
