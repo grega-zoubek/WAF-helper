@@ -18,6 +18,8 @@ from urllib.parse import parse_qsl, urlparse
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+from app.coverage import build_coverage
+from app.discovery_policy import Budget, build_policy, classify_request, decide, policy_fingerprint
 from app.field_roles import classify_field
 from app.live_policy import (
     MODES, key_to_cdp, live_request_allowed, mouse_to_cdp, new_live_session_id, post_body_shape, redact_url,
@@ -44,6 +46,45 @@ class LiveSessionRequest(BaseModel):
     allowed_paths: list[str] = Field(default_factory=lambda: ["/"], max_length=100)
     mode: str = Field(default="read_only")
     ignore_https_errors: bool = False
+    # Optional discovery policy; defaults to the preset matching the mode. It can only narrow the mode.
+    policy_preset: str | None = None
+    policy_overrides: dict[str, Any] | None = None
+
+
+MAX_PERMISSION_EVENTS = 200
+
+
+def _body_format(content_type: str) -> str:
+    media = (content_type or "").split(";", 1)[0].strip().lower()
+    if media.startswith("multipart/"):
+        return "multipart"
+    if media == "application/x-www-form-urlencoded":
+        return "form"
+    return "json" if media.endswith("json") else ""
+
+
+def apply_policy(session: dict[str, Any], method: str, url: str, resource_type: str, content_type: str = "") -> bool:
+    """Classify one outgoing request, enforce the run policy and keep a metadata-only record.
+
+    Returns True when the request may proceed. Runs for every request the page makes, including
+    those triggered indirectly by page scripts."""
+    parsed = urlparse(url)
+    if (parsed.hostname or "").lower() != session["hostname"]:
+        return True  # cross-host traffic is already limited to GET/HEAD subresources by the mode guard
+    category, why = classify_request(method, url, content_type, _body_format(content_type), resource_type)
+    verdict = decide(session["policy"], category, parsed.path or "/")
+    if verdict["action"] == "allow" and not session["budget"].charge_request():
+        verdict = {"action": "deny", "reason": "request budget exhausted"}
+        session["budget_exhausted"] = True
+    counts = session["permission_counts"]
+    key = f"{category or 'ambiguous'}:{verdict['action']}"
+    counts[key] = counts.get(key, 0) + 1
+    if verdict["action"] != "allow" and len(session["permission_events"]) < MAX_PERMISSION_EVENTS:
+        session["permission_events"].append({
+            "action": verdict["action"], "category": category or "ambiguous", "method": method.upper(),
+            "path": redact_url(url).split("?", 1)[0][:300], "reason": verdict["reason"], "classified_by": why, "observed_at": _now(),
+        })
+    return verdict["action"] == "allow"
 
 
 INIT_SCRIPT = """() => {
@@ -135,6 +176,13 @@ async def candidate_source_dict(session: dict[str, Any], redacted_route_template
             "evidence_source": "guided_browser", "values_captured": False}
 
 
+def _coverage(session: dict[str, Any]) -> dict[str, Any]:
+    return build_coverage(
+        list(session["network"]), load_error=session.get("load_error", ""), blocked_hosts=dict(session["blocked_hosts"]),
+        permission_events=list(session["permission_events"]), budget_exhausted=session.get("budget_exhausted", False),
+    )
+
+
 async def build_capture(session: dict[str, Any]) -> dict[str, Any]:
     """Metadata-only record of a browsing session (no values, bodies, cookies' values or frames)."""
     from app.main import redacted_route_template  # late import: main imports this module
@@ -151,6 +199,10 @@ async def build_capture(session: dict[str, Any]) -> dict[str, Any]:
         "network": [{k: v for k, v in item.items() if k in {"method", "url", "resource_type", "status_code", "response_content_type", "body_shape", "observed_at"}} for item in session["network"]],
         "events": list(session["events"]),
         "candidate_source": await candidate_source_dict(session, redacted_route_template),
+        "policy": session["policy"], "policy_fingerprint": session["policy_fingerprint"],
+        "permission_counts": dict(session["permission_counts"]), "permission_events": list(session["permission_events"]),
+        "budget": session["budget"].snapshot(),
+        "coverage": _coverage(session),
         "privacy": {"values_captured": False, "bodies_captured": False, "frames_stored": False},
     }
 
@@ -305,6 +357,10 @@ def _build_recorders(session: dict[str, Any]) -> tuple[Callable[[Any], None], Ca
 async def create_session(browser: Any, request: LiveSessionRequest) -> dict[str, Any]:
     if request.mode not in MODES:
         raise HTTPException(status_code=422, detail="mode must be read_only or free")
+    try:
+        policy = build_policy(request.policy_preset or ("operator_free" if request.mode == "free" else "read_only"), request.policy_overrides)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid discovery policy: {exc}") from exc
     reason = scan_target_error(request.url)
     if reason:
         raise HTTPException(status_code=422, detail=f"Target refused: {reason}")
@@ -320,6 +376,8 @@ async def create_session(browser: Any, request: LiveSessionRequest) -> dict[str,
             "id": session_id, "mode": request.mode, "hostname": request.hostname.lower(), "allowed_paths": request.allowed_paths or ["/"],
             "context": context, "page": None, "cdp": None, "viewport": VIEWPORT, "queue": asyncio.Queue(maxsize=2),
             "network": deque(maxlen=MAX_NETWORK), "events": deque(maxlen=MAX_EVENTS), "blocked": 0, "blocked_hosts": {}, "load_error": "", "tasks": [],
+            "policy": policy, "policy_fingerprint": policy_fingerprint(policy), "budget": Budget(policy["budgets"]),
+            "permission_events": [], "permission_counts": {}, "budget_exhausted": False,
             "ws": None, "ws_connected": False, "ever_connected": False, "closed": False,
             "created": time.monotonic(), "touched": time.monotonic(), "started_at": _now(),
         }
@@ -327,7 +385,9 @@ async def create_session(browser: Any, request: LiveSessionRequest) -> dict[str,
     try:
         async def route_handler(route: Any) -> None:
             r = route.request
-            if live_request_allowed(session["mode"], r.method, r.url, r.resource_type, session["hostname"], session["allowed_paths"]):
+            if live_request_allowed(session["mode"], r.method, r.url, r.resource_type, session["hostname"], session["allowed_paths"]) and apply_policy(
+                session, r.method, r.url, r.resource_type, r.headers.get("content-type", "")
+            ):
                 await route.continue_()
             else:
                 session["blocked"] += 1
@@ -337,7 +397,7 @@ async def create_session(browser: Any, request: LiveSessionRequest) -> dict[str,
                 await route.abort("blockedbyclient")
 
         async def ws_handler(ws_route: Any) -> None:
-            if session["mode"] == "free" and live_request_allowed("free", "GET", ws_route.url, "websocket", session["hostname"], session["allowed_paths"]):
+            if session["mode"] == "free" and live_request_allowed("free", "GET", ws_route.url, "websocket", session["hostname"], session["allowed_paths"]) and apply_policy(session, "GET", ws_route.url, "websocket"):
                 ws_route.connect_to_server()
             else:
                 await ws_route.close(code=1008, reason="WebSocket not permitted in this mode")
@@ -388,7 +448,8 @@ async def _snapshot(session: dict[str, Any]) -> dict[str, Any]:
         control["injection_prone"] = bool(verdict and verdict["injection_prone"])
     dom["url"] = redact_url(str(dom.get("url", "")))
     recent = [{k: v for k, v in item.items() if k in {"method", "url", "resource_type", "status_code"} or k == "body_shape"} for item in list(session["network"])[-60:]]
-    return {"type": "snapshot", **dom, "network": recent, "blocked_requests": session["blocked"], "blocked_hosts": dict(list(session["blocked_hosts"].items())[:10]), "load_error": session["load_error"], "event_count": len(session["events"])}
+    return {"type": "snapshot", **dom, "network": recent, "blocked_requests": session["blocked"], "blocked_hosts": dict(list(session["blocked_hosts"].items())[:10]), "load_error": session["load_error"], "event_count": len(session["events"]),
+            "coverage": {k: v for k, v in _coverage(session).items() if k in {"status", "explored", "failure_counts"}}, "pending_classification": sum(1 for e in session["permission_events"] if e["action"] == "pause")}
 
 
 async def _sender(session: dict[str, Any], ws: WebSocket) -> None:
@@ -429,6 +490,9 @@ async def _handle(session: dict[str, Any], message: dict[str, Any], ws: WebSocke
             url = str(message.get("url", ""))[:2048]
             if not live_request_allowed(session["mode"], "GET", url, "document", session["hostname"], session["allowed_paths"]):
                 await ws.send_json({"type": "error", "message": "That URL is outside the approved host/path scope"})
+            elif not session["budget"].charge_action():
+                session["budget_exhausted"] = True
+                await ws.send_json({"type": "error", "message": "Action budget for this run is exhausted"})
             else:
                 await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
     elif kind == "viewport":

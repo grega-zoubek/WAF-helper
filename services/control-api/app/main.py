@@ -29,6 +29,8 @@ from app.nextgen_correlation import correlate_scope_to_nextgen
 from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
 from app.openapi_export import openapi_from_model
+from app.discovery_policy import build_policy
+from app.discovery_runs import build_router as build_discovery_runs_router, save_run
 from app.appfw_plan import build_plan_preview, default_profile_name
 from app.scan_scope import explicitly_allowlisted, scan_target_error
 from app.signature_workflow import ACTION_VALUES, OBJECT_NAME_RE, cli_import_commands, default_object_name, load_upstream_catalog, select_rules_for_detection, workflow_fingerprint
@@ -3358,6 +3360,8 @@ class LiveBrowserStartRequest(BaseModel):
     allowed_paths: list[str] = Field(default_factory=lambda: ["/"], max_length=100)
     mode: str = Field(default="read_only", pattern="^(read_only|free)$")
     ignore_https_errors: bool = False
+    policy_preset: str | None = Field(default=None, max_length=40)
+    policy_overrides: dict[str, Any] | None = None
 
 
 async def free_browsing_approved(url: str) -> bool:
@@ -3378,6 +3382,10 @@ async def live_browser_start(request: LiveBrowserStartRequest, http_request: Req
     reason = await asyncio.to_thread(scan_target_error, request.url)
     if reason:
         raise HTTPException(status_code=422, detail=f"Browser target refused: {reason}")
+    try:
+        build_policy(request.policy_preset or ("operator_free" if request.mode == "free" else "read_only"), request.policy_overrides)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid discovery policy: {exc}") from exc
     if request.mode == "free" and not await free_browsing_approved(request.url):
         raise HTTPException(status_code=422, detail="Free browsing is only allowed on approved targets (add the host to FREE_BROWSING_ALLOWLIST or use a host served by a managed ADC vServer). Use read_only mode instead.")
     try:
@@ -3405,6 +3413,8 @@ def _capture_summary(capture: dict[str, Any]) -> dict[str, Any]:
         "write_request_count": sum(1 for item in network if item.get("method") in {"POST", "PUT", "PATCH", "DELETE"}),
         "form_count": len(capture.get("forms", [])), "field_count": len(capture.get("controls", [])),
         "blocked_requests": capture.get("blocked_requests", 0), "load_error": str(capture.get("load_error", ""))[:200],
+        "coverage_status": (capture.get("coverage") or {}).get("status", "unknown"),
+        "policy_fingerprint": capture.get("policy_fingerprint", ""),
     }
 
 
@@ -3419,6 +3429,7 @@ def save_live_capture_sync(capture: dict[str, Any]) -> None:
         )
         conn.execute("DELETE FROM live_browser_captures WHERE session_id IN (SELECT session_id FROM live_browser_captures ORDER BY ended_at DESC OFFSET %s)", (MAX_SAVED_LIVE_CAPTURES,))
         conn.commit()
+    save_run(db_connect, capture)  # durable run record with the immutable permission snapshot
 
 
 def list_live_captures_sync() -> list[dict[str, Any]]:
@@ -3621,3 +3632,6 @@ async def discovery_openapi(job_id: str) -> dict[str, Any]:
     hostname = (job.get("scope") or {}).get("hostname", "")
     model, _ = build_discovery_candidate(hostname, job_id, profile, analysis, None)
     return openapi_from_model(model.model_dump(mode="json"))
+
+
+app.include_router(build_discovery_runs_router(db_connect))
