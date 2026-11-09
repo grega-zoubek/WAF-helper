@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "services" / "netscaler-adapter"))
+# The signature-sync image copies rule_catalog.py to /opt/waf; mirror that layout here.
+sys.path.insert(0, str(Path(__file__).parents[1] / "services" / "netscaler-adapter" / "app"))
 sys.path.insert(0, str(Path(__file__).parents[1] / "services" / "signature-sync"))
 
 from app.sync import SyncConfig, parse_mapping, sync_once
