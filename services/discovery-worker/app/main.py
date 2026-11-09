@@ -173,7 +173,7 @@ def redact_url(value: str) -> str:
 
 
 def safe_headers(response: httpx.Response) -> dict[str, str]:
-    names = {"server", "x-powered-by", "x-generator", "x-aspnet-version", "x-aspnetmvc-version", "x-drupal-cache", "x-runtime", "x-request-id", "content-type", "content-length", "cache-control", "via", "x-cache", "age", "cf-ray", "strict-transport-security", "content-security-policy", "content-security-policy-report-only", "permissions-policy", "referrer-policy", "x-frame-options", "x-content-type-options", "location", "allow", "www-authenticate", "vary"}
+    names = {"server", "x-powered-by", "x-generator", "x-aspnet-version", "x-aspnetmvc-version", "x-drupal-cache", "x-runtime", "x-request-id", "content-type", "content-length", "cache-control", "via", "x-cache", "age", "cf-ray", "strict-transport-security", "content-security-policy", "content-security-policy-report-only", "permissions-policy", "referrer-policy", "x-frame-options", "x-content-type-options", "feature-policy", "access-control-allow-origin", "location", "allow", "www-authenticate", "vary"}
     return {key: value[:500] for key, value in response.headers.items() if key.lower() in names}
 
 
@@ -339,14 +339,63 @@ async def fetch_page(client: httpx.AsyncClient, url: str, user_agent: str) -> ht
         return httpx.Response(streamed.status_code, headers=headers, content=b"".join(chunks), request=streamed.request)
 
 
-async def fetch_asset(client: httpx.AsyncClient, url: str, user_agent: str) -> tuple[httpx.Response, bytes, bool, float]:
+# Public files an operator would expect to review. Fetched with plain GETs, never with payloads.
+EXPOSURE_PATHS = ("/robots.txt", "/sitemap.xml", "/.well-known/security.txt", "/metrics", "/api-docs", "/api-docs/", "/swagger.json",
+                  "/openapi.json", "/v2/api-docs", "/actuator/health", "/health")
+
+
+def classify_exposure(path: str, status: int | None, content_type: str, head: str) -> dict[str, str] | None:
+    """Classify a public-file response. Single-page apps answer 200 text/html for everything,
+    so each kind is only reported when the content type and the first bytes agree."""
+    if status != 200:
+        return None
+    media = content_type.split(";", 1)[0].strip().lower()
+    text = head[:4000].lstrip().lower()
+    html = media in {"text/html", "application/xhtml+xml"}
+    if path == "/robots.txt" and media == "text/plain" and ("user-agent" in text or "disallow" in text):
+        return {"kind": "robots-txt", "detail": "robots.txt present; Disallow entries often list sensitive paths"}
+    if path == "/sitemap.xml" and "xml" in media and ("<urlset" in text or "<sitemapindex" in text):
+        return {"kind": "sitemap", "detail": "sitemap.xml lists public URLs"}
+    if path == "/.well-known/security.txt" and media == "text/plain" and "contact:" in text:
+        return {"kind": "security-txt", "detail": "security.txt present"}
+    if path == "/metrics" and media.startswith("text/plain") and ("# help" in text or "# type" in text):
+        return {"kind": "prometheus-metrics", "detail": "Prometheus metrics are readable without authentication"}
+    if path in {"/swagger.json", "/openapi.json", "/v2/api-docs"} and "json" in media and ('"swagger"' in text or '"openapi"' in text):
+        return {"kind": "api-schema", "detail": "OpenAPI/Swagger schema is readable without authentication"}
+    if path in {"/api-docs", "/api-docs/"} and ((html and "swagger" in text) or ("json" in media and ('"swagger"' in text or '"openapi"' in text))):
+        return {"kind": "api-docs", "detail": "API documentation is reachable without authentication"}
+    if path in {"/actuator/health", "/health"} and "json" in media and ('"status"' in text):
+        return {"kind": "health-endpoint", "detail": "Health endpoint is readable without authentication"}
+    return None
+
+
+async def exposure_checks(client: httpx.AsyncClient, job_id: str, seed: str, prefixes: list[str], delay: float, user_agent: str) -> list[dict[str, Any]]:
+    parsed = urlparse(seed)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    rows: list[dict[str, Any]] = []
+    for path in EXPOSURE_PATHS:
+        url = base + path
+        if not in_scope(url, seed, prefixes):
+            continue
+        await asyncio.sleep(delay)
+        try:
+            response, content, _, _ = await fetch_asset(client, url, user_agent, limit=64_000)
+        except httpx.HTTPError:
+            continue
+        found = classify_exposure(path, response.status_code, response.headers.get("content-type", ""), content.decode("utf-8", errors="ignore"))
+        if found:
+            rows.append(evidence_row(job_id, "exposure_check", url, "GET", response.status_code, found["detail"], {"path": path, "kind": found["kind"], "detail": found["detail"], "content_type": response.headers.get("content-type", "").split(";", 1)[0][:100], "body_retained": False}, score=0.9))
+    return rows
+
+
+async def fetch_asset(client: httpx.AsyncClient, url: str, user_agent: str, limit: int = MAX_ASSET_BYTES) -> tuple[httpx.Response, bytes, bool, float]:
     started = time.perf_counter()
     async with client.stream("GET", url, headers={"User-Agent": user_agent}) as response:
         chunks: list[bytes] = []
         total = 0
         truncated = False
         async for chunk in response.aiter_bytes():
-            remaining = MAX_ASSET_BYTES - total
+            remaining = limit - total
             if remaining <= 0:
                 truncated = True
                 break
@@ -370,6 +419,7 @@ def fingerprint(response: httpx.Response, parser: SurfaceParser | None) -> list[
         meta=parser.metas if parser else [],
         title=" ".join(parser.title_parts) if parser else "",
         forms=parser.forms if parser else [],
+        controls=parser.controls if parser else [],
     )
 
     signals: list[dict[str, Any]] = []
@@ -764,6 +814,7 @@ async def run_discovery(job: DiscoveryJob) -> None:
                     rows.append(evidence_row(job.id, "redirect", url, "GET", response.status_code, "Redirect observed", {"location_in_scope": bool(target), "target": redact_url(target) if target else "external_or_out_of_scope"}))
                     if target and target not in visited and target not in queue:
                         queue.append(target)
+            rows.extend(await exposure_checks(client, job.id, seed, scope.allowed_paths, delay, user_agent))
         await asyncio.to_thread(save_evidence_sync, rows)
         await asyncio.to_thread(save_observations_sync, observations)
         await asyncio.to_thread(save_run_sync, job, "completed", completed_at=now(), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=len(rows), phase="complete", current_url=None)

@@ -54,6 +54,7 @@ def detect_technology_signals(
     meta: Mapping[str, str] | Sequence[Mapping[str, str]] | None = None,
     title: str = "",
     forms: Sequence[Mapping[str, Any]] | None = None,
+    controls: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Return deterministic, explainable technology signals from passive HTTP evidence.
 
@@ -295,6 +296,10 @@ def detect_technology_signals(
             add("State-changing form surface", "POST form observed but not submitted", "html.form.method", 0.88, "POST", category="application-surface", family="html")
         if any("multipart/form-data" in str(item.get("enctype", "")).casefold() for item in forms):
             add("File upload surface", "Multipart form observed but not submitted", "html.form.enctype", 0.90, "multipart/form-data", category="application-surface", family="html")
+    file_inputs = [item for item in (controls or ()) if str(item.get("type", "")).casefold() == "file"]
+    if file_inputs:
+        accepts = sorted({str(item.get("accept", ""))[:60] for item in file_inputs if item.get("accept")})
+        add("File upload surface", "File input control observed but nothing uploaded", "html.input.file", 0.90, ", ".join(accepts) or "input type=file", category="application-surface", family="html")
     if re.search(r"type\s*=\s*[\"']password[\"']", body_text, re.IGNORECASE):
         add("Authentication boundary", "Password input marker observed", "html.body_marker", 0.72, "password input", category="application-surface", family="html")
 

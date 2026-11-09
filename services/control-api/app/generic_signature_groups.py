@@ -100,6 +100,9 @@ def _surface_facts(profile: dict[str, Any]) -> dict[str, Any]:
         "has_upload": any(
             isinstance(item, dict) and str(item.get("technology") or "").casefold() == "file upload surface"
             for item in evidence
+        ) or any(
+            isinstance(item, dict) and isinstance(item.get("format"), dict) and str(item["format"].get("type") or "").casefold() == "file"
+            for item in profile.get("field_formats") or []
         ),
     }
 

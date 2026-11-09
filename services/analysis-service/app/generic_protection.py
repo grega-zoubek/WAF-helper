@@ -26,6 +26,31 @@ def _evidence_technologies(profile: dict[str, Any]) -> set[str]:
     }
 
 
+_INPUT_TAGS = {"input", "textarea", "select"}
+_NON_FIELD_TYPES = {"button", "submit", "reset", "image"}
+
+
+def input_fields(profile: dict[str, Any]) -> set[tuple[str, str, str]]:
+    """Distinct data-entry controls. Buttons are not fields; search components are."""
+    found: set[tuple[str, str, str]] = set()
+    for item in profile.get("field_formats", []) or []:
+        if not isinstance(item, dict):
+            continue
+        tag = str(item.get("tag") or "").casefold()
+        kind = str((item.get("format") or {}).get("type") or "").casefold() if isinstance(item.get("format"), dict) else ""
+        if kind in _NON_FIELD_TYPES or (tag and tag not in _INPUT_TAGS and kind != "search-component"):
+            continue
+        found.add((str(item.get("name") or item.get("id") or ""), kind, tag))
+    return found
+
+
+def has_file_input(profile: dict[str, Any]) -> bool:
+    return any(
+        isinstance(item, dict) and isinstance(item.get("format"), dict) and str(item["format"].get("type") or "").casefold() == "file"
+        for item in profile.get("field_formats", []) or []
+    )
+
+
 def _surface_facts(profile: dict[str, Any]) -> dict[str, Any]:
     evidence = profile.get("evidence", []) or []
     evidence_technologies = _evidence_technologies(profile)
@@ -33,12 +58,12 @@ def _surface_facts(profile: dict[str, Any]) -> dict[str, Any]:
     static_auth = [item for item in static_candidates if str((item.get("metadata") or {}).get("endpoint_class", "")) == "authentication"]
     static_api = [item for item in static_candidates if str((item.get("metadata") or {}).get("endpoint_class", "")) == "api"]
     route_count = len(profile.get("route_inventory", []) or [])
-    field_count = len(profile.get("field_formats", []) or [])
+    field_count = len(input_fields(profile))
     auth_surface_count = len(profile.get("auth_surfaces", []) or [])
     api_endpoint_count = len(profile.get("api_endpoints", []) or [])
     has_forms = bool(field_count or {"html forms", "state-changing form surface"} & evidence_technologies)
     has_auth = bool(auth_surface_count or static_auth or "authentication boundary" in evidence_technologies)
-    has_upload = "file upload surface" in evidence_technologies
+    has_upload = "file upload surface" in evidence_technologies or has_file_input(profile)
     has_api = bool(api_endpoint_count or static_api or {"rest or json api", "graphql", "xml or soap"} & (_technology_keys(profile) | evidence_technologies))
     has_client = bool({"angular", "react", "vue.js", "next.js", "nuxt", "spa"} & _technology_keys(profile))
     has_cookies = any(
