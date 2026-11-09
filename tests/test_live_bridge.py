@@ -64,6 +64,13 @@ class AllowlistTests(unittest.TestCase):
         with patch.dict(os.environ, {"SCAN_TARGET_ALLOWLIST": ""}):
             self.assertFalse(explicitly_allowlisted("http://192.168.11.91/", resolve=False))
 
+    def test_free_browsing_allowlist_does_not_restrict_other_scans(self):
+        from app.scan_scope import scan_target_error
+        with patch.dict(os.environ, {"FREE_BROWSING_ALLOWLIST": "juice-shop", "SCAN_TARGET_ALLOWLIST": ""}):
+            self.assertTrue(explicitly_allowlisted("http://juice-shop:3000/", resolve=False))
+            self.assertFalse(explicitly_allowlisted("http://192.168.1.20/", resolve=False))
+            self.assertIsNone(scan_target_error("http://192.168.1.20/", resolve=False))
+
 
 if __name__ == "__main__":
     unittest.main()

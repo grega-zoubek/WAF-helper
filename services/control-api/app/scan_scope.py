@@ -23,8 +23,8 @@ def _blocked_ip(address: ipaddress._BaseAddress) -> bool:
     return address.is_loopback or address.is_link_local or address.is_unspecified or address.is_multicast
 
 
-def _allowlist() -> list[str]:
-    return [item.strip().casefold() for item in os.getenv("SCAN_TARGET_ALLOWLIST", "").split(",") if item.strip()]
+def _allowlist(variable: str = "SCAN_TARGET_ALLOWLIST") -> list[str]:
+    return [item.strip().casefold() for item in os.getenv(variable, "").split(",") if item.strip()]
 
 
 def _in_allowlist(host: str, addresses: list[ipaddress._BaseAddress], entries: list[str]) -> bool:
@@ -68,8 +68,11 @@ def scan_target_error(url: str, *, resolve: bool = True) -> str | None:
 
 
 def explicitly_allowlisted(url: str, *, resolve: bool = True) -> bool:
-    """True only when SCAN_TARGET_ALLOWLIST is set and contains the URL's host/IP/CIDR."""
-    entries = _allowlist()
+    """True when FREE_BROWSING_ALLOWLIST (or SCAN_TARGET_ALLOWLIST) contains the URL's host/IP/CIDR.
+
+    FREE_BROWSING_ALLOWLIST only approves free-mode browsing; it never restricts other scans.
+    """
+    entries = _allowlist("FREE_BROWSING_ALLOWLIST") + _allowlist("SCAN_TARGET_ALLOWLIST")
     host = (urlparse(url).hostname or "").casefold().rstrip(".")
     if not entries or not host:
         return False

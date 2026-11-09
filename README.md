@@ -97,7 +97,7 @@ signature category cannot independently confirm that a target runs that technolo
 The lab has a **Live browser**: Chromium streams to a canvas in the GUI over a WebSocket
 (`/api/live-browser/sessions/{id}/ws`) and your mouse, wheel and keyboard drive it.
 Two modes: `read_only` (GET only) and `free` (same-host POST/PUT/DELETE allowed). `free` is
-refused unless the target is listed in `SCAN_TARGET_ALLOWLIST` (hostnames, IPs or CIDRs,
+refused unless the target is listed in `FREE_BROWSING_ALLOWLIST` (hostnames, IPs or CIDRs,
 set on control-api) or is served by a managed ADC vServer. Only metadata is recorded:
 field names, value classes, length buckets and request shapes. Typed values, request
 bodies, cookies and screen frames are never stored. Compose-internal hosts, loopback and
@@ -111,9 +111,10 @@ docker compose up -d --build    # also starts a Juice Shop test target
 ```
 
 Open `https://localhost/` (accept the self-signed certificate) and sign in as `operator`.
-In **Positive security lab > Live browser** use `http://juice-shop:3000/`; `SCAN_TARGET_ALLOWLIST`
-in `.env` already approves it for free browsing. To test another app, add its host or IP to that
-variable and recreate `control-api`. Loopback and `host.docker.internal` are refused; use the
+In **Positive security lab > Live browser** use `http://juice-shop:3000/`; `FREE_BROWSING_ALLOWLIST`
+in `.env` already approves it for free browsing. Read-only browsing and normal scans work on any
+non-internal host. To allow free browsing on another app, add its host or IP to that variable and run
+`docker compose up -d control-api`. Loopback and `host.docker.internal` are refused; use the
 laptop's LAN IP for apps running on the host. ADC access stays unconfigured until you fill
 `NETSCALER_HOST`/`NETSCALER_USERNAME` in `.env` and `secrets/netscaler_password`.
 The signature catalog needs the Citrix public key in `signature-cache/citrix_public.pem`

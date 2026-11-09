@@ -3375,7 +3375,7 @@ async def live_browser_start(request: LiveBrowserStartRequest, http_request: Req
     if reason:
         raise HTTPException(status_code=422, detail=f"Browser target refused: {reason}")
     if request.mode == "free" and not await free_browsing_approved(request.url):
-        raise HTTPException(status_code=422, detail="Free browsing is only allowed on approved targets (add the host to SCAN_TARGET_ALLOWLIST or use a host served by a managed ADC vServer). Use read_only mode instead.")
+        raise HTTPException(status_code=422, detail="Free browsing is only allowed on approved targets (add the host to FREE_BROWSING_ALLOWLIST or use a host served by a managed ADC vServer). Use read_only mode instead.")
     try:
         async with httpx.AsyncClient(timeout=45) as client:
             response = await client.post(f"{RUNTIME_INSPECTOR_URL}/live/sessions", json=request.model_dump())

@@ -38,8 +38,10 @@ if [ ! -e .env ]; then
 WAF_DB_PASSWORD=$(openssl rand -hex 16)
 WAF_PUBLIC_HOST=$HOST
 COMPOSE_FILE=docker-compose.yml:docker-compose.local.yml
-# Hosts the live browser may use in free mode (comma-separated names, IPs or CIDRs).
-SCAN_TARGET_ALLOWLIST=juice-shop
+# Hosts approved for FREE live browsing (POST/PUT/DELETE). Comma-separated names, IPs or CIDRs.
+FREE_BROWSING_ALLOWLIST=juice-shop
+# Optional hard restriction of ALL scans to these targets. Leave empty to scan any non-internal host.
+SCAN_TARGET_ALLOWLIST=
 NETSCALER_WRITE_ENABLED=false
 NETSCALER_HOST=
 NETSCALER_USERNAME=

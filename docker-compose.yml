@@ -12,6 +12,7 @@ services:
       WAF_SESSION_SECRET_FILE: /run/secrets/waf_session_secret
       NETSCALER_WRITE_ENABLED: "${NETSCALER_WRITE_ENABLED:-false}"
       SCAN_TARGET_ALLOWLIST: "${SCAN_TARGET_ALLOWLIST:-}"
+      FREE_BROWSING_ALLOWLIST: "${FREE_BROWSING_ALLOWLIST:-}"
       SIGNATURE_UPSTREAM_INDEX_FILE: /run/upstream-signatures/latest.json
     ports:
       - "127.0.0.1:8110:8090"
