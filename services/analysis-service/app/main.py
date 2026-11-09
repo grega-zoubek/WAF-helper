@@ -7,7 +7,8 @@ from urllib.parse import urlparse
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-from app.generic_protection import automation_policy, build_generic_protection_intents
+from app.security_checks import build_security_check_recommendations
+from app.generic_protection import automation_policy, build_generic_protection_intents, has_file_input, input_fields
 
 app = FastAPI(title="WAF Intelligence Analysis Service", version="0.1.0")
 
@@ -207,13 +208,13 @@ def build_protection_plan(profile: dict[str, Any]) -> dict[str, Any]:
         if item.get("evidence_type") == "technology"
         and item.get("technology") in {"HTML forms", "State-changing form surface", "Authentication boundary", "File upload surface"}
     ]
-    if form_items or profile.get("field_formats"):
+    if form_items or input_fields(profile):
         selected.append("form-input")
         selection_reasons.append("Form controls or field format evidence was observed.")
     if any(item.get("technology") == "Authentication boundary" for item in form_items):
         selected.append("authentication")
         selection_reasons.append("An authentication boundary was observed.")
-    if any(item.get("technology") == "File upload surface" for item in form_items):
+    if any(item.get("technology") == "File upload surface" for item in form_items) or has_file_input(profile):
         selected.append("file-upload")
         selection_reasons.append("A file upload surface was observed.")
 
@@ -378,6 +379,8 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
     header_plan: list[dict[str, Any]] = []
     for header, display_name, area, suggested_value, mode, reason in header_specs:
         values = sorted(set(observed_header_values.get(header, [])))
+        if header == "permissions-policy" and not values:
+            values = [f"(legacy Feature-Policy) {value}" for value in sorted(set(observed_header_values.get("feature-policy", [])))]
         report_values = sorted(set(observed_header_values.get("content-security-policy-report-only", []))) if header == "content-security-policy" else []
         effective_values = values or report_values
         header_plan.append({
@@ -392,6 +395,25 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
         if not effective_values:
             gaps.append(f"{display_name} was not observed in the sampled responses")
 
+    cors_values = set(observed_header_values.get("access-control-allow-origin", []))
+    exposure_findings = [{"kind": item.get("metadata", {}).get("kind"), "path": item.get("metadata", {}).get("path"), "detail": item.get("metadata", {}).get("detail")}
+                         for item in request.profile.get("evidence", []) if item.get("evidence_type") == "exposure_check"]
+    if "*" in cors_values:
+        exposure_findings.append({"kind": "cors-wildcard", "path": "(responses)", "detail": "Access-Control-Allow-Origin: * allows any website to read responses"})
+    for finding in exposure_findings:
+        informational = finding["kind"] in {"robots-txt", "security-txt", "sitemap"}
+        area = "CORS policy" if finding["kind"] == "cors-wildcard" else "Public information files" if informational else "Exposed diagnostics"
+        protections.append({"area": area, "reason": f"{finding['kind']}: {finding['path']}", "priority": "low" if informational else "high"})
+    # Passive pointer for WAF review: where user-supplied data most likely reaches a SQL/LDAP/command
+    # context. This is derived from field roles only; nothing is sent to the application.
+    injection_surface: list[dict[str, Any]] = []
+    for form in request.profile.get("form_endpoints", []) or []:
+        prone = [f for f in form.get("fields", []) if f.get("injection_prone")]
+        if prone:
+            injection_surface.append({"endpoint": f"{form.get('method')} {form.get('path_template')}", "fields": [f["name"] for f in prone][:20], "roles": sorted({f["role"] for f in prone}), "source": "form"})
+    for role in request.profile.get("field_roles", []) or []:
+        if role.get("injection_prone") and role.get("role") in {"search", "numeric"}:
+            injection_surface.append({"endpoint": "(client-side control)", "fields": role.get("examples", [])[:10], "roles": [role["role"]], "source": "page-controls"})
     if not observations:
         gaps.append("No sanitized HTTP observations are available")
     else:
@@ -438,6 +460,9 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
             "target": "NetScaler LB response path",
             "entries": header_plan,
         },
+        "exposure_findings": exposure_findings,
+        "injection_surface": injection_surface[:40],
+        "security_checks": build_security_check_recommendations(request.profile, injection_surface),
         "evidence_gaps": gaps,
         "observation_count": len(observations),
         "route_candidate_count": len(route_candidates),

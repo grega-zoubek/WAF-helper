@@ -55,6 +55,30 @@ class LiveCandidateTests(unittest.TestCase):
         self.assertNotIn("POST", {e.method for e in document.endpoints})
 
 
+class DiscoveryFormModelTests(unittest.TestCase):
+    def test_form_endpoints_and_templated_paths_reach_the_candidate(self):
+        from app.positive_learning import build_discovery_candidate
+        profile = {
+            "route_inventory": [{"evidence_type": "route", "request_method": "GET", "status_code": 200, "source_url": "https://shop.test/product/42", "metadata": {"content_type": "text/html"}},
+                                {"evidence_type": "route", "request_method": "GET", "status_code": 200, "source_url": "https://shop.test/product/43", "metadata": {"content_type": "text/html"}}],
+            "form_endpoints": [{"method": "POST", "path_template": "/rest/user/login", "fields": [
+                {"name": "email", "role": "email", "type": "email", "required": True, "injection_prone": True},
+                {"name": "password", "role": "password", "type": "password", "required": True, "injection_prone": False}]},
+                {"method": "GET", "path_template": "/search", "fields": [{"name": "q", "role": "search", "type": "search", "required": False, "injection_prone": True}]}],
+            "technologies": [],
+        }
+        model, summary = build_discovery_candidate("shop.test", "job-1", profile, {})
+        endpoints = {(e.method, e.path_template): e for e in model.endpoints}
+        self.assertIn(("GET", "/product/{id:int}"), endpoints)
+        self.assertEqual(len([e for e in model.endpoints if e.path_template.startswith("/product/")]), 1)
+        login = endpoints[("POST", "/rest/user/login")]
+        fields = {f.name: f for f in login.fields}
+        self.assertEqual(fields["password"].sensitivity.value, "credential")
+        self.assertEqual(fields["email"].location.value, "form")
+        self.assertIn("q", {f.name for f in endpoints[("GET", "/search")].fields})
+        self.assertFalse([f for e in model.endpoints for f in e.fields if f.location.value == "response_header"])
+
+
 class AllowlistTests(unittest.TestCase):
     def test_only_listed_hosts_are_explicitly_allowlisted(self):
         with patch.dict(os.environ, {"SCAN_TARGET_ALLOWLIST": "192.168.11.0/24,app.example.test"}):

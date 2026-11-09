@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
 from app.technology_detection import DETECTOR_VERSION, detect_technology_signals
 from app.signature_technology import build_signature_technology_context
+from app.field_roles import classify_field, template_path
 
 app = FastAPI(title="WAF Discovery Worker", version="0.4.0")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -53,6 +54,9 @@ class SurfaceParser(HTMLParser):
         self._in_title = False
         self.inline_script_parts: list[str] = []
         self._in_script = False
+        self._form_index = -1  # index of the <form> currently open, -1 outside any form
+        self._label_for: dict[str, str] = {}
+        self._label_stack: list[dict[str, Any]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {key.lower(): value or "" for key, value in attrs}
@@ -70,6 +74,9 @@ class SurfaceParser(HTMLParser):
                 "method": values.get("method", "get").upper(),
                 "enctype": values.get("enctype", ""),
             })
+            self._form_index = len(self.forms) - 1
+        elif tag == "label":
+            self._label_stack.append({"for": values.get("for", ""), "text": [], "controls": []})
         elif tag in {"input", "button", "select", "textarea"}:
             control = {
                 "tag": tag,
@@ -85,8 +92,12 @@ class SurfaceParser(HTMLParser):
                 "minlength": values.get("minlength", "")[:20],
                 "maxlength": values.get("maxlength", "")[:20],
                 "accept": values.get("accept", "")[:200],
+                "form_index": self._form_index,
+                "label": "",
             }
             self.controls.append(control)
+            if self._label_stack and not self._label_stack[-1]["for"]:
+                self._label_stack[-1]["controls"].append(control)
             search_text = " ".join(control[key] for key in ("type", "name", "id", "aria_label")).lower()
             if tag == "input" and (control["type"].lower() == "search" or "search" in search_text):
                 self.search_surfaces.append({"tag": tag, "type": control["type"], "name": control["name"], "id": control["id"], "aria_label": control["aria_label"]})
@@ -100,12 +111,29 @@ class SurfaceParser(HTMLParser):
             self._in_title = True
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "form":
+            self._form_index = -1
+        elif tag == "label" and self._label_stack:
+            label = self._label_stack.pop()
+            text = " ".join(" ".join(label["text"]).split())[:150]
+            if label["for"]:
+                self._label_for[label["for"]] = text
+            for control in label["controls"]:
+                control["label"] = text
         if tag == "title":
             self._in_title = False
         elif tag == "script":
             self._in_script = False
 
+    def finalize(self) -> None:
+        """Attach <label for=...> text once the whole document has been read."""
+        for control in self.controls:
+            if not control["label"] and control["id"] in self._label_for:
+                control["label"] = self._label_for[control["id"]]
+
     def handle_data(self, data: str) -> None:
+        if self._label_stack and data.strip():
+            self._label_stack[-1]["text"].append(data.strip())
         if self._in_title:
             self.title_parts.append(data.strip())
         elif self._in_script and sum(len(part) for part in self.inline_script_parts) < 1_000_000:
@@ -173,7 +201,7 @@ def redact_url(value: str) -> str:
 
 
 def safe_headers(response: httpx.Response) -> dict[str, str]:
-    names = {"server", "x-powered-by", "x-generator", "x-aspnet-version", "x-aspnetmvc-version", "x-drupal-cache", "x-runtime", "x-request-id", "content-type", "content-length", "cache-control", "via", "x-cache", "age", "cf-ray", "strict-transport-security", "content-security-policy", "content-security-policy-report-only", "permissions-policy", "referrer-policy", "x-frame-options", "x-content-type-options", "location", "allow", "www-authenticate", "vary"}
+    names = {"server", "x-powered-by", "x-generator", "x-aspnet-version", "x-aspnetmvc-version", "x-drupal-cache", "x-runtime", "x-request-id", "content-type", "content-length", "cache-control", "via", "x-cache", "age", "cf-ray", "strict-transport-security", "content-security-policy", "content-security-policy-report-only", "permissions-policy", "referrer-policy", "x-frame-options", "x-content-type-options", "feature-policy", "access-control-allow-origin", "location", "allow", "www-authenticate", "vary"}
     return {key: value[:500] for key, value in response.headers.items() if key.lower() in names}
 
 
@@ -339,14 +367,63 @@ async def fetch_page(client: httpx.AsyncClient, url: str, user_agent: str) -> ht
         return httpx.Response(streamed.status_code, headers=headers, content=b"".join(chunks), request=streamed.request)
 
 
-async def fetch_asset(client: httpx.AsyncClient, url: str, user_agent: str) -> tuple[httpx.Response, bytes, bool, float]:
+# Public files an operator would expect to review. Fetched with plain GETs, never with payloads.
+EXPOSURE_PATHS = ("/robots.txt", "/sitemap.xml", "/.well-known/security.txt", "/metrics", "/api-docs", "/api-docs/", "/swagger.json",
+                  "/openapi.json", "/v2/api-docs", "/actuator/health", "/health")
+
+
+def classify_exposure(path: str, status: int | None, content_type: str, head: str) -> dict[str, str] | None:
+    """Classify a public-file response. Single-page apps answer 200 text/html for everything,
+    so each kind is only reported when the content type and the first bytes agree."""
+    if status != 200:
+        return None
+    media = content_type.split(";", 1)[0].strip().lower()
+    text = head[:4000].lstrip().lower()
+    html = media in {"text/html", "application/xhtml+xml"}
+    if path == "/robots.txt" and media == "text/plain" and ("user-agent" in text or "disallow" in text):
+        return {"kind": "robots-txt", "detail": "robots.txt present; Disallow entries often list sensitive paths"}
+    if path == "/sitemap.xml" and "xml" in media and ("<urlset" in text or "<sitemapindex" in text):
+        return {"kind": "sitemap", "detail": "sitemap.xml lists public URLs"}
+    if path == "/.well-known/security.txt" and media == "text/plain" and "contact:" in text:
+        return {"kind": "security-txt", "detail": "security.txt present"}
+    if path == "/metrics" and media.startswith("text/plain") and ("# help" in text or "# type" in text):
+        return {"kind": "prometheus-metrics", "detail": "Prometheus metrics are readable without authentication"}
+    if path in {"/swagger.json", "/openapi.json", "/v2/api-docs"} and "json" in media and ('"swagger"' in text or '"openapi"' in text):
+        return {"kind": "api-schema", "detail": "OpenAPI/Swagger schema is readable without authentication"}
+    if path in {"/api-docs", "/api-docs/"} and ((html and "swagger" in text) or ("json" in media and ('"swagger"' in text or '"openapi"' in text))):
+        return {"kind": "api-docs", "detail": "API documentation is reachable without authentication"}
+    if path in {"/actuator/health", "/health"} and "json" in media and ('"status"' in text):
+        return {"kind": "health-endpoint", "detail": "Health endpoint is readable without authentication"}
+    return None
+
+
+async def exposure_checks(client: httpx.AsyncClient, job_id: str, seed: str, prefixes: list[str], delay: float, user_agent: str) -> list[dict[str, Any]]:
+    parsed = urlparse(seed)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    rows: list[dict[str, Any]] = []
+    for path in EXPOSURE_PATHS:
+        url = base + path
+        if not in_scope(url, seed, prefixes):
+            continue
+        await asyncio.sleep(delay)
+        try:
+            response, content, _, _ = await fetch_asset(client, url, user_agent, limit=64_000)
+        except httpx.HTTPError:
+            continue
+        found = classify_exposure(path, response.status_code, response.headers.get("content-type", ""), content.decode("utf-8", errors="ignore"))
+        if found:
+            rows.append(evidence_row(job_id, "exposure_check", url, "GET", response.status_code, found["detail"], {"path": path, "kind": found["kind"], "detail": found["detail"], "content_type": response.headers.get("content-type", "").split(";", 1)[0][:100], "body_retained": False}, score=0.9))
+    return rows
+
+
+async def fetch_asset(client: httpx.AsyncClient, url: str, user_agent: str, limit: int = MAX_ASSET_BYTES) -> tuple[httpx.Response, bytes, bool, float]:
     started = time.perf_counter()
     async with client.stream("GET", url, headers={"User-Agent": user_agent}) as response:
         chunks: list[bytes] = []
         total = 0
         truncated = False
         async for chunk in response.aiter_bytes():
-            remaining = MAX_ASSET_BYTES - total
+            remaining = limit - total
             if remaining <= 0:
                 truncated = True
                 break
@@ -370,6 +447,7 @@ def fingerprint(response: httpx.Response, parser: SurfaceParser | None) -> list[
         meta=parser.metas if parser else [],
         title=" ".join(parser.title_parts) if parser else "",
         forms=parser.forms if parser else [],
+        controls=parser.controls if parser else [],
     )
 
     signals: list[dict[str, Any]] = []
@@ -581,13 +659,24 @@ def profile_sync(job_id: str) -> dict[str, Any]:
                     item["source_urls"].append(row["source_url"])
             if metadata.get("security_headers"):
                 runtime_security.append({"source_url": row["source_url"], "headers": metadata.get("security_headers", {})})
+            page_forms = (row.get("metadata") or {}).get("forms", []) or []
             for control in row["metadata"].get("controls", []):
+                verdict = classify_field({**control, "label": control.get("label") or (control.get("labels") or [""])[0]})
+                if verdict is None:
+                    # buttons are not data-entry fields, but keep them out of the field list explicitly
+                    field_formats.append({"source_url": row["source_url"], "tag": control.get("tag", ""), "name": control.get("name", ""), "id": control.get("id", ""), "required": False, "role": "action", "format": {"type": control.get("type", "")}})
+                    continue
+                form_index = control.get("form_index", -1)
+                form = page_forms[form_index] if isinstance(form_index, int) and 0 <= form_index < len(page_forms) else None
                 field_formats.append({
                     "source_url": row["source_url"],
                     "tag": control.get("tag", ""),
                     "name": control.get("name", ""),
                     "id": control.get("id", ""),
                     "required": bool(control.get("required", False)),
+                    "role": verdict["role"], "role_signals": verdict["signals"], "injection_prone": verdict["injection_prone"], "sensitivity": verdict["sensitivity"],
+                    "label": control.get("label") or (control.get("labels") or [""])[0],
+                    "form": {"index": form_index, "action": form.get("action", ""), "method": form.get("method", "GET")} if form else None,
                     "format": {
                         "type": control.get("type", ""),
                         "pattern": control.get("pattern", ""),
@@ -599,6 +688,42 @@ def profile_sync(job_id: str) -> dict[str, Any]:
                         "placeholder": control.get("placeholder", ""),
                     },
                 })
+    role_map: dict[str, dict[str, Any]] = {}
+    form_map: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in field_formats:
+        if item.get("role") == "action":
+            continue
+        label = item.get("name") or item.get("id") or item.get("label") or "(unnamed)"
+        entry = role_map.setdefault(item["role"], {"role": item["role"], "injection_prone": item["injection_prone"], "sensitivity": item["sensitivity"], "_fields": set(), "pages": set()})
+        entry["_fields"].add(label)
+        entry["pages"].add(item["source_url"])
+        if item.get("form"):
+            page = urlparse(item["source_url"])
+            if not item["form"]["action"] and page.fragment.startswith("/"):
+                # single-page app form: no action, submitted by script; keyed by its client route
+                key = ("SCRIPT", template_path(page.fragment.split("?", 1)[0]))
+            else:
+                target = urlparse(urljoin(item["source_url"], item["form"]["action"] or item["source_url"]))
+                key = (item["form"]["method"].upper(), template_path(target.path or "/"))
+            form = form_map.setdefault(key, {"method": key[0], "path_template": key[1], "_fields": {}, "pages": set()})
+            form["_fields"].setdefault(label, {"name": label, "role": item["role"], "type": item["format"]["type"], "required": item["required"], "injection_prone": item["injection_prone"]})
+            form["pages"].add(item["source_url"])
+    field_roles = sorted(
+        ({"role": e["role"], "distinct_fields": len(e["_fields"]), "examples": sorted(e["_fields"])[:6], "injection_prone": e["injection_prone"], "sensitivity": e["sensitivity"], "page_count": len(e["pages"])} for e in role_map.values()),
+        key=lambda e: (not e["injection_prone"], -e["distinct_fields"]))
+    form_endpoints = [{"method": f["method"], "path_template": f["path_template"], "fields": list(f["_fields"].values()), "page_count": len(f["pages"])} for f in form_map.values()]
+    seed_row = next((row for row in evidence if row["evidence_type"] == "route"), None)
+    seed_url = seed_row["source_url"] if seed_row else ""
+    entry_points = [seed_url] if seed_url else []
+    discovered = [row for row in evidence if row["evidence_type"] == "route_discovered"]
+    for row in discovered:
+        meta = row.get("metadata") or {}
+        client_route = "#/" in row["source_url"] and meta.get("discovery_source") in {"javascript_bundle", "inline_javascript"}
+        linked_from_seed = meta.get("discovery_source") == "html_link" and meta.get("source_page") == seed_url
+        if (linked_from_seed or client_route) and row["source_url"] not in entry_points:
+            entry_points.append(row["source_url"])
+    start_urls = {"seed": seed_url, "entry_points": entry_points[:100], "deep_route_count": max(0, len({row["source_url"] for row in discovered}) - max(0, len(entry_points) - 1)),
+                  "note": "Entry points are the seed, the links on it and client-side (#/) routes, which can be opened directly. Other URLs were reached only by following links from deeper pages, so a Start URL check should allow them by navigation."}
     grouped: dict[str, dict[str, Any]] = {}
     for row in technology_rows:
         technology = row["technology"]
@@ -657,6 +782,9 @@ def profile_sync(job_id: str) -> dict[str, Any]:
         "route_inventory": route_inventory,
         "search_surfaces": search_surfaces,
         "field_formats": field_formats,
+        "field_roles": field_roles,
+        "form_endpoints": form_endpoints,
+        "start_urls": start_urls,
         "auth_surfaces": auth_surfaces,
         "api_endpoints": list(api_endpoint_map.values()),
         "runtime_security": runtime_security,
@@ -707,6 +835,7 @@ async def run_discovery(job: DiscoveryJob) -> None:
                 if "text/html" in content_type or "application/xhtml" in content_type:
                     parser = SurfaceParser()
                     parser.feed(response.text[:2_000_000])
+                    parser.finalize()
                     for item in parser.links:
                         candidate = normalize_url(item, url, seed, scope.allowed_paths)
                         if candidate and candidate not in visited and candidate not in queue:
@@ -764,6 +893,7 @@ async def run_discovery(job: DiscoveryJob) -> None:
                     rows.append(evidence_row(job.id, "redirect", url, "GET", response.status_code, "Redirect observed", {"location_in_scope": bool(target), "target": redact_url(target) if target else "external_or_out_of_scope"}))
                     if target and target not in visited and target not in queue:
                         queue.append(target)
+            rows.extend(await exposure_checks(client, job.id, seed, scope.allowed_paths, delay, user_agent))
         await asyncio.to_thread(save_evidence_sync, rows)
         await asyncio.to_thread(save_observations_sync, observations)
         await asyncio.to_thread(save_run_sync, job, "completed", completed_at=now(), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=len(rows), phase="complete", current_url=None)
