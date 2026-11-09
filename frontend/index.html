@@ -332,6 +332,7 @@
           <button id="live-inspect" class="secondary" type="button">Inspect element</button><button id="live-candidate" class="secondary" type="button">Generate candidate</button><button id="live-stop" class="secondary" type="button">Stop</button>
         </div>
         <canvas id="live-canvas" tabindex="0" width="1280" height="800" style="width:100%;max-width:1280px;border:1px solid #d9dee3;border-radius:6px;background:#f7f8fa;outline:none"></canvas>
+        <div id="live-diagnostics" class="notice" hidden></div>
         <div id="live-inspected" class="notice" hidden></div>
         <div id="live-panels"></div>
         <div id="live-candidate-out" class="notice" hidden></div>
@@ -2099,7 +2100,7 @@
     (() => {
       const $ = selector => document.querySelector(selector);
       const canvas = $('#live-canvas'), context2d = canvas.getContext('2d');
-      let socket = null, sessionId = null, mode = null, frameW = 1280, frameH = 800, inspecting = false, lastMove = 0, decoding = false;
+      let framesSeen = 0, startedAt = 0, socket = null, sessionId = null, mode = null, frameW = 1280, frameH = 800, inspecting = false, lastMove = 0, decoding = false;
       const send = message => { if (socket && socket.readyState === 1) socket.send(JSON.stringify(message)); };
       const modifiers = e => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
       const point = e => { const r = canvas.getBoundingClientRect(); return {x: (e.clientX - r.left) * frameW / r.width, y: (e.clientY - r.top) * frameH / r.height}; };
@@ -2110,10 +2111,19 @@
         const image = new Image();
         image.onload = () => { if (canvas.width !== image.naturalWidth || canvas.height !== image.naturalHeight) { canvas.width = image.naturalWidth; canvas.height = image.naturalHeight; } context2d.drawImage(image, 0, 0); decoding = false; };
         image.onerror = () => { decoding = false; };
-        frameW = message.w || frameW; frameH = message.h || frameH;
+        framesSeen++; frameW = message.w || frameW; frameH = message.h || frameH;
         image.src = 'data:image/jpeg;base64,' + message.data;
       }
+      function renderDiagnostics(snapshot) {
+        const notes = [];
+        if (snapshot.load_error) notes.push(`Page load problem: <code>${escapeHtml(snapshot.load_error)}</code>${/CERT|SSL/i.test(snapshot.load_error) ? ' (tick "Ignore target HTTPS certificate errors" for lab targets)' : ''}`);
+        const blocked = Object.entries(snapshot.blocked_hosts || {});
+        if (blocked.length) notes.push(`Blocked by the ${escapeHtml(mode)} policy (${escapeHtml(snapshot.blocked_requests)} requests): ` + blocked.map(([k, v]) => `<code>${escapeHtml(k)}</code> ×${escapeHtml(v)}`).join(', ') + (mode === 'read_only' ? '. Read-only blocks every cross-host and non-GET request, so pages that load scripts or styles from another host can look blank; use Free mode.' : '.'));
+        if (!framesSeen && performance.now() - startedAt > 4000) notes.push('No video frames received yet. The page may still be loading, or the browser may not be repainting; try Reload.');
+        const box = $('#live-diagnostics'); box.hidden = !notes.length; box.innerHTML = notes.join('<br>');
+      }
       function renderSnapshot(snapshot) {
+        renderDiagnostics(snapshot);
         const navInput = $('#live-nav-url');
         if (document.activeElement !== navInput && snapshot.url) navInput.value = snapshot.url;
         const forms = (snapshot.forms || []).map(f => `<tr><td>${escapeHtml(f.id || f.name || '#' + f.index)}</td><td>${escapeHtml(f.method)}</td><td><code>${escapeHtml(f.action)}</code></td><td>${escapeHtml(f.field_count)}</td></tr>`).join('');
@@ -2152,7 +2162,7 @@
           const parsed = new URL(url);
           const paths = $('#live-paths').value.split(',').map(v => v.trim()).filter(Boolean);
           const session = await api('/api/live-browser/sessions', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url, hostname: parsed.hostname, allowed_paths: paths.length ? paths : ['/'], mode: $('#live-mode').value, ignore_https_errors: $('#live-ignore-tls').checked})});
-          sessionId = session.id; mode = session.mode;
+          sessionId = session.id; mode = session.mode; framesSeen = 0; startedAt = performance.now();
           $('#live-banner').textContent = mode === 'free' ? 'Free browsing: state-changing requests (POST/PUT/DELETE) are allowed on this approved target. Values you type are never stored; only field names, value classes and request shapes are recorded.' : 'Read-only: only GET requests leave the browser; form submissions are blocked.';
           $('#live-session').hidden = false; $('#live-candidate-out').hidden = true; $('#live-inspected').hidden = true; $('#live-panels').innerHTML = '';
           socket = new WebSocket(`wss://${location.host}/api/live-browser/sessions/${session.id}/ws`);

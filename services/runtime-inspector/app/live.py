@@ -251,7 +251,7 @@ async def create_session(browser: Any, request: LiveSessionRequest) -> dict[str,
         session: dict[str, Any] = {
             "id": session_id, "mode": request.mode, "hostname": request.hostname.lower(), "allowed_paths": request.allowed_paths or ["/"],
             "context": context, "page": None, "cdp": None, "viewport": VIEWPORT, "queue": asyncio.Queue(maxsize=2),
-            "network": deque(maxlen=MAX_NETWORK), "events": deque(maxlen=MAX_EVENTS), "blocked": 0, "tasks": [],
+            "network": deque(maxlen=MAX_NETWORK), "events": deque(maxlen=MAX_EVENTS), "blocked": 0, "blocked_hosts": {}, "load_error": "", "tasks": [],
             "ws": None, "ws_connected": False, "ever_connected": False, "closed": False,
             "created": time.monotonic(), "touched": time.monotonic(),
         }
@@ -263,6 +263,9 @@ async def create_session(browser: Any, request: LiveSessionRequest) -> dict[str,
                 await route.continue_()
             else:
                 session["blocked"] += 1
+                label = f"{r.method} {urlparse(r.url).netloc[:80]} ({r.resource_type})"
+                if label in session["blocked_hosts"] or len(session["blocked_hosts"]) < 20:
+                    session["blocked_hosts"][label] = session["blocked_hosts"].get(label, 0) + 1
                 await route.abort("blockedbyclient")
 
         async def ws_handler(ws_route: Any) -> None:
@@ -293,8 +296,9 @@ async def create_session(browser: Any, request: LiveSessionRequest) -> dict[str,
         context.on("page", lambda new_page: asyncio.create_task(_attach_page(session, new_page)))  # popups / new tabs
         try:
             await page.goto(request.url, wait_until="domcontentloaded", timeout=20_000)
-        except Exception:
-            pass  # a slow page still streams; the admin sees what loaded
+        except Exception as exc:
+            # a slow or failing page still streams; keep the reason so the admin can see it
+            session["load_error"] = str(exc).split("\n", 1)[0][:200]
     except Exception as exc:
         await close_session(session_id)
         raise HTTPException(status_code=502, detail=f"Live browser start failed: {type(exc).__name__}") from exc
@@ -312,7 +316,7 @@ async def _snapshot(session: dict[str, Any]) -> dict[str, Any]:
         form["action"] = redact_url(str(form.get("action", "")))
     dom["url"] = redact_url(str(dom.get("url", "")))
     recent = [{k: v for k, v in item.items() if k in {"method", "url", "resource_type", "status_code"} or k == "body_shape"} for item in list(session["network"])[-60:]]
-    return {"type": "snapshot", **dom, "network": recent, "blocked_requests": session["blocked"], "event_count": len(session["events"])}
+    return {"type": "snapshot", **dom, "network": recent, "blocked_requests": session["blocked"], "blocked_hosts": dict(list(session["blocked_hosts"].items())[:10]), "load_error": session["load_error"], "event_count": len(session["events"])}
 
 
 async def _sender(session: dict[str, Any], ws: WebSocket) -> None:
