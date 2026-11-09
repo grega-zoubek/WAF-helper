@@ -488,6 +488,7 @@ async def inspect_page(browser: Browser, url: str) -> dict[str, Any]:
                 accept: el.getAttribute('accept') || '',
                 role: el.getAttribute('role') || '',
                 visible: (() => { const rect = el.getBoundingClientRect(); const style = window.getComputedStyle(el); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0; })(),
+                form_index: el.form ? Array.from(document.forms).indexOf(el.form) : -1,
                 disabled: el.hasAttribute('disabled'),
                 labels: Array.from(el.labels || []).map(label => (label.innerText || label.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 200)),
                 text: (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 200)

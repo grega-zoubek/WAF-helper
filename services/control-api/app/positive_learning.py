@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlparse
 from uuid import uuid4
 
+from app.field_roles import template_path
 from app.positive_model import (
     AuthenticationState,
     ConfidenceAssessment,
@@ -157,6 +158,7 @@ def build_guided_candidate(source: dict[str, Any]) -> PositiveModelDocument:
             fields.append(_field(name, FieldLocation.QUERY, count, selected_names, selected_types.get(name.casefold(), "")))
         body_fields: dict[tuple[str, str], list[str]] = defaultdict(list)
         body_formats: set[str] = set()
+        body_input_types: dict[str, str] = {}
         for item in observations:
             body_format = str(item.get("body_format") or "")
             if body_format in {"form", "json", "multipart"}:
@@ -165,16 +167,16 @@ def build_guided_candidate(source: dict[str, Any]) -> PositiveModelDocument:
                 name = body_field.get("name") if isinstance(body_field, dict) else None
                 if isinstance(name, str) and SAFE_FIELD_NAME.fullmatch(name):
                     body_fields[(name, "json" if body_format == "json" else "form")].append(str(body_field.get("value_class", "")))
+                    if body_field.get("input_type"):
+                        body_input_types[name] = str(body_field["input_type"])
         value_types = {"number": ValueType.NUMBER, "boolean": ValueType.BOOLEAN, "array": ValueType.ARRAY, "object": ValueType.OBJECT, "unknown": ValueType.UNKNOWN}
         for (name, kind), classes in sorted(body_fields.items()):
             dominant = Counter(classes).most_common(1)[0][0] if classes else ""
             fields.append(_field(name, FieldLocation.JSON if kind == "json" else FieldLocation.FORM, len(classes), selected_names,
-                                 value_type=value_types.get(dominant, ValueType.STRING)))
+                                 input_type=body_input_types.get(name, ""), value_type=value_types.get(dominant, ValueType.STRING)))
         request_content_types = sorted({{"form": "application/x-www-form-urlencoded", "json": "application/json", "multipart": "multipart/form-data"}[f] for f in body_formats})
         for name, count in sorted(request_headers.items()):
             fields.append(_field(name, FieldLocation.REQUEST_HEADER, count, selected_names))
-        for name, count in sorted(response_headers.items()):
-            fields.append(_field(name, FieldLocation.RESPONSE_HEADER, count, selected_names))
 
         cookies = [item for item in source.get("cookie_metadata", []) if isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"]]
         for cookie in cookies:
@@ -282,6 +284,7 @@ def build_discovery_candidate(
         path = _safe_observed_path(str(row.get("source_url") or ""), hostname)
         if not path:
             continue
+        path = template_path(path)
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         header_names = metadata.get("headers") if isinstance(metadata.get("headers"), dict) else {}
         requests.append({
@@ -298,6 +301,7 @@ def build_discovery_candidate(
         if not isinstance(item, dict) or str(item.get("method") or "").upper() not in {"GET", "HEAD"}:
             continue
         path = _safe_observed_path(str(item.get("url") or ""), hostname)
+        path = template_path(path) if path else path
         api_key = (path, str(item.get("method")).upper()) if path else None
         if not path or api_key in api_keys:
             continue
@@ -314,6 +318,21 @@ def build_discovery_candidate(
             "evidence_source": EvidenceSource.RUNTIME_INSPECTION.value,
         })
         api_keys.add(api_key)
+
+    role_value_class = {"numeric": "number", "date": "short-text", "choice": "short-text", "email": "email-like", "url": "url-like"}
+    for form in profile.get("form_endpoints", []) or []:
+        method = str(form.get("method") or "GET").upper()
+        path = str(form.get("path_template") or "")
+        if method not in {"GET", "POST"} or not path.startswith("/") or any(c in path for c in "?#\r\n"):
+            continue
+        names = [f for f in form.get("fields", []) if isinstance(f, dict) and SAFE_FIELD_NAME.fullmatch(str(f.get("name", ""))) and f.get("role") not in {"hidden", "captcha"}]
+        request: dict[str, Any] = {"method": method, "path_template": path, "scheme": "https", "evidence_source": EvidenceSource.PASSIVE_CRAWL.value}
+        if method == "GET":
+            request["query_names"] = [f["name"] for f in names]
+        else:
+            request["body_format"] = "multipart" if any(f.get("role") == "file" for f in names) else "form"
+            request["body_fields"] = [{"name": f["name"], "value_class": role_value_class.get(f.get("role"), "short-text"), "input_type": str(f.get("type", ""))} for f in names]
+        requests.append(request)
 
     source = {
         "hostname": hostname,

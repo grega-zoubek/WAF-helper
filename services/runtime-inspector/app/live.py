@@ -18,6 +18,7 @@ from urllib.parse import parse_qsl, urlparse
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+from app.field_roles import classify_field
 from app.live_policy import (
     MODES, key_to_cdp, live_request_allowed, mouse_to_cdp, new_live_session_id, post_body_shape, redact_url,
 )
@@ -381,6 +382,10 @@ async def _snapshot(session: dict[str, Any]) -> dict[str, Any]:
         dom = {"url": "", "title": "", "forms": [], "controls": []}
     for form in dom.get("forms", []):
         form["action"] = redact_url(str(form.get("action", "")))
+    for control in dom.get("controls", []):
+        verdict = classify_field(control)
+        control["role"] = verdict["role"] if verdict else "action"
+        control["injection_prone"] = bool(verdict and verdict["injection_prone"])
     dom["url"] = redact_url(str(dom.get("url", "")))
     recent = [{k: v for k, v in item.items() if k in {"method", "url", "resource_type", "status_code"} or k == "body_shape"} for item in list(session["network"])[-60:]]
     return {"type": "snapshot", **dom, "network": recent, "blocked_requests": session["blocked"], "blocked_hosts": dict(list(session["blocked_hosts"].items())[:10]), "load_error": session["load_error"], "event_count": len(session["events"])}
