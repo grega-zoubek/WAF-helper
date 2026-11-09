@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from app.security_checks import build_security_check_recommendations
 from app.generic_protection import automation_policy, build_generic_protection_intents, has_file_input, input_fields
 
 app = FastAPI(title="WAF Intelligence Analysis Service", version="0.1.0")
@@ -461,6 +462,7 @@ def analyze(request: AnalysisRequest) -> dict[str, Any]:
         },
         "exposure_findings": exposure_findings,
         "injection_surface": injection_surface[:40],
+        "security_checks": build_security_check_recommendations(request.profile, injection_surface),
         "evidence_gaps": gaps,
         "observation_count": len(observations),
         "route_candidate_count": len(route_candidates),

@@ -28,6 +28,8 @@ from app.rule_catalog import normalize_rule_catalog, resolve_rule_catalog
 from app.nextgen_correlation import correlate_scope_to_nextgen
 from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
+from app.openapi_export import openapi_from_model
+from app.appfw_plan import build_plan_preview, default_profile_name
 from app.scan_scope import explicitly_allowlisted, scan_target_error
 from app.signature_workflow import ACTION_VALUES, OBJECT_NAME_RE, cli_import_commands, default_object_name, load_upstream_catalog, select_rules_for_detection, workflow_fingerprint
 from app.protection_lifecycle import build_exception_selection, build_promote_selection, summarize_protection_status
@@ -3579,3 +3581,43 @@ async def live_browser_stream(websocket: WebSocket, session_id: str) -> None:
             await websocket.close()
         except Exception:
             pass
+
+
+@app.get("/api/discovery/jobs/{job_id}/security-checks")
+async def discovery_security_checks(job_id: str, profile_name: str | None = Query(default=None, max_length=31)) -> dict[str, Any]:
+    """Recommended AppFW security checks plus a LOG-mode plan preview. Proposal only: no ADC call."""
+    job = await get_discovery_job(job_id)
+    analysis = await get_discovery_analysis(job_id)
+    recommendations = analysis.get("security_checks")
+    if not recommendations:
+        raise HTTPException(status_code=409, detail="Security-check analysis is not available for this job yet")
+    hostname = (job.get("scope") or {}).get("hostname", "app")
+    try:
+        preview = build_plan_preview(recommendations, profile_name or default_profile_name(hostname))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"job_id": job_id, "hostname": hostname, "recommendations": recommendations, "plan_preview": preview}
+
+
+@app.get("/api/live-browser/captures/{session_id}/openapi")
+async def live_capture_openapi(session_id: str) -> dict[str, Any]:
+    if not LIVE_SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(status_code=404, detail="Capture not found")
+    capture = await asyncio.to_thread(get_live_capture_sync, session_id)
+    if not capture:
+        raise HTTPException(status_code=404, detail="Capture not found")
+    try:
+        model = build_guided_candidate(capture.get("candidate_source", {})).model_dump(mode="json")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Capture could not be modelled; source values were not returned.") from exc
+    return openapi_from_model(model)
+
+
+@app.get("/api/discovery/jobs/{job_id}/openapi")
+async def discovery_openapi(job_id: str) -> dict[str, Any]:
+    job = await get_discovery_job(job_id)
+    profile = await get_discovery_profile(job_id)
+    analysis = await get_discovery_analysis(job_id)
+    hostname = (job.get("scope") or {}).get("hostname", "")
+    model, _ = build_discovery_candidate(hostname, job_id, profile, analysis, None)
+    return openapi_from_model(model.model_dump(mode="json"))

@@ -89,7 +89,7 @@ class LabelClassificationTests(unittest.TestCase):
 class InspectorCopyParity(unittest.TestCase):
     def test_copies_are_identical(self):
         original = (ROOT / "services/discovery-worker/app/field_roles.py").read_text()
-        for service in ("runtime-inspector", "control-api"):
+        for service in ("runtime-inspector", "control-api", "analysis-service"):
             self.assertEqual((ROOT / f"services/{service}/app/field_roles.py").read_text(), original, service)
 
 
