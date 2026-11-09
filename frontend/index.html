@@ -320,7 +320,7 @@
         <input id="live-url" required type="url" maxlength="2048" placeholder="Application URL, e.g. http://192.168.11.91/">
         <input id="live-paths" value="/" maxlength="1000" placeholder="Allowed paths, comma-separated">
         <select id="live-mode"><option value="free">Free browsing (approved targets only)</option><option value="read_only">Read-only (GET requests only)</option></select>
-        <label class="small"><input id="live-ignore-tls" type="checkbox"> Ignore target HTTPS certificate errors (lab only)</label>
+        <label class="small"><input id="live-ignore-tls" type="checkbox" checked> Ignore target HTTPS certificate errors (lab only; untick for targets with a valid certificate)</label>
         <button type="submit">Start live browser</button>
       </form>
       <p id="live-status" class="small muted"></p>
