@@ -27,7 +27,7 @@ def allocate_local_rule_id(seed: str) -> int:
 def validate_draft_input(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     object_name = _text(data.get("signature_object_name"), 64)
-    if not object_name or not re.fullmatch(r"[A-Za-z0-9_.# @=-]{1,31}", object_name):
+    if not object_name or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,30}", object_name):
         errors.append("signature_object_name must use the documented NetScaler name characters and be 1-31 characters")
     rule_name = _text(data.get("rule_name"), 128)
     if not rule_name:

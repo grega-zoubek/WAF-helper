@@ -123,7 +123,7 @@ def _filtered_signature_xml(rule_ids: list[str], action: str) -> bytes:
                 continue
             cloned = copy.deepcopy(rule)
             cloned.set("enabled", "ON")
-            cloned.set("actions", action.lower())
+            cloned.set("actions", "block,log,stats" if action.upper() == "BLOCK" else action.lower())  # BLOCK must keep logging/stats; verify on lab
             signatures.append(cloned)
             found.add(rule_id)
     missing = sorted(selected - found, key=lambda value: int(value) if value.isdigit() else value)
@@ -139,8 +139,12 @@ def _remote_signature_path(signature_object_name: str) -> str:
     return f"/var/tmp/waf-scanner-{safe}.xml"
 
 
-_ADC_NAME_RE = re.compile(r"[A-Za-z0-9_.# @=-]{1,128}")
-_ADC_SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.# @=-]{1,31}")
+# Names are interpolated unquoted into CLI commands, so spaces, a leading "-" and shell-like
+# characters are rejected outright. Objects this tool creates must carry the "waf-" prefix,
+# which is also what rollback requires, so it can never delete operator-owned objects.
+_ADC_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.#@=:-]{0,127}")
+_ADC_SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,30}")
+_OWNED_SIGNATURE_NAME_RE = re.compile(r"waf-[A-Za-z0-9_.-]{1,27}")
 
 
 def _validate_adc_name(value: str, field_name: str, *, simple: bool = False) -> str:
@@ -509,8 +513,8 @@ async def write_signature_set(request: AppFwSignatureSetWriteRequest) -> dict[st
 async def write_custom_signature_set(request: CustomSignatureSetWriteRequest) -> dict[str, Any]:
     if not write_enabled():
         raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
-    if not re.fullmatch(r"[A-Za-z0-9_.# @=-]{1,31}", request.signature_object_name):
-        raise HTTPException(status_code=422, detail="Invalid NetScaler signature object name")
+    if not _OWNED_SIGNATURE_NAME_RE.fullmatch(request.signature_object_name):
+        raise HTTPException(status_code=422, detail="Invalid NetScaler signature object name (must match waf-[A-Za-z0-9_.-], max 31 characters)")
     action = request.action.upper()
     if action not in {"LOG", "BLOCK"}:
         raise HTTPException(status_code=422, detail="Action must be LOG or BLOCK")
@@ -541,8 +545,8 @@ async def write_custom_signature_set(request: CustomSignatureSetWriteRequest) ->
 async def rollback_custom_signature_set(request: CustomSignatureSetRollbackRequest) -> dict[str, Any]:
     if not write_enabled():
         raise HTTPException(status_code=403, detail="NetScaler write mode is disabled")
-    if not re.fullmatch(r"[A-Za-z0-9_.# @=-]{1,31}", request.signature_object_name):
-        raise HTTPException(status_code=422, detail="Invalid NetScaler signature object name")
+    if not _OWNED_SIGNATURE_NAME_RE.fullmatch(request.signature_object_name):
+        raise HTTPException(status_code=422, detail="Invalid NetScaler signature object name (must match waf-[A-Za-z0-9_.-], max 31 characters)")
     commands = [f"rm appfw signatures {request.signature_object_name}", "save ns config"]
     try:
         result = await asyncio.to_thread(execute_cli_commands, commands)

@@ -1,0 +1,27 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install fastapi==0.115.6 httpx==0.28.1 cryptography==44.0.2 "psycopg[binary]==3.2.3" paramiko==3.5.1 playwright==1.51.0 uvicorn pydantic
+      - name: Compile sources
+        run: python -m compileall -q services tools
+      # Every service names its package "app", so test files must run one per process.
+      - name: Run tests one file at a time
+        run: |
+          status=0
+          for f in tests/test_*.py; do
+            echo "== $f"
+            python -m unittest discover -s tests -p "$(basename "$f")" || status=1
+          done
+          exit $status
+      - name: Validate compose file
+        run: WAF_DB_PASSWORD=ci docker compose config -q

@@ -442,6 +442,14 @@ async def inspect_page(browser: Browser, url: str) -> dict[str, Any]:
             network_events[key]["status_code"] = response.status
             network_events[key]["response_headers"] = safe_headers(response.headers)
 
+    async def read_only_route(route: Any) -> None:
+        # Page scripts must not change state: only GET/HEAD leave the browser.
+        if route.request.method.upper() in {"GET", "HEAD"}:
+            await route.continue_()
+        else:
+            await route.abort("blockedbyclient")
+
+    await page.route("**/*", read_only_route)
     page.on("request", capture_request)
     page.on("response", capture_response)
     try:
