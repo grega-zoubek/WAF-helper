@@ -92,6 +92,34 @@ server/runtime technologies with matching NetScaler signature tags, categories,
 rule counts, and example IDs. This is catalog applicability context only; a WAF
 signature category cannot independently confirm that a target runs that technology.
 
+## Live browser (positive security lab)
+
+The lab has a **Live browser**: Chromium streams to a canvas in the GUI over a WebSocket
+(`/api/live-browser/sessions/{id}/ws`) and your mouse, wheel and keyboard drive it.
+Two modes: `read_only` (GET only) and `free` (same-host POST/PUT/DELETE allowed). `free` is
+refused unless the target is listed in `FREE_BROWSING_ALLOWLIST` (hostnames, IPs or CIDRs,
+set on control-api) or is served by a managed ADC vServer. Only metadata is recorded:
+field names, value classes, length buckets and request shapes. Typed values, request
+bodies, cookies and screen frames are never stored. Compose-internal hosts, loopback and
+link-local targets are always refused. Sessions end after 15 min idle or 60 min total.
+
+## Run locally (laptop, Docker Desktop)
+
+```bash
+./tools/bootstrap-local.sh      # secrets, self-signed cert for localhost, .env (prints the operator password once)
+docker compose up -d --build    # also starts a Juice Shop test target
+```
+
+Open `https://localhost/` (accept the self-signed certificate) and sign in as `operator`.
+In **Positive security lab > Live browser** use `http://juice-shop:3000/`; `FREE_BROWSING_ALLOWLIST`
+in `.env` already approves it for free browsing. Read-only browsing and normal scans work on any
+non-internal host. Set it to `*` to allow free browsing on any non-internal host (testing only). Otherwise add the host or IP to that variable and run
+`docker compose up -d control-api`. Loopback and `host.docker.internal` are refused; use the
+laptop's LAN IP for apps running on the host. ADC access stays unconfigured until you fill
+`NETSCALER_HOST`/`NETSCALER_USERNAME` in `.env` and `secrets/netscaler_password`.
+The signature catalog needs the Citrix public key in `signature-cache/citrix_public.pem`
+(copy it from the ADC's `/netscaler/public.pem`); the live browser works without it.
+
 ## Deployment
 
 1. Create `secrets/netscaler_password` with the ADC password and restrict it to

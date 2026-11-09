@@ -1,0 +1,8 @@
+# Laptop overlay: adds a Juice Shop test target on the Compose network.
+# Use with COMPOSE_FILE=docker-compose.yml:docker-compose.local.yml (tools/bootstrap-local.sh sets it in .env).
+services:
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    expose:
+      - "3000"
+    restart: unless-stopped

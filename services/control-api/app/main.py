@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -18,7 +19,7 @@ from uuid import uuid4
 import httpx
 import psycopg
 from cryptography.fernet import Fernet
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 from psycopg.types.json import Jsonb
@@ -27,13 +28,13 @@ from app.rule_catalog import normalize_rule_catalog, resolve_rule_catalog
 from app.nextgen_correlation import correlate_scope_to_nextgen
 from app.classic_correlation import correlate_scope_to_classic
 from app.custom_signatures import build_custom_signature_spec
-from app.scan_scope import scan_target_error
+from app.scan_scope import explicitly_allowlisted, scan_target_error
 from app.signature_workflow import ACTION_VALUES, OBJECT_NAME_RE, cli_import_commands, default_object_name, load_upstream_catalog, select_rules_for_detection, workflow_fingerprint
 from app.protection_lifecycle import build_exception_selection, build_promote_selection, summarize_protection_status
 from app.positive_compile import compile_observe_only_preview, structured_endpoint_editor_payload
 from app.positive_model import DecisionMode, Lifecycle, PositiveModelDocument, positive_model_json_schema
 from app.positive_learning import build_discovery_candidate, build_guided_candidate
-from app.operator_auth import AuthConfigurationError, COOKIE_NAME, SESSION_TTL_SECONDS, create_session, request_is_secure_same_origin, verify_credentials, verify_session
+from app.operator_auth import AuthConfigurationError, COOKIE_NAME, SESSION_TTL_SECONDS, create_session, request_is_secure_same_origin, verify_credentials, verify_session, authenticate_websocket
 from app.positive_validator import TransactionDescriptor, validate_transaction
 
 app = FastAPI(title="WAF Intelligence Control API", version="0.1.0")
@@ -707,6 +708,8 @@ def init_db_sync() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_positive_model_candidates_host ON positive_model_candidates (hostname, updated_at DESC)")
         conn.execute("""CREATE TABLE IF NOT EXISTS positive_model_candidate_audit (audit_id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, prior_status TEXT, new_status TEXT NOT NULL, version INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL)""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_positive_model_candidate_audit_candidate ON positive_model_candidate_audit (candidate_id, created_at DESC)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS live_browser_captures (session_id TEXT PRIMARY KEY, hostname TEXT NOT NULL, mode TEXT NOT NULL, started_at TIMESTAMPTZ NOT NULL, ended_at TIMESTAMPTZ NOT NULL, summary JSONB NOT NULL, capture JSONB NOT NULL)""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_live_browser_captures_ended ON live_browser_captures (ended_at DESC)")
         conn.commit()
 
 
@@ -3340,3 +3343,239 @@ async def topology_servicegroups() -> Any:
 @app.get("/api/adc/ha/nodes")
 async def adc_ha_nodes() -> Any:
     return await adapter_read("/api/adc/ha/nodes")
+
+
+# --- Live (interactive) browser lab -------------------------------------------------
+
+LIVE_SESSION_ID_RE = re.compile(r"live-[0-9a-f-]{36}")
+
+
+class LiveBrowserStartRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+    hostname: str = Field(min_length=1, max_length=253)
+    allowed_paths: list[str] = Field(default_factory=lambda: ["/"], max_length=100)
+    mode: str = Field(default="read_only", pattern="^(read_only|free)$")
+    ignore_https_errors: bool = False
+
+
+async def free_browsing_approved(url: str) -> bool:
+    """Free browsing needs an approved target: explicit allow-list entry or a managed ADC vServer."""
+    if await asyncio.to_thread(explicitly_allowlisted, url):
+        return True
+    try:
+        inventory = await adapter_read("/api/adc/classic-inventory")
+    except HTTPException:
+        return False
+    parsed = urlparse(url)
+    correlation = correlate_scope_to_classic({"seed_url": url, "hostname": parsed.hostname or ""}, inventory)
+    return correlation.get("status") == "matched"
+
+
+@app.post("/api/live-browser/sessions", status_code=201)
+async def live_browser_start(request: LiveBrowserStartRequest, http_request: Request) -> dict[str, Any]:
+    reason = await asyncio.to_thread(scan_target_error, request.url)
+    if reason:
+        raise HTTPException(status_code=422, detail=f"Browser target refused: {reason}")
+    if request.mode == "free" and not await free_browsing_approved(request.url):
+        raise HTTPException(status_code=422, detail="Free browsing is only allowed on approved targets (add the host to FREE_BROWSING_ALLOWLIST or use a host served by a managed ADC vServer). Use read_only mode instead.")
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.post(f"{RUNTIME_INSPECTOR_URL}/live/sessions", json=request.model_dump())
+            response.raise_for_status()
+            session = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Live browser session was rejected")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+    operator = (verify_session(http_request.cookies.get(COOKIE_NAME, "")) or {}).get("sub", "unknown")
+    logging.getLogger("waf.audit").info("live-browser start operator=%s mode=%s host=%s session=%s", operator, request.mode, request.hostname, session.get("id"))
+    return session
+
+
+MAX_SAVED_LIVE_CAPTURES = 200
+
+
+def _capture_summary(capture: dict[str, Any]) -> dict[str, Any]:
+    network = capture.get("network", [])
+    return {
+        "title": str(capture.get("title", ""))[:200], "final_url": str(capture.get("final_url", ""))[:2048],
+        "duration_seconds": capture.get("duration_seconds", 0), "request_count": len(network),
+        "write_request_count": sum(1 for item in network if item.get("method") in {"POST", "PUT", "PATCH", "DELETE"}),
+        "form_count": len(capture.get("forms", [])), "field_count": len(capture.get("controls", [])),
+        "blocked_requests": capture.get("blocked_requests", 0), "load_error": str(capture.get("load_error", ""))[:200],
+    }
+
+
+def save_live_capture_sync(capture: dict[str, Any]) -> None:
+    with db_connect() as conn:
+        conn.execute(
+            """INSERT INTO live_browser_captures (session_id, hostname, mode, started_at, ended_at, summary, capture)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (session_id) DO UPDATE SET ended_at = EXCLUDED.ended_at, summary = EXCLUDED.summary, capture = EXCLUDED.capture""",
+            (capture["id"], str(capture.get("hostname", ""))[:253], str(capture.get("mode", ""))[:16],
+             capture.get("started_at"), capture.get("ended_at"), Jsonb(_capture_summary(capture)), Jsonb(capture)),
+        )
+        conn.execute("DELETE FROM live_browser_captures WHERE session_id IN (SELECT session_id FROM live_browser_captures ORDER BY ended_at DESC OFFSET %s)", (MAX_SAVED_LIVE_CAPTURES,))
+        conn.commit()
+
+
+def list_live_captures_sync() -> list[dict[str, Any]]:
+    with db_connect() as conn:
+        rows = conn.execute("SELECT session_id, hostname, mode, started_at, ended_at, summary FROM live_browser_captures ORDER BY ended_at DESC LIMIT 100").fetchall()
+    return [{"id": r[0], "hostname": r[1], "mode": r[2], "started_at": r[3].isoformat(), "ended_at": r[4].isoformat(), **r[5]} for r in rows]
+
+
+def get_live_capture_sync(session_id: str) -> dict[str, Any] | None:
+    with db_connect() as conn:
+        row = conn.execute("SELECT capture FROM live_browser_captures WHERE session_id = %s", (session_id,)).fetchone()
+    return row[0] if row else None
+
+
+def delete_live_capture_sync(session_id: str) -> bool:
+    with db_connect() as conn:
+        result = conn.execute("DELETE FROM live_browser_captures WHERE session_id = %s", (session_id,))
+        conn.commit()
+    return result.rowcount > 0
+
+
+async def finalize_live_session(session_id: str) -> dict[str, Any] | None:
+    """Close a live session (if still open), collect its metadata capture and save it. Idempotent."""
+    capture: dict[str, Any] | None = None
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.delete(f"{RUNTIME_INSPECTOR_URL}/live/sessions/{session_id}")
+            response.raise_for_status()
+            capture = response.json().get("capture")
+            if not capture:
+                finished = await client.get(f"{RUNTIME_INSPECTOR_URL}/live/captures/{session_id}")
+                capture = finished.json() if finished.status_code == 200 else None
+    except httpx.HTTPError:
+        return None
+    if capture:
+        try:
+            await asyncio.to_thread(save_live_capture_sync, capture)
+        except psycopg.Error:
+            logging.getLogger("waf.audit").warning("live capture %s could not be saved", session_id)
+            return None
+    return capture
+
+
+def _candidate_response(source: dict[str, Any], note: str) -> dict[str, Any]:
+    try:
+        candidate = build_guided_candidate(source)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Candidate model did not pass schema validation; source values were not returned.") from exc
+    return {
+        "candidate": candidate.model_dump(mode="json"), "persisted": False, "enforcement_mode": "observe",
+        "summary": {"endpoint_count": len(candidate.endpoints), "field_count": sum(len(e.fields) for e in candidate.endpoints),
+                    "evidence_sources": ["guided_browser"], "mode": source.get("mode"), "confidence_note": note},
+        "cookie_metadata": source.get("cookie_metadata", []),
+    }
+
+
+@app.delete("/api/live-browser/sessions/{session_id}")
+async def live_browser_stop(session_id: str, http_request: Request) -> dict[str, Any]:
+    if not LIVE_SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(status_code=404, detail="Live browser session not found")
+    capture = await finalize_live_session(session_id)
+    operator = (verify_session(http_request.cookies.get(COOKIE_NAME, "")) or {}).get("sub", "unknown")
+    logging.getLogger("waf.audit").info("live-browser stop operator=%s session=%s saved=%s", operator, session_id, bool(capture))
+    return {"closed": True, "saved": bool(capture), "capture_id": session_id if capture else None, "summary": _capture_summary(capture) if capture else None}
+
+
+@app.get("/api/live-browser/sessions/{session_id}/candidate")
+async def live_browser_candidate(session_id: str) -> dict[str, Any]:
+    if not LIVE_SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(status_code=404, detail="Live browser session not found")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(f"{RUNTIME_INSPECTOR_URL}/live/sessions/{session_id}/candidate-source")
+            response.raise_for_status()
+            source = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json().get("detail", "Live browser session not found")) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Runtime inspector unavailable") from exc
+    return _candidate_response(source, "Single live session; metadata only (field names, value classes, request shapes). Observe-only.")
+
+
+@app.get("/api/live-browser/captures")
+async def live_browser_captures() -> list[dict[str, Any]]:
+    try:
+        return await asyncio.to_thread(list_live_captures_sync)
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Capture database unavailable") from exc
+
+
+@app.get("/api/live-browser/captures/{session_id}")
+async def live_browser_capture(session_id: str) -> dict[str, Any]:
+    if not LIVE_SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(status_code=404, detail="Capture not found")
+    capture = await asyncio.to_thread(get_live_capture_sync, session_id)
+    if not capture:
+        raise HTTPException(status_code=404, detail="Capture not found")
+    return {key: value for key, value in capture.items() if key != "candidate_source"}
+
+
+@app.get("/api/live-browser/captures/{session_id}/candidate")
+async def live_browser_capture_candidate(session_id: str) -> dict[str, Any]:
+    if not LIVE_SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(status_code=404, detail="Capture not found")
+    capture = await asyncio.to_thread(get_live_capture_sync, session_id)
+    if not capture:
+        raise HTTPException(status_code=404, detail="Capture not found")
+    return _candidate_response(capture.get("candidate_source", {}), "Saved live session; metadata only (field names, value classes, request shapes). Observe-only.")
+
+
+@app.delete("/api/live-browser/captures/{session_id}")
+async def live_browser_capture_delete(session_id: str) -> dict[str, Any]:
+    if not LIVE_SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(status_code=404, detail="Capture not found")
+    return {"deleted": await asyncio.to_thread(delete_live_capture_sync, session_id)}
+
+
+@app.websocket("/api/live-browser/sessions/{session_id}/ws")
+async def live_browser_stream(websocket: WebSocket, session_id: str) -> None:
+    """Bridge the admin's browser to the inspector. HTTP middleware does not run for WebSockets."""
+    import websockets
+
+    if not LIVE_SESSION_ID_RE.fullmatch(session_id):
+        await websocket.close(code=4404)
+        return
+    # Cheap checks before accepting: valid operator cookie and https same-origin Origin.
+    if not verify_session(websocket.cookies.get(COOKIE_NAME, "")) or not request_is_secure_same_origin(websocket.headers):
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    try:
+        first = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+    except (asyncio.TimeoutError, WebSocketDisconnect, ValueError):
+        await websocket.close(code=4401)
+        return
+    if not isinstance(first, dict) or first.get("type") != "auth" or not authenticate_websocket(websocket.headers, websocket.cookies, str(first.get("csrf", ""))):
+        await websocket.close(code=4401)
+        return
+    upstream_url = RUNTIME_INSPECTOR_URL.replace("http://", "ws://", 1) + f"/live/sessions/{session_id}/ws"
+    try:
+        async with websockets.connect(upstream_url, max_size=8_000_000, open_timeout=10) as upstream:
+            async def to_upstream() -> None:
+                while True:
+                    await upstream.send(json.dumps(await websocket.receive_json()))
+
+            async def to_client() -> None:
+                async for message in upstream:
+                    await websocket.send_text(message if isinstance(message, str) else message.decode("utf-8", "replace"))
+
+            tasks = [asyncio.create_task(to_upstream()), asyncio.create_task(to_client())]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+    except Exception:
+        pass
+    finally:
+        # However the stream ended (Stop, closed tab, expiry), keep the metadata capture.
+        await finalize_live_session(session_id)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
