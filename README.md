@@ -113,7 +113,7 @@ docker compose up -d --build    # also starts a Juice Shop test target
 Open `https://localhost/` (accept the self-signed certificate) and sign in as `operator`.
 In **Positive security lab > Live browser** use `http://juice-shop:3000/`; `FREE_BROWSING_ALLOWLIST`
 in `.env` already approves it for free browsing. Read-only browsing and normal scans work on any
-non-internal host. To allow free browsing on another app, add its host or IP to that variable and run
+non-internal host. Set it to `*` to allow free browsing on any non-internal host (testing only). Otherwise add the host or IP to that variable and run
 `docker compose up -d control-api`. Loopback and `host.docker.internal` are refused; use the
 laptop's LAN IP for apps running on the host. ADC access stays unconfigured until you fill
 `NETSCALER_HOST`/`NETSCALER_USERNAME` in `.env` and `secrets/netscaler_password`.

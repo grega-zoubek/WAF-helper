@@ -76,6 +76,8 @@ def explicitly_allowlisted(url: str, *, resolve: bool = True) -> bool:
     host = (urlparse(url).hostname or "").casefold().rstrip(".")
     if not entries or not host:
         return False
+    if "*" in entries:  # explicit operator choice: free browsing on any non-internal host
+        return True
     addresses: list[ipaddress._BaseAddress] = []
     try:
         addresses = [ipaddress.ip_address(host)]
