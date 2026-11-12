@@ -152,7 +152,7 @@ async def candidate_source_dict(session: dict[str, Any], redacted_route_template
         parsed = urlparse(item["url"])
         shape = item.get("body_shape") or {}
         requests.append({
-            "id": item["id"], "method": item["method"], "path_template": redacted_route_template(item["url"]),
+            "id": item["id"], "evidence_ref": f"runtime:{session['id']}:request:{item['id']}", "evidence_class": "browser_observation", "method": item["method"], "path_template": redacted_route_template(item["url"]),
             "scheme": parsed.scheme.lower(), "authentication": "unknown", "resource_type": item["resource_type"],
             "status_code": item["status_code"],
             "query_names": sorted({n[:256] for n, _ in parse_qsl(parsed.query, keep_blank_values=False) if n and len(n) <= 256}),

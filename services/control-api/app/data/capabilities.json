@@ -1,0 +1,209 @@
+{
+  "schema_version": "1.0.0",
+  "entries": [
+    {
+      "id": "start_url",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": true,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    },
+    {
+      "id": "field_formats",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": true,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    },
+    {
+      "id": "field_consistency",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": true,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    },
+    {
+      "id": "cookie_consistency",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": true,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    },
+    {
+      "id": "csrf",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": true,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    },
+    {
+      "id": "sql_injection",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": true,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    },
+    {
+      "id": "xss",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": true,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    },
+    {
+      "id": "json_sql_injection",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": true,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    },
+    {
+      "id": "json_xss",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": true,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    },
+    {
+      "id": "xml_validation",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": true,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    },
+    {
+      "id": "file_upload",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": true,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    },
+    {
+      "id": "signature_block_xml",
+      "release": "14.1",
+      "documentation_source": "https://docs.netscaler.com/us/en/citrix-adc/current-release/application-firewall.html",
+      "documentation_backed": false,
+      "syntax_verified": false,
+      "runtime_verified": false,
+      "verified_on": {
+        "build": null,
+        "date": null
+      },
+      "test_reference": null,
+      "supported_actions": [],
+      "limitations": [
+        "Exact-build runtime verification pending"
+      ]
+    }
+  ]
+}

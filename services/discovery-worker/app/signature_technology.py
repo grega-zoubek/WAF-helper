@@ -25,6 +25,7 @@ TECHNOLOGY_TAG_ALIASES: dict[str, set[str]] = {
     "express-node-js": {"node", "express"},
     "wordpress": {"wordpress"},
     "drupal": {"drupal"},
+    "typo3-cms": {"typo3"},
     "joomla": {"joomla"},
     "magento": {"magento"},
     "php": {"php"},

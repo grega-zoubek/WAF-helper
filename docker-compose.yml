@@ -2,6 +2,8 @@ services:
   control-api:
     build: ./services/control-api
     environment:
+      WAF_AI_BASE_URL: "${WAF_AI_BASE_URL:-http://host.docker.internal:11434}"
+      WAF_AI_MODEL: "${WAF_AI_MODEL:-llama3.1:latest}"
       DISCOVERY_WORKER_URL: http://discovery-worker:8091
       ANALYSIS_SERVICE_URL: http://analysis-service:8093
       NETSCALER_ADAPTER_URL: http://netscaler-adapter:8092
