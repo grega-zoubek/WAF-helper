@@ -284,6 +284,8 @@ def detect_technology_signals(
     )
     if "soap" in media_type or xml_media or soap_envelope:
         add("XML or SOAP", "XML/SOAP content type or envelope", "content_type_or_envelope", 0.78, media_type or "SOAP envelope", category="protocol", family="body")
+    if re.fullmatch(r"TYPO3(?: CMS)?(?: [0-9]+(?:\.[0-9]+){0,3})?", generator.strip(), re.IGNORECASE):
+        add("TYPO3 CMS", "Explicit TYPO3 generator metadata", "html.meta.generator", 0.98, "TYPO3 CMS", category="cms", family="meta", version=_version([r"TYPO3(?: CMS)? ([0-9]+(?:\.[0-9]+){0,3})"], [generator]))
     if generator and not any(item["source"] == "html.meta.generator" for item in signals):
         add("Generated platform", "HTML generator metadata", "html.meta.generator", 0.78, generator, category="application-platform", family="meta")
     if "cf-ray" in raw_headers or "cloudflare" in server_lower:

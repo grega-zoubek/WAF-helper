@@ -17,6 +17,7 @@ from psycopg.types.json import Jsonb
 from app.technology_detection import DETECTOR_VERSION, detect_technology_signals
 from app.signature_technology import build_signature_technology_context
 from app.field_roles import classify_field, template_path
+from app import run_ledger
 
 app = FastAPI(title="WAF Discovery Worker", version="0.4.0")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -170,6 +171,8 @@ def in_scope(candidate: str, seed: str, prefixes: list[str]) -> bool:
         and parsed.hostname
         and seed_parsed.hostname
         and parsed.hostname.lower() == seed_parsed.hostname.lower()
+        and parsed.scheme == seed_parsed.scheme
+        and (parsed.port or (443 if parsed.scheme == "https" else 80)) == (seed_parsed.port or (443 if seed_parsed.scheme == "https" else 80))
         and allowed_path(logical_path, prefixes)
     )
 
@@ -537,12 +540,15 @@ def init_db_sync() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_discovery_evidence_run ON discovery_evidence(run_id)")
         conn.execute("""CREATE TABLE IF NOT EXISTS discovery_observations (id BIGSERIAL PRIMARY KEY, run_id TEXT NOT NULL REFERENCES discovery_runs(id) ON DELETE CASCADE, observed_at TIMESTAMPTZ NOT NULL, source_url TEXT NOT NULL, status_code INTEGER, duration_ms NUMERIC, observation JSONB NOT NULL)""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_discovery_observations_run ON discovery_observations(run_id)")
+        run_ledger.initialize(conn)
         conn.commit()
 
 
 def save_run_sync(job: DiscoveryJob, status: str, **fields: Any) -> None:
     with db_connect() as conn:
         conn.execute("INSERT INTO discovery_runs (id, status, scope, created_at) VALUES (%s, %s, %s, %s) ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status", (job.id, status, Jsonb(job.scope.model_dump()), job.created_at or now()))
+        run_ledger.save_policy(conn, job.id, job.scope.model_dump())
+        run_ledger.event(conn,job.id,status,**fields)
         if fields:
             assignments = ", ".join(f"{key} = %s" for key in fields)
             conn.execute(f"UPDATE discovery_runs SET {assignments} WHERE id = %s", (*fields.values(), job.id))
@@ -558,6 +564,7 @@ def update_run_sync(job_id: str, status: str, **fields: Any) -> bool:
     values.append(job_id)
     with db_connect() as conn:
         result = conn.execute(f"UPDATE discovery_runs SET {', '.join(assignments)} WHERE id = %s", values)
+        if result.rowcount: run_ledger.event(conn,job_id,status,**fields)
         conn.commit()
     return result.rowcount > 0
 
@@ -569,11 +576,13 @@ def reconcile_incomplete_runs_sync() -> int:
             """UPDATE discovery_runs
                SET status = 'interrupted', completed_at = %s, phase = 'interrupted',
                    current_url = NULL, error = 'Worker restarted before scan completed'
-             WHERE status IN ('queued', 'running')""",
+             WHERE status IN ('queued', 'running') RETURNING id""",
             (now(),),
         )
+        affected=result.fetchall()
+        for row in affected: run_ledger.event(conn,row[0],'interrupted',error='Worker restarted')
         conn.commit()
-    return result.rowcount
+    return len(affected)
 
 
 def save_evidence_sync(rows: list[dict[str, Any]]) -> None:
@@ -617,14 +626,14 @@ def evidence_sync(job_id: str) -> list[dict[str, Any]]:
     with db_connect() as conn:
         rows = conn.execute("SELECT id, evidence_type, source_url, request_method, status_code, technology, signal, confidence, confidence_score, observed_at, metadata FROM discovery_evidence WHERE run_id = %s ORDER BY id", (job_id,)).fetchall()
     columns = ["id", "evidence_type", "source_url", "request_method", "status_code", "technology", "signal", "confidence", "confidence_score", "observed_at", "metadata"]
-    return [dict(zip(columns, row)) for row in rows]
+    return [{**dict(zip(columns,row)), 'evidence_ref':f'discovery:{job_id}:evidence:{row[0]}','layer':'observed','trust_class':'benign_discovery','role':None,'session_id':None} for row in rows]
 
 
 def observations_sync(job_id: str) -> list[dict[str, Any]]:
     with db_connect() as conn:
         rows = conn.execute("SELECT id, run_id, observed_at, source_url, status_code, duration_ms, observation FROM discovery_observations WHERE run_id = %s ORDER BY id", (job_id,)).fetchall()
     columns = ["id", "run_id", "observed_at", "source_url", "status_code", "duration_ms", "observation"]
-    return [dict(zip(columns, row)) for row in rows]
+    return [{**dict(zip(columns,row)),'evidence_ref':f'discovery:{job_id}:observation:{row[0]}'} for row in rows]
 
 
 def profile_sync(job_id: str) -> dict[str, Any]:
@@ -792,34 +801,41 @@ def profile_sync(job_id: str) -> dict[str, Any]:
     }
 
 
-async def run_discovery(job: DiscoveryJob) -> None:
+async def run_discovery(job: DiscoveryJob, checkpoint: dict[str, Any] | None = None) -> None:
     scope = job.scope
     seed = scope.seed_url
     seed_host = urlparse(seed).hostname
     if not seed_host or seed_host.lower() != scope.hostname.lower():
         await asyncio.to_thread(save_run_sync, job, "rejected", error="seed_url hostname does not match scope hostname")
         return
-    queue = [seed]
-    visited: set[str] = set()
+    queue = list(checkpoint['pending_get_urls']) if checkpoint else [seed]
+    visited: set[str] = set(checkpoint['visited']) if checkpoint else set()
     rows: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
     assets_seen: set[str] = set()
     route_candidates_seen: set[str] = set()
     auth_endpoint_candidates_seen: set[tuple[str, str]] = set()
     page_routes_seen: set[str] = {seed}
-    fetched_assets = 0
-    pages = 0
+    fetched_assets = checkpoint.get("assets_fetched",0) if checkpoint else 0
+    pages = checkpoint.get("pages_visited",0) if checkpoint else 0
+    persisted_evidence = 0
     delay = 1.0 / scope.rate_limit_per_second
     user_agent = "WAF-Intelligence-Discovery/0.4"
     try:
-        await asyncio.to_thread(save_run_sync, job, "running", started_at=now(), phase="crawling", current_url=redact_url(seed), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=len(rows))
+        await asyncio.to_thread(save_run_sync, job, "running", started_at=now(), phase="crawling", current_url=redact_url(seed), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=persisted_evidence+len(rows))
         async with httpx.AsyncClient(timeout=15, follow_redirects=False, headers={"User-Agent": user_agent}) as client:
             while queue and pages < scope.max_pages:
                 url = queue.pop(0)
                 if url in visited or not in_scope(url, seed, scope.allowed_paths):
                     continue
+                # Flush the previous page before checkpointing the next safe GET.
+                await asyncio.to_thread(save_evidence_sync, rows)
+                await asyncio.to_thread(save_observations_sync, observations)
+                persisted_evidence += len(rows);rows.clear();observations.clear()
+                await asyncio.to_thread(run_ledger.save_checkpoint, db_connect, job.id,
+                    run_ledger.checkpoint_payload([url]+queue,visited,pages,fetched_assets))
                 visited.add(url)
-                await asyncio.to_thread(save_run_sync, job, "running", phase="crawling", current_url=redact_url(url), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=len(rows))
+                await asyncio.to_thread(save_run_sync, job, "running", phase="crawling", current_url=redact_url(url), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=persisted_evidence+len(rows))
                 await asyncio.sleep(delay if pages else 0)
                 started = time.perf_counter()
                 try:
@@ -848,6 +864,10 @@ async def run_discovery(job: DiscoveryJob) -> None:
                             queue.append(candidate_route)
                             rows.append(evidence_row(job.id, "route_discovered", candidate_route, "GET", None, "Subpage route discovered in inline JavaScript", {"source_page": redact_url(url), "discovery_source": "inline_javascript", "candidate_only": False, "not_fetched": False}, score=0.72))
                     for item in parser.assets:
+                        absolute_asset=urljoin(url,item)
+                        if urlparse(absolute_asset).scheme in {'http','https'} and urlparse(absolute_asset).hostname != seed_host:
+                            rows.append(evidence_row(job.id,'external_asset',absolute_asset,'GET',None,'External dependency referenced by HTML',
+                                {'source_page':redact_url(url),'not_fetched':True,'resource_kind':asset_type(absolute_asset) or 'other'}))
                         candidate = normalize_url(item, url, seed, scope.allowed_paths)
                         if candidate and candidate not in assets_seen:
                             assets_seen.add(candidate)
@@ -856,7 +876,7 @@ async def run_discovery(job: DiscoveryJob) -> None:
                             rows.append(evidence_row(job.id, "asset", candidate, "GET", None, "Referenced asset", {"source_page": redact_url(url), "asset_type": kind or "other", "fetched_for_fingerprinting": should_fetch}))
                             if should_fetch:
                                 fetched_assets += 1
-                                await asyncio.to_thread(save_run_sync, job, "running", phase="asset-analysis", current_url=redact_url(candidate), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=len(rows))
+                                await asyncio.to_thread(save_run_sync, job, "running", phase="asset-analysis", current_url=redact_url(candidate), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=persisted_evidence+len(rows))
                                 try:
                                     asset_response, asset_content, truncated, duration_ms = await fetch_asset(client, candidate, user_agent)
                                     asset_content_type = asset_response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
@@ -896,13 +916,19 @@ async def run_discovery(job: DiscoveryJob) -> None:
             rows.extend(await exposure_checks(client, job.id, seed, scope.allowed_paths, delay, user_agent))
         await asyncio.to_thread(save_evidence_sync, rows)
         await asyncio.to_thread(save_observations_sync, observations)
-        await asyncio.to_thread(save_run_sync, job, "completed", completed_at=now(), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=len(rows), phase="complete", current_url=None)
+        await asyncio.to_thread(run_ledger.save_checkpoint, db_connect,job.id,
+            run_ledger.checkpoint_payload(queue,visited,pages,fetched_assets))
+        await asyncio.to_thread(save_run_sync, job, "completed", completed_at=now(), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=persisted_evidence+len(rows), phase="complete", current_url=None)
+    except asyncio.CancelledError:
+        await asyncio.to_thread(save_evidence_sync, rows)
+        await asyncio.to_thread(save_observations_sync, observations)
+        raise
     except Exception as exc:
         if rows:
             await asyncio.to_thread(save_evidence_sync, rows)
         if observations:
             await asyncio.to_thread(save_observations_sync, observations)
-        await asyncio.to_thread(save_run_sync, job, "failed", completed_at=now(), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=len(rows), phase="failed", current_url=None, error=type(exc).__name__)
+        await asyncio.to_thread(save_run_sync, job, "failed", completed_at=now(), pages_visited=pages, assets_fetched=fetched_assets, evidence_count=persisted_evidence+len(rows), phase="failed", current_url=None, error=type(exc).__name__)
 
 
 @app.on_event("startup")
@@ -914,7 +940,9 @@ async def startup() -> None:
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     try:
-        await asyncio.to_thread(init_db_sync)
+        def check_database():
+            with db_connect() as conn: conn.execute("SELECT 1")
+        await asyncio.to_thread(check_database)
         database = True
     except psycopg.Error:
         database = False
@@ -993,3 +1021,32 @@ async def get_observations(job_id: str) -> list[dict[str, Any]]:
     if not job:
         raise HTTPException(status_code=404, detail="Discovery job not found")
     return await asyncio.to_thread(observations_sync, job_id)
+
+
+@app.get("/jobs/{job_id}/evidence-report")
+async def evidence_report(job_id: str) -> dict[str, Any]:
+    await get_job(job_id)
+    return await asyncio.to_thread(run_ledger.report,db_connect,job_id)
+
+
+@app.post("/jobs/{job_id}/resume",status_code=202)
+async def resume_job(job_id: str) -> dict[str, Any]:
+    job = await get_job(job_id)
+    if job['status'] not in {'interrupted','cancelled','failed'}:
+        raise HTTPException(409,'Only interrupted, cancelled or failed runs can resume')
+    report = await asyncio.to_thread(run_ledger.report,db_connect,job_id)
+    checkpoint = report['checkpoint']
+    if not checkpoint or not checkpoint['pending_get_urls']:
+        raise HTTPException(409,'No safe GET checkpoint is available; start a new discovery run')
+    candidate=DiscoveryJob(id=job_id,created_at=str(job['created_at']),scope=job['scope'])
+    if not report['policy'] or run_ledger.fingerprint(run_ledger.policy(candidate.scope.model_dump())) != report['policy_fingerprint']:
+        raise HTTPException(409,'Original permission snapshot is missing or does not match')
+    # Atomic claim prevents two resume calls from scheduling the same run.
+    with db_connect() as conn:
+        claimed=conn.execute("UPDATE discovery_runs SET status='queued' WHERE id=%s AND status IN ('interrupted','cancelled','failed')",(job_id,)).rowcount
+        if not claimed:raise HTTPException(409,'Run is already being resumed')
+        run_ledger.event(conn,job_id,'resuming')
+    task=asyncio.create_task(run_discovery(candidate,checkpoint))
+    running_tasks[job_id]=task
+    task.add_done_callback(lambda completed:running_tasks.pop(job_id,None))
+    return {'id':job_id,'status':'queued','submissions_replayed':False,'withheld_urls':checkpoint['withheld_urls']}

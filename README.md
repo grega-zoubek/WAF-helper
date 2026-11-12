@@ -138,3 +138,14 @@ python -m unittest discover -s tests -p "test_technology_detection.py" -v
 
 Port 8110 was selected after confirming that the existing services use 8000,
 8080, and 6274. Recheck before deployment if another service is added.
+
+
+## Local AI evidence review
+
+The control API now supports an evidence-only Ollama analysis pass. Set `WAF_AI_BASE_URL` (default `http://host.docker.internal:11434`) and `WAF_AI_MODEL` (default `llama3.1:latest`) in the local deployment environment. The model must already be installed; the app does not download models or use a hosted provider. Start local Ollama if needed with `OLLAMA_HOST=127.0.0.1:11434 ollama serve`.
+
+Open a completed discovery profile, scroll to **AI evidence review**, select **Analyze selected discovery job**, and then **Refresh results**. The app sends only whitelisted structural metadata. Labels, raw page text, values, bodies, credentials, cookie values, and screenshots are excluded. Results are schema-validated inferred records, with fact references and limitations; they cannot change observations, signature selection, permissions or deployment approvals.
+
+API: `POST /api/discovery/jobs/{job_id}/ai-analysis` queues an analysis and `GET` on the same route retrieves persisted request/result/failure records. The result includes the exact sanitized input packet, input digest, provider/model, and token counts. Provider failures are reported explicitly. A service restart can interrupt an in-memory queued task; automatic recovery of AI jobs is not implemented yet.
+
+Public-site validation on trgdela.si used read-only crawling with a 12-page limit. It exposed missing explicit TYPO3 recognition, now added, and missing external-dependency observations, now recorded without automatically crawling those origins. No forms were submitted and no ADC configuration was changed.

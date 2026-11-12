@@ -1,0 +1,1 @@
+{"schema_version":"1.0.0","levels":{"OBSERVE":{"occurrences":1,"sessions":1,"distinct":0},"REVIEW":{"occurrences":30,"sessions":3,"distinct":5},"SUFFICIENT_EVIDENCE_FOR_CONFIGURATION_REVIEW":{"occurrences":200,"sessions":10,"distinct":10}},"promotion":{"days":7,"requests":10000}}

@@ -43,7 +43,7 @@ def build_coverage(
         rtype = item.get("resource_type", "")
         target = f"{item.get('method', 'GET')} {str(item.get('url', ''))[:200]}"
         ctype = str(item.get("response_content_type", "")).lower()
-        if rtype == "document" and isinstance(status, int) and 200 <= status < 400:
+        if rtype == "document" and isinstance(status, int) and 200 <= status < 300:
             documents_ok += 1
         if rtype in SCRIPT_LIKE and isinstance(status, int) and 300 <= status < 400:
             _add(failures, "asset_redirect", target, f"{rtype} answered {status}; the page may render without it")
@@ -76,7 +76,7 @@ def build_coverage(
         counts[failure["kind"]] = counts.get(failure["kind"], 0) + failure["count"]
     return {
         "status": status,
-        "explored": status != "failed",
+        "explored": status == "complete",
         "documents_loaded": documents_ok,
         "failure_counts": counts,
         "failures": ordered,

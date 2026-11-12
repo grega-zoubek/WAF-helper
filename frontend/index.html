@@ -2295,5 +2295,43 @@
       } catch (error) { panel.innerHTML = `<p class="notice">${escapeHtml(error.message)}</p>`; }
     });
   </script>
+
+<section id="blueprint-review-workbench" class="card inventory">
+<h2>Evidence-backed WAF blueprints</h2>
+<p class="muted">Create a versioned blueprint for the currently selected discovery job. Unknown capabilities and missing role/session evidence remain explicit. Accepting a review does not authorize deployment.</p>
+<button id="create-evidence-blueprint" type="button">Create blueprint for selected job</button>
+<button id="show-run-evidence" class="secondary" type="button">Run evidence & coverage</button>
+<button id="resume-run-evidence" class="secondary" type="button">Resume safe discovery</button>
+<p id="evidence-blueprint-status" role="status"></p><div id="run-evidence-report"></div><div id="evidence-blueprint-content"></div>
+</section>
+<script>
+(() => {
+ const status=document.getElementById('evidence-blueprint-status');
+ const host=document.getElementById('evidence-blueprint-content');
+ function render(record){
+  host.replaceChildren(); const payload=record.payload;
+  const heading=document.createElement('h3');heading.textContent='Revision '+record.id;host.append(heading);
+  const summary=document.createElement('p');summary.textContent='Review: '+payload.review_status+' · '+payload.fields.length+' fields · '+payload.security_checks.length+' security checks · deployment not authorized';host.append(summary);
+  for(const check of payload.security_checks){const row=document.createElement('p');row.textContent=check.check_id+': '+check.status+' — '+check.missing.join('; ');host.append(row)}
+  const exportLink=document.createElement('a');exportLink.href='/api/blueprints/'+encodeURIComponent(record.id)+'/export';exportLink.download='waf-blueprint.json';exportLink.textContent='Export blueprint JSON';host.append(exportLink);
+  for(const decision of ['accepted','rejected']){const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent=decision==='accepted'?'Accept review':'Reject review';button.onclick=async()=>{const reason=prompt('Review rationale');if(!reason)return;try{render(await api('/api/blueprints/'+encodeURIComponent(record.id)+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision,reason})}));status.textContent='New review revision saved'}catch(error){status.textContent=error.message}};host.append(button)}
+ }
+ document.getElementById('show-run-evidence').onclick=async()=>{const job=window.currentProfileJobId;if(!job){status.textContent='Open a discovery profile first.';return}try{const report=await api('/api/discovery/jobs/'+encodeURIComponent(job)+'/evidence-report');const panel=document.getElementById('run-evidence-report');panel.replaceChildren();const summary=document.createElement('p');summary.textContent='Coverage: '+report.coverage.status+' · '+report.coverage.successful_pages+' successful pages · '+report.events.length+' lifecycle events · permission snapshot '+(report.policy_fingerprint||'unknown (legacy run)');panel.append(summary);for(const failure of report.coverage.failures){const item=document.createElement('p');item.textContent=failure.kind.replaceAll('_',' ')+': '+(failure.target||failure.count||'unknown');panel.append(item)}}catch(error){status.textContent=error.message}};
+ document.getElementById('resume-run-evidence').onclick=async()=>{const job=window.currentProfileJobId;if(!job){status.textContent='Open a discovery profile first.';return}try{const response=await api('/api/discovery/jobs/'+encodeURIComponent(job)+'/resume',{method:'POST'});status.textContent='Safe GET discovery resumed. URLs withheld from replay: '+response.withheld_urls}catch(error){status.textContent=error.message}};
+ document.getElementById('create-evidence-blueprint').onclick=async()=>{const job=window.currentProfileJobId;if(!job){status.textContent='Open a discovery job profile first.';return}status.textContent='Creating immutable blueprint…';try{render(await api('/api/discovery/jobs/'+encodeURIComponent(job)+'/blueprints',{method:'POST'}));status.textContent='Blueprint saved. Review unresolved capabilities and evidence gaps.'}catch(error){status.textContent=error.message}};
+})();
+</script>
+
+
+<section class="card inventory" id="ai-evidence-analysis"><h2>AI evidence review</h2><p class="muted">Local Ollama interprets sanitized discovery metadata. Its conclusions are hypotheses, not observed facts or deployment approval.</p><button type="button" id="run-local-ai">Analyze selected discovery job</button><button class="secondary" id="refresh-local-ai" type="button">Refresh results</button><p id="local-ai-status" role="status"></p><div id="local-ai-results"></div></section>
+<script>
+(()=>{
+ const status=document.getElementById('local-ai-status'),host=document.getElementById('local-ai-results');
+ async function refresh(){const job=window.currentProfileJobId;if(!job){status.textContent='Open a discovery job profile first.';return}try{const records=await api('/api/discovery/jobs/'+encodeURIComponent(job)+'/ai-analysis');host.replaceChildren();const latestResult=[...records].reverse().find(r=>r.kind==='ai_result');const displayed=latestResult?[latestResult]:records.filter(r=>r.kind==='ai_failed').slice(-1);for(const record of displayed){if(record.kind==='ai_result'){const result=record.payload;const title=document.createElement('h3');title.textContent=result.model+' · inferred analysis';host.append(title);const summary=document.createElement('p');summary.textContent=result.analysis.summary;host.append(summary);for(const f of result.analysis.findings){const box=document.createElement('section');box.className='card';const h=document.createElement('h4');h.textContent=f.title;box.append(h);for(const text of [f.interpretation,'Next step: '+f.next_step,'Evidence: '+f.evidence_refs.join(', ')]){const p=document.createElement('p');p.textContent=text;box.append(p)}host.append(box)}for(const limitation of result.analysis.limitations){const p=document.createElement('p');p.className='muted';p.textContent=limitation;host.append(p)}}else if(record.kind==='ai_failed'){const p=document.createElement('p');p.textContent=record.payload.message;host.append(p)}}const latestRequest=[...records].reverse().find(r=>r.kind==='ai_requested');const finished=latestRequest&&records.some(r=>r.parent_id===latestRequest.id);status.textContent=latestRequest&&!finished?'Latest analysis is running or was interrupted; refresh to check for a result.':records.length?'Latest saved AI result loaded.':'No AI analysis yet.'}catch(error){status.textContent=error.message}}
+ document.getElementById('refresh-local-ai').onclick=refresh;
+ document.getElementById('run-local-ai').onclick=async()=>{const job=window.currentProfileJobId;if(!job){status.textContent='Open a discovery profile first.';return}status.textContent='Starting local AI analysis…';try{await api('/api/discovery/jobs/'+encodeURIComponent(job)+'/ai-analysis',{method:'POST'});status.textContent='Analysis queued. Click Refresh results to retrieve the completed review.'}catch(error){status.textContent=error.message}};
+})();
+</script>
+
 </body>
 </html>

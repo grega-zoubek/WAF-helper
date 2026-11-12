@@ -1021,7 +1021,7 @@ def sanitize_csp_report(payload: dict[str, Any]) -> dict[str, Any]:
 
 def save_runtime_evidence_sync(job_id: str, pages: list[dict[str, Any]]) -> None:
     with db_connect() as conn:
-        conn.execute("DELETE FROM discovery_evidence WHERE run_id = %s AND evidence_type = 'runtime_inspection'", (job_id,))
+        # Retain earlier observation IDs: existing blueprint revisions may reference them.
         rows = []
         timestamp = datetime.now(timezone.utc)
         for page in pages:
@@ -3634,4 +3634,63 @@ async def discovery_openapi(job_id: str) -> dict[str, Any]:
     return openapi_from_model(model.model_dump(mode="json"))
 
 
+@app.get("/api/blueprints/capabilities")
+def blueprint_capabilities() -> dict[str, Any]:
+    from app.capabilities import registry
+    return registry()
+
+
+@app.get("/api/blueprints/readiness-policy")
+def blueprint_readiness_policy() -> dict[str, Any]:
+    from app.readiness import POLICY
+    return POLICY
+
+
+class BlueprintReadinessRequest(BaseModel):
+    evidence: dict[str, Any]
+
+
+@app.post("/api/blueprints/readiness-evaluation")
+def blueprint_readiness_evaluation(body: BlueprintReadinessRequest) -> dict[str, Any]:
+    from app.readiness import evaluate_readiness, promotion_readiness
+    return {"configuration_review": evaluate_readiness(body.evidence),
+            "promotion_review": promotion_readiness(body.evidence)}
+
+
+from app.blueprint_api import build_router as build_blueprint_router
+async def blueprint_run_report(job_id: str) -> dict[str, Any]:
+    return await discovery_evidence_report(job_id)
+app.include_router(build_blueprint_router(db_connect, get_discovery_job, get_discovery_profile, get_discovery_analysis, blueprint_run_report))
+
+
+@app.on_event("startup")
+async def initialize_blueprint_records() -> None:
+    from app.blueprint_records import initialize
+    await asyncio.to_thread(initialize, db_connect)
+
+
 app.include_router(build_discovery_runs_router(db_connect))
+
+
+@app.get("/api/discovery/jobs/{job_id}/evidence-report")
+async def discovery_evidence_report(job_id: str) -> dict[str, Any]:
+    await get_discovery_job(job_id)
+    async with httpx.AsyncClient(timeout=15) as client:
+        response=await client.get(f"{DISCOVERY_WORKER_URL}/jobs/{job_id}/evidence-report")
+        if not response.is_success:raise HTTPException(502,"Discovery evidence report unavailable")
+        return response.json()
+
+
+@app.post("/api/discovery/jobs/{job_id}/resume",status_code=202)
+async def resume_discovery_job(job_id: str) -> dict[str, Any]:
+    await get_discovery_job(job_id)
+    async with httpx.AsyncClient(timeout=15) as client:
+        response=await client.post(f"{DISCOVERY_WORKER_URL}/jobs/{job_id}/resume")
+        if not response.is_success:
+            raise HTTPException(response.status_code if response.status_code==409 else 502,
+                                "Run cannot resume: a matching original policy and safe GET checkpoint are required")
+        return response.json()
+
+
+from app.ai_routes import build_router as build_ai_router
+app.include_router(build_ai_router(db_connect,get_discovery_profile,get_discovery_analysis,blueprint_run_report))

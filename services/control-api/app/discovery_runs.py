@@ -13,6 +13,10 @@ from app.discovery_policy import PRESETS, build_policy, describe_catalog, policy
 
 _ready = False
 _lock = threading.Lock()
+RUN_COLUMNS = (
+    "run_id", "kind", "hostname", "mode", "actor", "started_at", "ended_at", "policy_fingerprint", "policy_snapshot",
+    "coverage_status", "coverage", "permission_counts", "permission_events", "budget", "source_ref",
+)
 
 
 def ensure_table(db_connect: Callable[[], Any]) -> None:
@@ -24,14 +28,27 @@ def ensure_table(db_connect: Callable[[], Any]) -> None:
             return
         with db_connect() as conn:
             conn.execute(
-                """CREATE TABLE IF NOT EXISTS discovery_runs (
+                """CREATE TABLE IF NOT EXISTS browser_discovery_runs (
                     run_id TEXT PRIMARY KEY, kind TEXT NOT NULL, hostname TEXT NOT NULL, mode TEXT NOT NULL,
                     actor TEXT NOT NULL, started_at TIMESTAMPTZ NOT NULL, ended_at TIMESTAMPTZ NOT NULL,
                     policy_fingerprint TEXT NOT NULL, policy_snapshot JSONB NOT NULL, coverage_status TEXT NOT NULL,
                     coverage JSONB NOT NULL, permission_counts JSONB NOT NULL, permission_events JSONB NOT NULL,
                     budget JSONB NOT NULL, source_ref TEXT NOT NULL)"""
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_discovery_runs_ended ON discovery_runs (ended_at DESC)")
+            # A distinct index name: a legacy discovery_runs table may already own idx_discovery_runs_ended.
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_browser_discovery_runs_ended ON browser_discovery_runs (ended_at DESC)")
+            columns = {r[0] for r in conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='discovery_runs'").fetchall()}
+            if set(RUN_COLUMNS) <= columns:
+                # Copy only a legacy browser-shaped table, by column name rather than position. The crawler's
+                # discovery_runs table has a different shape and is never reinterpreted.
+                names = ", ".join(RUN_COLUMNS)
+                conn.execute(f"INSERT INTO browser_discovery_runs ({names}) SELECT {names} FROM discovery_runs ON CONFLICT (run_id) DO NOTHING")
+            conn.execute("""CREATE OR REPLACE FUNCTION browser_run_policy_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN IF NEW.policy_snapshot IS DISTINCT FROM OLD.policy_snapshot OR NEW.policy_fingerprint IS DISTINCT FROM OLD.policy_fingerprint
+                    THEN RAISE EXCEPTION 'browser run policy is immutable'; END IF; RETURN NEW; END; $$""")
+            conn.execute("DROP TRIGGER IF EXISTS browser_run_policy_guard ON browser_discovery_runs")
+            conn.execute("""CREATE TRIGGER browser_run_policy_guard BEFORE UPDATE ON browser_discovery_runs
+                FOR EACH ROW EXECUTE FUNCTION browser_run_policy_immutable()""")
             conn.commit()
         _ready = True
 
@@ -60,9 +77,12 @@ def save_run(db_connect: Callable[[], Any], capture: dict[str, Any]) -> bool:
         return False
     ensure_table(db_connect)
     with db_connect() as conn:
+        original=conn.execute("SELECT policy_fingerprint FROM browser_discovery_runs WHERE run_id=%s",(record['run_id'],)).fetchone()
+        if original and original[0]!=record['policy_fingerprint']:
+            raise ValueError("Existing browser permission snapshot does not match this capture")
         # A run's policy snapshot is immutable: a re-save may only extend the end time and results.
         conn.execute(
-            """INSERT INTO discovery_runs (run_id, kind, hostname, mode, actor, started_at, ended_at, policy_fingerprint, policy_snapshot,
+            """INSERT INTO browser_discovery_runs (run_id, kind, hostname, mode, actor, started_at, ended_at, policy_fingerprint, policy_snapshot,
                    coverage_status, coverage, permission_counts, permission_events, budget, source_ref)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (run_id) DO UPDATE SET ended_at = EXCLUDED.ended_at, coverage_status = EXCLUDED.coverage_status,
@@ -100,7 +120,7 @@ def build_router(db_connect: Callable[[], Any]) -> APIRouter:
         ensure_table(db_connect)
         with db_connect() as conn:
             rows = conn.execute(
-                "SELECT run_id, kind, hostname, mode, actor, started_at, ended_at, policy_fingerprint, coverage_status, coverage->'failure_counts' FROM discovery_runs ORDER BY ended_at DESC LIMIT 100"
+                "SELECT run_id, kind, hostname, mode, actor, started_at, ended_at, policy_fingerprint, coverage_status, coverage->'failure_counts' FROM browser_discovery_runs ORDER BY ended_at DESC LIMIT 100"
             ).fetchall()
         return [
             {"run_id": r[0], "kind": r[1], "hostname": r[2], "mode": r[3], "actor": r[4], "started_at": r[5].isoformat(), "ended_at": r[6].isoformat(),
@@ -113,7 +133,7 @@ def build_router(db_connect: Callable[[], Any]) -> APIRouter:
         ensure_table(db_connect)
         with db_connect() as conn:
             row = conn.execute(
-                "SELECT run_id, kind, hostname, mode, actor, started_at, ended_at, policy_fingerprint, policy_snapshot, coverage, permission_counts, permission_events, budget, source_ref FROM discovery_runs WHERE run_id = %s",
+                "SELECT run_id, kind, hostname, mode, actor, started_at, ended_at, policy_fingerprint, policy_snapshot, coverage, permission_counts, permission_events, budget, source_ref FROM browser_discovery_runs WHERE run_id = %s",
                 (run_id[:80],),
             ).fetchone()
         if not row:
